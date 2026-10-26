@@ -21,15 +21,24 @@ export interface ContactOptions {
   note?: string;
 }
 
-export interface CustomerContactResult {
-  method: ContactMethod;
-  status: "sent" | "not_sent" | "not_available" | "not_requested";
-  /** Why a text didn't go out: a TextBlockReason or sendCallerSMS's own reason. */
-  reason?: string;
+/**
+ * What happened to the owner's choice. Each status belongs to one method, and a
+ * text that didn't go out always says why (a TextBlockReason or sendCallerSMS's
+ * own reason). SCRUM-598 adds { method: "call", status: "calling" }.
+ */
+export type CustomerContactResult =
+  | { method: "none"; status: "not_requested" }
+  | { method: "call"; status: "not_available"; reason: "calls_unavailable" }
+  | { method: "text"; status: "sent" }
+  | { method: "text"; status: "not_sent"; reason: string };
+
+/** True only when the customer was actually told. */
+export function isCustomerNotified(result: CustomerContactResult | undefined): boolean {
+  return result?.status === "sent";
 }
 
 const BLOCK_NOTES: Record<TextBlockReason, string> = {
-  texts_paused: "Texts to customers are switched off for now.",
+  texts_paused: "Texting customers isn't available yet.",
   no_number: "There's no mobile number on this booking.",
   landline: "Their number is a landline, so it can't take a text.",
   not_mobile: "Their number can't take texts.",
@@ -37,19 +46,28 @@ const BLOCK_NOTES: Record<TextBlockReason, string> = {
   check_failed: "I couldn't check whether their number takes texts.",
 };
 
-/** Spoken reasons a text didn't go out, by TextBlockReason or sendCallerSMS reason. */
-const NOT_SENT_WHY: Record<string, string> = {
-  texts_paused: "texts to customers are switched off for now",
-  sms_globally_paused: "texts to customers are switched off for now",
+/** Spoken reasons a text didn't go out: every TextBlockReason (checked by the compiler)... */
+const BLOCK_WHY = {
+  texts_paused: "texting customers isn't available yet",
   no_number: "there's no mobile number on the booking",
   landline: "their number is a landline",
   not_mobile: "their number can't take texts",
   opted_out: "they've opted out of texts",
   check_failed: "I couldn't check their number",
+} satisfies Record<TextBlockReason, string>;
+
+/**
+ * ...and sendCallerSMS's own refusals. A held-back text never reads as if the
+ * customer already knows about THIS change (an earlier text may have been about
+ * the old time).
+ */
+const SEND_WHY: Record<string, string> = {
+  sms_globally_paused: "texting customers isn't available yet",
+  not_mobile: "their number can't take texts",
   org_disabled: "customer texts are turned off in your settings",
   feature_disabled: "customer texts are turned off in your settings",
   caller_opted_out: "they've opted out of texts",
-  rate_limited: "they were already texted about this a moment ago",
+  rate_limited: "another text went to them moments ago, so this one was held back",
   plan_not_eligible: "customer texts aren't included in your plan",
   no_org_phone_number: "there's no business number to text from",
 };
@@ -63,12 +81,6 @@ export async function getContactOptions(
   const text = await getTextCapability(orgId, phone, country, deps);
   if (text.canText) return { options: ["text", "none"] };
   return { options: ["none"], note: BLOCK_NOTES[text.reason] };
-}
-
-/** "by text, or leave it" / "leave it" — the choices the read-back may offer. */
-export function describeOptions(options: readonly ContactMethod[]): string {
-  const offered = options.filter((m) => m !== "none").map((m) => (m === "text" ? "a text" : "a call"));
-  return offered.length ? `${offered.join(" or ")}, or leave it` : "leave it (nothing else is possible)";
 }
 
 export interface ContactRequest {
@@ -90,6 +102,14 @@ export interface ContactDeps extends TextCapabilityDeps {
 }
 
 /**
+ * The owner asked for this text about a change they just made, so the automated
+ * one-per-hour cap (meant for texts nobody asked for) doesn't hold it back: the
+ * booking's original confirmation may have gone out minutes ago, about the old time.
+ * Opt-outs, the org's toggle and the plan still apply.
+ */
+const OWNER_REQUESTED = { skipRateLimit: true } as const;
+
+/**
  * Carry out the owner's choice after the change has been written. Never throws:
  * a failed contact is reported, never allowed to undo or hide the change.
  */
@@ -104,8 +124,8 @@ export async function contactCustomer(req: ContactRequest, deps: ContactDeps = {
   try {
     const result =
       req.kind === "cancelled"
-        ? await (deps.sendCancellation ?? sendCancellationSMS)(req.orgId, text.phone, req.startTime, req.timezone, req.appointmentId)
-        : await (deps.sendConfirmation ?? sendAppointmentConfirmationSMS)(req.orgId, text.phone, req.startTime, req.timezone, undefined, req.appointmentId);
+        ? await (deps.sendCancellation ?? sendCancellationSMS)(req.orgId, text.phone, req.startTime, req.timezone, req.appointmentId, OWNER_REQUESTED)
+        : await (deps.sendConfirmation ?? sendAppointmentConfirmationSMS)(req.orgId, text.phone, req.startTime, req.timezone, undefined, req.appointmentId, OWNER_REQUESTED);
     if (result?.sent) return { method: "text", status: "sent" };
     return { method: "text", status: "not_sent", reason: result?.reason || result?.status || "not_sent" };
   } catch (err) {
@@ -127,12 +147,13 @@ export function contactOutcomeSentence(result: CustomerContactResult, customer: 
     case "sent":
       return ` I've texted ${customer} to let them know.`;
     case "not_sent": {
-      const why = (result.reason && NOT_SENT_WHY[result.reason]) || "the text didn't go through";
-      return ` I couldn't text ${customer}: ${why}. I can read you their number if you want to let them know.`;
+      const why = (BLOCK_WHY as Record<string, string>)[result.reason] ?? SEND_WHY[result.reason] ?? "the text didn't go through";
+      return ` I couldn't text ${customer}: ${why}. I can read you their number if you want to tell them yourself.`;
     }
     case "not_available":
-      return ` I can't call customers yet, so ${customer} hasn't been told. I can read you their number if you want to let them know.`;
+      return ` I can't call customers yet, so I haven't let ${customer} know. I can read you their number if you want to tell them yourself.`;
     case "not_requested":
-      return ` As you asked, ${customer} hasn't been told.`;
+      // Not "as you asked": with nothing to choose, the owner may never have been asked.
+      return ` I haven't let ${customer} know. I can read you their number if you want to tell them yourself.`;
   }
 }

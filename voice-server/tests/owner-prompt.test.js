@@ -240,12 +240,16 @@ describe("buildOwnerPrompt — the customer is never promised a notification", (
     assert.ok(/offer to read out their phone number so the owner can ring them/.test(p));
     assert.ok(/offer their phone number/.test(s));
   });
-  it("asks the contact question in the read-back, offering only data.contact_options, and asks before confirming if it's missing", () => {
-    assert.ok(p.includes("IN THE SAME QUESTION ask whether to let the customer know — offering only the ways in data.contact_options"));
-    assert.ok(p.includes('If data.contact_options is only "none", say in a few words why (data.contact_note) and that you can read out their number afterwards.'));
-    assert.ok(p.includes('("leave it" or "don\'t tell them" is "none")'));
-    assert.ok(p.includes("If they said yes but didn't say whether to tell the customer, ask that before calling."));
+  it("asks the contact question in the read-back, offering only data.contact_options — 'not tell them', never the ambiguous 'leave it'", () => {
+    assert.ok(p.includes('IN THE SAME QUESTION ask whether to let the customer know — offering only the ways in data.contact_options ("by text", "by call", or "not tell them").'));
+    assert.ok(p.includes('If data.contact_options is only "none", there is nothing to choose: say in a few words why (data.contact_note) and that you can read out their number afterwards.'));
+    assert.ok(p.includes('("don\'t tell them" is "none")'));
+    assert.ok(p.includes('A bare "leave it" or "no" could mean "don\'t make the change": ask which they mean, never guess.'));
     assert.ok(p.includes('- "needs_confirmation": nothing changed.'));
+  });
+  it("a yes without the answer on the customer goes through the tool (it hands back the question), never a question of its own — the gate counts one turn", () => {
+    assert.ok(p.includes("If they said yes but didn't say whether to tell the customer, call it with confirmed=true and WITHOUT notify_customer: that changes nothing and hands back the question to ask — ask it, then call again with confirmed=true and their answer."));
+    assert.ok(!p.includes("ask that before calling"), "a question of the model's own would be a second turn: the gate refuses the confirm after it");
   });
   it("never words a promise that the customer was or will be told", () => {
     // The guard sentences ("Never promise ...", the customer_contact.status rule) name the words on purpose, so they are dropped first.
@@ -398,13 +402,14 @@ describe("buildOwnerGeminiSuffix — the last-read rules", () => {
       "1. owner_list_appointments",
       "2. CALL owner_reschedule_appointment or owner_cancel_appointment WITHOUT confirmed — it changes nothing and hands back the read-back",
       "3. Read back that exact job and the exact change (data.from and data.to, or data.when for a cancel)",
-      '4. Get a clear "yes"',
+      '4. Get a clear "yes" and their answer on telling the customer',
       '5. Say a short filler ("one moment") and CALL the same tool again with confirmed=true',
       "6. WAIT for the result",
       "7. Read data.outcome",
     ];
     order.forEach((x, i) => { assert.ok(at(x) >= 0, x); if (i) assert.ok(at(x) > at(order[i - 1]), `${x} comes after ${order[i - 1]}`); });
-    assert.ok(s.includes('7. Read data.outcome — say "done" ONLY for "rescheduled" / "cancelled"; "needs_confirmation" means read the change back, get the yes, then call again with confirmed=true; for anything else relay the tool\'s message'));
+    assert.ok(s.includes('7. Read data.outcome — say "done" ONLY for "rescheduled" / "cancelled", then what the result says about the customer; "needs_confirmation" means nothing changed: ask what its message asks (the read-back, or whether to tell the customer), then call again with confirmed=true and notify_customer; for anything else relay the tool\'s message'));
+    assert.ok(s.includes("(a yes without that answer: CALL with confirmed=true and no notify_customer — it hands back the question)"));
     assert.ok(s.includes("(take its appointment_id — never speak it)"));
   });
   it("forbids a success claim before the result and says the change did not happen if it is made", () => {

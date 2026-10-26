@@ -26,6 +26,8 @@ import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { isValidUUID } from "@/lib/security/validation";
 import { runAfterResponse } from "@/lib/utils/after-response";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
+import { pageSentry } from "@/lib/observability/page-sentry";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import {
   OWNER_RANGES,
   type OwnerRange,
@@ -41,6 +43,7 @@ import {
   contactCustomer,
   contactOutcomeSentence,
   getContactOptions,
+  isCustomerNotified,
   parseContactMethod,
   type ContactMethod,
   type ContactOptions,
@@ -408,28 +411,48 @@ const REASON_MAX = 500;
 const DEFAULT_DURATION_MINUTES = 30;
 
 /**
- * SCRUM-597: the "let them know?" part of a read-back. Only the ways that work for
- * this customer right now are offered; with none, the model says so and offers the
- * number instead.
+ * SCRUM-597: the owner's recap email lists only the changes in appointment_events, so
+ * a change whose audit row failed would be missing from it with nobody told — page.
  */
-function contactQuestion(customer: string, contact: ContactOptions): string {
-  const ways = contact.options.filter((m) => m !== "none").map((m) => (m === "text" ? "text" : "call"));
-  if (ways.length === 0) {
+function pageUnaudited(organizationId: string, callId: string, appointmentId: string, change: "cancelled" | "rescheduled"): void {
+  pageSentry({
+    service: "next-api",
+    reason: SENTRY_REASONS.OWNER_CHANGE_NOT_AUDITED,
+    level: "error",
+    message: `an owner ${change} change was made but not audited — the owner's recap email will miss it`,
+    extras: { organizationId, callId, appointmentId, change },
+  });
+}
+
+/** The ways this customer can be told right now, spoken ("text", "text or call"); "" when there are none. */
+function contactWays(contact: ContactOptions): string {
+  return contact.options.filter((m) => m !== "none").map((m) => (m === "text" ? "text" : "call")).join(" or ");
+}
+
+/**
+ * SCRUM-597: the read-back, with the "let them know?" question in the same breath.
+ * Only the ways that work for this customer right now are offered. With none, there
+ * is nothing to choose: the model says so and offers the number, and a bare yes
+ * confirms (notify_customer "none" is assumed — see the handlers).
+ */
+function readBackMessage(change: string, customer: string, contact: ContactOptions, tool: string): string {
+  const ways = contactWays(contact);
+  if (!ways) {
     const why = contact.note ? ` (${contact.note.replace(/[.!?]+$/, "")})` : "";
-    return `You can't let ${customer} know yourself${why}: say so in a few words and offer to read out their number after the change. notify_customer is "none".`;
+    return `Read this back and get a clear yes before changing anything: ${change}. You can't let ${customer} know yourself${why}: say so in a few words and offer to read out their number after the change. If the owner confirms, call ${tool} again with confirmed=true and notify_customer "none".`;
   }
   const note = contact.note ? ` ${contact.note}` : "";
-  return `In the same question, ask whether to let ${customer} know: by ${ways.join(" or ")}, or leave it.${note} notify_customer is their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
+  return `Read this back and get a clear yes before changing anything: ${change}. In the same question, ask whether to let ${customer} know: by ${ways}, or not tell them.${note} If the owner confirms, call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
 }
 
-/** The read-back, with the contact question in the same breath. */
-function readBackMessage(change: string, customer: string, contact: ContactOptions, tool: string): string {
-  return `Read this back and get a clear yes before changing anything: ${change}. ${contactQuestion(customer, contact)} If the owner confirms, call ${tool} again with confirmed=true and notify_customer.`;
-}
-
-/** A confirm that came without a valid notify_customer: nothing changes until the owner answers. */
+/**
+ * A confirm that came without the owner's answer on telling the customer, when there
+ * IS a choice: nothing changes, and the model asks it now (one question — the
+ * confirmation gate is re-armed by this result, so the next confirm passes).
+ */
 function askContactMessage(customer: string, contact: ContactOptions, tool: string): string {
-  return `Nothing has changed yet: the owner hasn't said whether to let ${customer} know. ${contactQuestion(customer, contact)} Then call ${tool} again with confirmed=true and notify_customer.`;
+  const note = contact.note ? ` ${contact.note}` : "";
+  return `Nothing has changed yet: the owner said yes but not whether to let ${customer} know. Ask them now: should ${customer} get a ${contactWays(contact)}, or not be told?${note} Then call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
 }
 
 /**
@@ -564,28 +587,36 @@ export async function handleOwnerRescheduleAppointment(
   const customer = sanitizeCustomerText(before.attendee_name, NAME_MAX) ?? "the customer";
 
   // SCRUM-597: a confirm needs the owner's answer on telling the customer too —
-  // without one, nothing changes and the question is asked first.
-  const method = args.confirmed === true ? parseContactMethod(args.notify_customer) : null;
-  if (method === null) {
+  // without one, nothing changes and the question is asked first. With nothing to
+  // choose (the customer can't be texted or called), a bare yes is the whole answer.
+  const chosen = args.confirmed === true ? parseContactMethod(args.notify_customer) : null;
+  let method: ContactMethod;
+  if (chosen) {
+    method = chosen;
+  } else {
     const contact = await getContactOptions(organizationId, before.attendee_phone, org.country);
-    const change = `move ${customer}'s job from ${from} to ${to}`;
-    return {
-      success: false,
-      message:
-        args.confirmed === true
-          ? askContactMessage(customer, contact, "owner_reschedule_appointment")
-          : readBackMessage(change, customer, contact, "owner_reschedule_appointment"),
-      data: rescheduleData({
-        outcome: "needs_confirmation",
-        appointment_id: before.id,
-        customer_name: customer,
-        from,
-        to,
-        contact_options: contact.options,
-        ...(contact.note ? { contact_note: contact.note } : {}),
-        customer_notified: false,
-      }),
-    };
+    if (args.confirmed === true && !contactWays(contact)) {
+      method = "none";
+    } else {
+      const change = `move ${customer}'s job from ${from} to ${to}`;
+      return {
+        success: false,
+        message:
+          args.confirmed === true
+            ? askContactMessage(customer, contact, "owner_reschedule_appointment")
+            : readBackMessage(change, customer, contact, "owner_reschedule_appointment"),
+        data: rescheduleData({
+          outcome: "needs_confirmation",
+          appointment_id: before.id,
+          customer_name: customer,
+          from,
+          to,
+          contact_options: contact.options,
+          ...(contact.note ? { contact_note: contact.note } : {}),
+          customer_notified: false,
+        }),
+      };
+    }
   }
 
   if (!(await ownerMutationAllowed(supabase, organizationId))) {
@@ -681,7 +712,7 @@ export async function handleOwnerRescheduleAppointment(
   });
   // Audit on the NEW leg (the history renders the move from the leg itself).
   const { legWorthy } = partitionRescheduleChanges(diffAppointmentFields(snapshotForAudit(before), snapshotForAudit(inserted)));
-  await recordAppointmentEvent(supabase, {
+  const audited = await recordAppointmentEvent(supabase, {
     appointmentId: inserted.id,
     organizationId,
     eventType: "rescheduled",
@@ -691,6 +722,7 @@ export async function handleOwnerRescheduleAppointment(
     changedFields: legWorthy,
     callId: ctx.callId,
   });
+  if (!audited) pageUnaudited(organizationId, ctx.callId, inserted.id, "rescheduled");
 
   // The text (if asked for) is about the NEW time, on the new leg.
   const contact = await contactCustomer({
@@ -715,7 +747,7 @@ export async function handleOwnerRescheduleAppointment(
       from,
       to,
       customer_contact: contact,
-      customer_notified: contact.status === "sent",
+      customer_notified: isCustomerNotified(contact),
     }),
   };
 }
@@ -747,27 +779,35 @@ export async function handleOwnerCancelAppointment(
   const when = formatWhen(new Date(appt.start_time), tz);
   const customer = sanitizeCustomerText(appt.attendee_name, NAME_MAX) ?? "the customer";
 
-  // SCRUM-597: as for a move, a confirm needs the owner's answer on telling the customer.
-  const method = args.confirmed === true ? parseContactMethod(args.notify_customer) : null;
-  if (method === null) {
+  // SCRUM-597: as for a move, a confirm needs the owner's answer on telling the
+  // customer — unless there is nothing to choose.
+  const chosen = args.confirmed === true ? parseContactMethod(args.notify_customer) : null;
+  let method: ContactMethod;
+  if (chosen) {
+    method = chosen;
+  } else {
     const contact = await getContactOptions(organizationId, appt.attendee_phone, org.country);
-    const change = `cancel ${customer}'s job on ${when}`;
-    return {
-      success: false,
-      message:
-        args.confirmed === true
-          ? askContactMessage(customer, contact, "owner_cancel_appointment")
-          : readBackMessage(change, customer, contact, "owner_cancel_appointment"),
-      data: cancelData({
-        outcome: "needs_confirmation",
-        appointment_id: appt.id,
-        customer_name: customer,
-        when,
-        contact_options: contact.options,
-        ...(contact.note ? { contact_note: contact.note } : {}),
-        customer_notified: false,
-      }),
-    };
+    if (args.confirmed === true && !contactWays(contact)) {
+      method = "none";
+    } else {
+      const change = `cancel ${customer}'s job on ${when}`;
+      return {
+        success: false,
+        message:
+          args.confirmed === true
+            ? askContactMessage(customer, contact, "owner_cancel_appointment")
+            : readBackMessage(change, customer, contact, "owner_cancel_appointment"),
+        data: cancelData({
+          outcome: "needs_confirmation",
+          appointment_id: appt.id,
+          customer_name: customer,
+          when,
+          contact_options: contact.options,
+          ...(contact.note ? { contact_note: contact.note } : {}),
+          customer_notified: false,
+        }),
+      };
+    }
   }
 
   if (!(await ownerMutationAllowed(supabase, organizationId))) {
@@ -801,7 +841,7 @@ export async function handleOwnerCancelAppointment(
     return errorResult(CANCEL_FAULT_MSG);
   }
 
-  await recordAppointmentEvent(supabase, {
+  const audited = await recordAppointmentEvent(supabase, {
     appointmentId: appt.id,
     organizationId,
     eventType: "cancelled",
@@ -811,6 +851,7 @@ export async function handleOwnerCancelAppointment(
     note: reason,
     callId: ctx.callId,
   });
+  if (!audited) pageUnaudited(organizationId, ctx.callId, appt.id, "cancelled");
 
   const contact = await contactCustomer({
     orgId: organizationId,
@@ -832,7 +873,7 @@ export async function handleOwnerCancelAppointment(
       customer_phone: sanitizeCustomerText(appt.attendee_phone, PHONE_MAX),
       when,
       customer_contact: contact,
-      customer_notified: contact.status === "sent",
+      customer_notified: isCustomerNotified(contact),
     }),
   };
 }

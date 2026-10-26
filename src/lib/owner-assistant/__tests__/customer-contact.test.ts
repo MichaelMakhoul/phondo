@@ -11,9 +11,9 @@ import {
   CONTACT_METHODS,
   parseContactMethod,
   getContactOptions,
-  describeOptions,
   contactCustomer,
   contactOutcomeSentence,
+  isCustomerNotified,
   type ContactRequest,
 } from "../customer-contact";
 
@@ -44,9 +44,9 @@ describe("parseContactMethod", () => {
 });
 
 describe("getContactOptions", () => {
-  it("texts off: only 'none', with the reason to say", async () => {
+  it("texts off: only 'none', with the reason to say (not 'switched off' — the owner's own Settings toggle may show on)", async () => {
     expect(await getContactOptions(ORG, "+61414141883", "AU", { smsEnabled: false })).toEqual({
-      options: ["none"], note: "Texts to customers are switched off for now.",
+      options: ["none"], note: "Texting customers isn't available yet.",
     });
   });
   it("a landline / no number / an opted-out customer: only 'none', each with its own reason", async () => {
@@ -58,14 +58,6 @@ describe("getContactOptions", () => {
   });
   it("a textable mobile: text or leave it, no note", async () => {
     expect(await getContactOptions(ORG, "+61414141883", "AU", CAN)).toEqual({ options: ["text", "none"] });
-  });
-});
-
-describe("describeOptions", () => {
-  it("names the ways and always 'leave it'", () => {
-    expect(describeOptions(["text", "none"])).toBe("a text, or leave it");
-    expect(describeOptions(["text", "call", "none"])).toBe("a text or a call, or leave it");
-    expect(describeOptions(["none"])).toBe("leave it (nothing else is possible)");
   });
 });
 
@@ -87,17 +79,19 @@ describe("contactCustomer", () => {
     expect(sendCancellationSMS).not.toHaveBeenCalled();
   });
 
-  it("a cancel texts the cancellation message for that booking, to the normalised number, in the org's zone", async () => {
+  it("a cancel texts the cancellation message for that booking, to the normalised number, in the org's zone, past the hourly cap", async () => {
     vi.mocked(sendCancellationSMS).mockResolvedValue({ sent: true, status: "sent" } as any);
     expect(await contactCustomer(req({ phone: "0414 141 883" }), CAN)).toEqual({ method: "text", status: "sent" });
-    expect(sendCancellationSMS).toHaveBeenCalledWith(ORG, "+61414141883", START, "Australia/Sydney", APPT);
+    // The owner asked for it: the cap for automated texts doesn't hold it back (the
+    // booking's confirmation may have gone out minutes ago, about the old time).
+    expect(sendCancellationSMS).toHaveBeenCalledWith(ORG, "+61414141883", START, "Australia/Sydney", APPT, { skipRateLimit: true });
     expect(sendAppointmentConfirmationSMS).not.toHaveBeenCalled();
   });
 
-  it("a move texts the new time's confirmation for the NEW leg", async () => {
+  it("a move texts the new time's confirmation for the NEW leg, past the hourly cap", async () => {
     vi.mocked(sendAppointmentConfirmationSMS).mockResolvedValue({ sent: true, status: "sent" } as any);
     expect(await contactCustomer(req({ kind: "moved" }), CAN)).toEqual({ method: "text", status: "sent" });
-    expect(sendAppointmentConfirmationSMS).toHaveBeenCalledWith(ORG, "+61414141883", START, "Australia/Sydney", undefined, APPT);
+    expect(sendAppointmentConfirmationSMS).toHaveBeenCalledWith(ORG, "+61414141883", START, "Australia/Sydney", undefined, APPT, { skipRateLimit: true });
     expect(sendCancellationSMS).not.toHaveBeenCalled();
   });
 
@@ -116,22 +110,40 @@ describe("contactCustomer", () => {
 });
 
 describe("contactOutcomeSentence", () => {
-  it("says exactly what happened", () => {
+  it("says exactly what happened — and never 'as you asked' (with nothing to choose, the owner wasn't asked)", () => {
     expect(contactOutcomeSentence({ method: "text", status: "sent" }, "Jane Smith")).toBe(" I've texted Jane Smith to let them know.");
-    expect(contactOutcomeSentence({ method: "none", status: "not_requested" }, "Jane Smith")).toBe(" As you asked, Jane Smith hasn't been told.");
-    expect(contactOutcomeSentence({ method: "call", status: "not_available" }, "Jane Smith")).toContain("I can't call customers yet, so Jane Smith hasn't been told.");
+    expect(contactOutcomeSentence({ method: "none", status: "not_requested" }, "Jane Smith")).toBe(" I haven't let Jane Smith know. I can read you their number if you want to tell them yourself.");
+    expect(contactOutcomeSentence({ method: "call", status: "not_available", reason: "calls_unavailable" }, "Jane Smith")).toBe(" I can't call customers yet, so I haven't let Jane Smith know. I can read you their number if you want to tell them yourself.");
   });
   it("a text that didn't go out says why, and offers the number", () => {
     const s = contactOutcomeSentence({ method: "text", status: "not_sent", reason: "landline" }, "Jane Smith");
-    expect(s).toBe(" I couldn't text Jane Smith: their number is a landline. I can read you their number if you want to let them know.");
-    expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "sms_globally_paused" }, "J")).toContain("switched off for now");
+    expect(s).toBe(" I couldn't text Jane Smith: their number is a landline. I can read you their number if you want to tell them yourself.");
+    expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "texts_paused" }, "J")).toContain("texting customers isn't available yet");
+    expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "sms_globally_paused" }, "J")).toContain("texting customers isn't available yet");
     expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "caller_opted_out" }, "J")).toContain("opted out");
     expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "something_new" }, "J")).toContain("the text didn't go through");
-    expect(contactOutcomeSentence({ method: "text", status: "not_sent" }, "J")).toContain("the text didn't go through");
+  });
+  it("a held-back text never reads as if the customer already knows about THIS change", () => {
+    const s = contactOutcomeSentence({ method: "text", status: "not_sent", reason: "rate_limited" }, "J");
+    expect(s).toContain("another text went to them moments ago, so this one was held back");
+    expect(s).not.toMatch(/already texted about this/i);
   });
   it("never claims a text that wasn't sent", () => {
-    for (const status of ["not_sent", "not_available", "not_requested"] as const) {
-      expect(contactOutcomeSentence({ method: "text", status }, "Jane")).not.toMatch(/I've texted/);
-    }
+    const notSent = [
+      { method: "text", status: "not_sent", reason: "x" },
+      { method: "call", status: "not_available", reason: "calls_unavailable" },
+      { method: "none", status: "not_requested" },
+    ] as const;
+    for (const r of notSent) expect(contactOutcomeSentence(r, "Jane")).not.toMatch(/I've texted/);
+  });
+});
+
+describe("isCustomerNotified", () => {
+  it("is true only for a text that went out", () => {
+    expect(isCustomerNotified({ method: "text", status: "sent" })).toBe(true);
+    expect(isCustomerNotified({ method: "text", status: "not_sent", reason: "landline" })).toBe(false);
+    expect(isCustomerNotified({ method: "none", status: "not_requested" })).toBe(false);
+    expect(isCustomerNotified({ method: "call", status: "not_available", reason: "calls_unavailable" })).toBe(false);
+    expect(isCustomerNotified(undefined)).toBe(false);
   });
 });

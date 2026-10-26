@@ -18,7 +18,7 @@ import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import { setReasonTag } from "@/lib/observability/sentry-tags";
 import { OPT_OUT_MARKER_RE } from "./sms-sender";
-import { numberingPlanLineType } from "./sms-capability";
+import { numberingPlanLineType, toNumberingPlanE164 } from "./sms-capability";
 
 type MessageType =
   | "missed_call_textback"
@@ -399,6 +399,32 @@ async function checkOrgConfirmationEnabled(orgId: string): Promise<OrgConfirmati
   return data?.send_customer_confirmations !== false ? "enabled" : "disabled";
 }
 
+/**
+ * appointment_confirmations.idempotency_key: `appointmentId:channel:intent:startIso`
+ * (SCRUM-247 added the intent). One place builds it and one place reads it.
+ */
+export function confirmationIdempotencyKey(
+  appointmentId: string,
+  channel: "sms" | "email",
+  intent: "confirmation" | "cancellation",
+  startIso: string
+): string {
+  return `${appointmentId}:${channel}:${intent}:${startIso}`;
+}
+
+/** The parts of a confirmationIdempotencyKey, or null for anything else. */
+export function parseConfirmationIdempotencyKey(
+  key: unknown
+): { appointmentId: string; channel: string; intent: string; startIso: string } | null {
+  if (typeof key !== "string") return null;
+  const parts = key.split(":");
+  // The start ISO string itself contains colons ("…T23:00:00.000Z"): rejoin the tail.
+  if (parts.length < 4) return null;
+  const [appointmentId, channel, intent, ...rest] = parts;
+  if (!appointmentId || !channel || !intent || rest.length === 0) return null;
+  return { appointmentId, channel, intent, startIso: rest.join(":") };
+}
+
 async function upsertAppointmentConfirmation(params: {
   orgId: string;
   appointmentId: string;
@@ -425,7 +451,7 @@ async function upsertAppointmentConfirmation(params: {
   // same appointment get separate rows (otherwise a cancellation upsert would
   // overwrite the confirmation row's provider_message_id, breaking delivery
   // tracking for the original confirmation).
-  const idempotencyKey = `${params.appointmentId}:${params.channel}:${params.intent}:${startIso}`;
+  const idempotencyKey = confirmationIdempotencyKey(params.appointmentId, params.channel, params.intent, startIso);
   const now = new Date().toISOString();
 
   const supabase = createAdminClient();
@@ -486,8 +512,10 @@ async function sendCallerSMS(params: {
   messageBody: string;
   isSpam?: boolean;
   appointment?: AppointmentContext;
+  /** SCRUM-597: the business owner asked for this text (the hourly cap is for automated ones). */
+  skipRateLimit?: boolean;
 }): Promise<SMSSendResult> {
-  const { orgId, callerPhone, messageType, messageBody, isSpam, appointment } = params;
+  const { orgId, callerPhone, messageType, messageBody, isSpam, appointment, skipRateLimit } = params;
 
   // SCRUM-264: global pause (see CALLER_SMS_ENABLED above). Still record a skipped
   // row so the dashboard shows the intended confirmation, just not sent.
@@ -508,9 +536,11 @@ async function sendCallerSMS(params: {
 
   // SCRUM-597: never text a number that can't take one. The AU numbering plan says
   // so for free: landlines (02/03/07/08) and 13/1300/1800 numbers are skipped and
-  // recorded as skipped_no_contact (there is no textable contact). NANP numbers
-  // can't be classified without a paid lookup, so they go on as before.
-  const planLine = numberingPlanLineType(callerPhone);
+  // recorded as skipped_no_contact (there is no textable contact). Stored numbers
+  // can be formatted ("+61 412 345 678", "(02) 9555 1234"), so the number is put in
+  // E.164 first. NANP numbers can't be classified without a paid lookup, so they go
+  // on as before.
+  const planLine = numberingPlanLineType(toNumberingPlanE164(callerPhone));
   if (planLine !== null && planLine !== "mobile") {
     if (appointment) {
       await upsertAppointmentConfirmation({
@@ -635,8 +665,9 @@ async function sendCallerSMS(params: {
     return { sent: false, status: "blocked_optout", reason: "caller_opted_out" };
   }
 
-  // 6. Rate limit check
-  if (await isRateLimited(callerPhone, messageType, orgId)) {
+  // 6. Rate limit check — not for a text the business owner asked for (SCRUM-597):
+  // the booking's own confirmation may have gone out minutes ago, about the old time.
+  if (!skipRateLimit && (await isRateLimited(callerPhone, messageType, orgId))) {
     await logSMSSend({
       orgId,
       callerPhone,
@@ -787,7 +818,9 @@ export async function sendAppointmentConfirmationSMS(
   // SCRUM-240 Phase 1: optional appointment tracking.
   // When provided, a row is written to appointment_confirmations so the
   // Twilio status webhook can update delivery state.
-  appointmentId?: string
+  appointmentId?: string,
+  // SCRUM-597: a text the business owner asked for skips the hourly cap.
+  options?: { skipRateLimit?: boolean }
 ): Promise<SMSSendResult> {
   const supabase = createAdminClient();
 
@@ -833,6 +866,7 @@ export async function sendAppointmentConfirmationSMS(
           intent: "confirmation",
         }
       : undefined,
+    skipRateLimit: options?.skipRateLimit === true,
   });
 }
 
@@ -850,7 +884,9 @@ export async function sendCancellationSMS(
   callerPhone: string,
   startTime: Date,
   timezone?: string,
-  appointmentId?: string
+  appointmentId?: string,
+  // SCRUM-597: a text the business owner asked for skips the hourly cap.
+  options?: { skipRateLimit?: boolean }
 ): Promise<SMSSendResult> {
   const supabase = createAdminClient();
 
@@ -896,5 +932,6 @@ export async function sendCancellationSMS(
           intent: "cancellation",
         }
       : undefined,
+    skipRateLimit: options?.skipRateLimit === true,
   });
 }

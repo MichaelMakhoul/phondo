@@ -12,6 +12,7 @@ const TZ = "Australia/Sydney";
 const A = "aaaaaaaa-0000-4000-8000-000000000001"; // cancelled
 const OLD = "aaaaaaaa-0000-4000-8000-000000000002"; // the leg a move replaced
 const NEW = "aaaaaaaa-0000-4000-8000-000000000003"; // the move's new leg
+const SINCE = new Date("2026-10-26T04:20:00Z"); // the session's start, less a margin
 
 type Res = { data: unknown; error: unknown };
 type Op = { table: string; calls: Array<[string, unknown[]]> };
@@ -24,7 +25,7 @@ function fake() {
       const op: Op = { table, calls: [] };
       ops.push(op);
       const b: any = {};
-      for (const m of ["select", "eq", "in", "order"]) b[m] = (...args: unknown[]) => { op.calls.push([m, args]); return b; };
+      for (const m of ["select", "eq", "in", "order", "gte"]) b[m] = (...args: unknown[]) => { op.calls.push([m, args]); return b; };
       b.then = (resolve: (v: Res) => unknown, reject?: (e: unknown) => unknown) =>
         Promise.resolve(queues[table]?.shift() ?? { data: [], error: null }).then(resolve, reject);
       return b;
@@ -46,7 +47,7 @@ const events = (rows: Array<[string, string]>) => ({ data: rows.map(([appointmen
 describe("buildOwnerRecap", () => {
   it("no events on the call: [] after one org- and call-scoped read of the audit trail", async () => {
     queues.appointment_events = [{ data: [], error: null }];
-    expect(await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ })).toEqual([]);
+    expect(await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE })).toEqual([]);
     expect(calls("appointment_events")).toEqual([
       ["select", ["appointment_id, event_type, created_at"]],
       ["eq", ["organization_id", ORG]],
@@ -67,7 +68,7 @@ describe("buildOwnerRecap", () => {
       { data: [{ id: OLD, start_time: "2026-10-27T22:00:00Z" }], error: null },
     ];
     queues.appointment_confirmations = [{ data: [], error: null }];
-    const items = await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ });
+    const items = await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE });
     expect(items).toEqual([
       { change: "cancelled", customer: "Michael Dunn", when: "Monday, October 26 at 12:30 PM", told: "not_told" },
       { change: "moved", customer: "Jane Smith", when: "Thursday, October 29 at 2:00 PM", from: "Wednesday, October 28 at 9:00 AM", told: "not_told" },
@@ -78,6 +79,9 @@ describe("buildOwnerRecap", () => {
     expect(calls("appointments", 1)).toContainEqual(["eq", ["organization_id", ORG]]);
     expect(calls("appointments", 1)).toContainEqual(["in", ["id", [OLD]]]);
     expect(calls("appointment_confirmations")).toContainEqual(["eq", ["organization_id", ORG]]);
+    // Only text attempts since the session started count (an earlier cancellation of a
+    // reinstated booking must not read as this change's text).
+    expect(calls("appointment_confirmations")).toContainEqual(["gte", ["last_attempt_at", SINCE.toISOString()]]);
   });
 
   it("whether the customer was told comes from the text log: the cancellation text on a cancel, the confirmation on a new leg", async () => {
@@ -89,6 +93,9 @@ describe("buildOwnerRecap", () => {
       ["skipped_disabled", { told: "not_texted", toldWhy: "customer texts are switched off" }],
       ["skipped_no_contact", { told: "not_texted", toldWhy: "no mobile number to text" }],
       ["opted_out", { told: "not_texted", toldWhy: "they've opted out of texts" }],
+      ["skipped_cap", { told: "not_texted", toldWhy: "another text went to them moments before, so this one was held back" }],
+      // 'pending' is only the column default (caller-sms always records an outcome): never "texted".
+      ["pending", { told: "not_texted", toldWhy: "we couldn't confirm the text went out" }],
       ["something_new", { told: "not_texted", toldWhy: "the text didn't go out" }],
     ];
     for (const [status, told] of statusCases) {
@@ -99,7 +106,7 @@ describe("buildOwnerRecap", () => {
         { appointment_id: A, idempotency_key: `${A}:sms:confirmation:2026-10-26T01:30:00.000Z`, status: "sent" },
         { appointment_id: A, idempotency_key: `${A}:sms:cancellation:2026-10-26T01:30:00.000Z`, status },
       ], error: null }];
-      const [item] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ }))!;
+      const [item] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }))!;
       expect(item, status).toMatchObject(told);
     }
   });
@@ -115,7 +122,7 @@ describe("buildOwnerRecap", () => {
       { appointment_id: NEW, idempotency_key: `${NEW}:email:confirmation:x`, status: "sent" },
       { appointment_id: NEW, idempotency_key: `${NEW}:sms:cancellation:x`, status: "sent" },
     ], error: null }];
-    const [item] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ }))!;
+    const [item] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }))!;
     expect(item.told).toBe("not_told");
     queues.appointment_events = [events([[NEW, "rescheduled"]])];
     queues.appointments = [
@@ -123,14 +130,14 @@ describe("buildOwnerRecap", () => {
       { data: [{ id: OLD, start_time: "2026-10-27T22:00:00Z" }], error: null },
     ];
     queues.appointment_confirmations = [{ data: [{ appointment_id: NEW, idempotency_key: `${NEW}:sms:confirmation:x`, status: "sent" }], error: null }];
-    const [texted] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ }))!;
+    const [texted] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }))!;
     expect(texted.told).toBe("texted");
   });
 
   it("customer names are flattened to one capped line (they are customer-written)", async () => {
     queues.appointment_events = [events([[A, "cancelled"]])];
     queues.appointments = [{ data: [{ id: A, attendee_name: "Jane\nSmith​" + "x".repeat(200), start_time: "2026-10-26T01:30:00Z", rescheduled_from_id: null }], error: null }];
-    const [item] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ }))!;
+    const [item] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }))!;
     expect(item.customer.startsWith("Jane Smith")).toBe(true);
     expect(item.customer).not.toMatch(/[\n​]/);
     expect(Array.from(item.customer).length).toBeLessThanOrEqual(80);
@@ -139,7 +146,7 @@ describe("buildOwnerRecap", () => {
   it("a booking made on the call is 'booked'; an audited row that can't be read is left out and logged", async () => {
     queues.appointment_events = [events([[A, "created"], [NEW, "cancelled"]])];
     queues.appointments = [{ data: [{ id: A, attendee_name: "Bob", start_time: "2026-10-26T01:30:00Z", rescheduled_from_id: null }], error: null }];
-    const items = await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ });
+    const items = await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE });
     expect(items).toEqual([{ change: "booked", customer: "Bob", when: "Monday, October 26 at 12:30 PM", told: "not_told" }]);
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("audited appointment is missing"), expect.objectContaining({ appointmentId: NEW }));
   });
@@ -155,7 +162,7 @@ describe("buildOwnerRecap", () => {
         ],
         appointment_confirmations: [failAt === "appointment_confirmations" ? fail : { data: [], error: null }],
       };
-      expect(await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ }), failAt).toBeNull();
+      expect(await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }), failAt).toBeNull();
     }
     expect(console.error).toHaveBeenCalledTimes(4);
   });

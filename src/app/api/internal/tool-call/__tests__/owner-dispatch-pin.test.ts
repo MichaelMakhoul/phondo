@@ -186,3 +186,16 @@ describe("owner handler faults (SCRUM-586 controller override)", () => {
     expect(Sentry.captureException).toHaveBeenCalledWith(boom, expect.anything());
   });
 });
+
+// SCRUM-597 (test lens G1): a dropped notify_customer at dispatch would leave every
+// owner change asking "let them know?" forever — toHaveBeenCalledWith treats a
+// missing key as undefined, so the plucking is pinned on the exact value.
+describe("SCRUM-597: notify_customer reaches both owner write handlers", () => {
+  it("is plucked as a string on reschedule and cancel; a non-string arrives as undefined", async () => {
+    await post({ ...base, ownerVerified: true, functionName: "owner_reschedule_appointment", arguments: { appointment_id: APPT, new_datetime: "2026-10-20T09:00", confirmed: true, notify_customer: "text" } });
+    await post({ ...base, ownerVerified: true, functionName: "owner_cancel_appointment", arguments: { appointment_id: APPT, confirmed: true, notify_customer: "none" } });
+    await post({ ...base, ownerVerified: true, functionName: "owner_cancel_appointment", arguments: { appointment_id: APPT, confirmed: true, notify_customer: ["text"] } });
+    expect(vi.mocked(handleOwnerRescheduleAppointment).mock.calls[0][1].notify_customer).toBe("text");
+    expect(vi.mocked(handleOwnerCancelAppointment).mock.calls.map((c) => c[1].notify_customer)).toEqual(["none", undefined]);
+  });
+});

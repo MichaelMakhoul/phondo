@@ -18,6 +18,8 @@ const db = {
   claim: { data: [{ id: "c" }], error: null } as Res,
   updates: [] as Array<{ payload: any; filters: Array<[string, unknown[]]> }>,
   callsReads: 0,
+  storedError: null as unknown, // the route's first metadata read
+  tzError: null as unknown,
 };
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: vi.fn(() => ({
@@ -32,10 +34,10 @@ vi.mock("@/lib/supabase/admin", () => ({
         single: async () => {
           if (table === "calls") {
             db.callsReads += 1;
-            if (db.callsReads === 1) return { data: { metadata: db.stored }, error: null };
+            if (db.callsReads === 1) return db.storedError ? { data: null, error: db.storedError } : { data: { metadata: db.stored }, error: null };
             return db.freshError ? { data: null, error: db.freshError } : { data: { metadata: db.fresh }, error: null };
           }
-          if (table === "organizations") return { data: { timezone: "Australia/Perth", country: "AU" }, error: null };
+          if (table === "organizations") return db.tzError ? { data: null, error: db.tzError } : { data: { timezone: "Australia/Perth", country: "AU" }, error: null };
           return { data: null, error: null };
         },
         then: (resolve: (v: Res) => unknown) => {
@@ -96,6 +98,8 @@ beforeEach(() => {
   db.claim = { data: [{ id: CALL_ID }], error: null };
   db.updates = [];
   db.callsReads = 0;
+  db.storedError = null;
+  db.tzError = null;
   vi.mocked(buildOwnerRecap).mockResolvedValue(ITEMS as any);
   vi.mocked(sendOwnerAssistantRecapNotification).mockResolvedValue("sent");
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -108,12 +112,16 @@ describe("call-completed step 4d: the owner-assistant recap", () => {
     expect(res.status).toBe(200);
     expect(sendOwnerAssistantRecapNotification).not.toHaveBeenCalled(); // not before the response
     await runAfter();
-    expect(buildOwnerRecap).toHaveBeenCalledWith(expect.anything(), { organizationId: "org-1", callId: CALL_ID, timezone: "Australia/Perth" });
+    expect(buildOwnerRecap).toHaveBeenCalledWith(expect.anything(), { organizationId: "org-1", callId: CALL_ID, timezone: "Australia/Perth", since: expect.any(Date) });
+    // Text attempts from before the session never count: since = the call's start (105 s ago) less a 10-minute margin.
+    const since = vi.mocked(buildOwnerRecap).mock.calls[0][1].since.getTime();
+    const expected = Date.now() - 105_000 - 10 * 60_000;
+    expect(Math.abs(since - expected)).toBeLessThan(5_000);
     const claim = db.updates.find((u) => u.filters.some(([m]) => m === "is"));
     expect(claim?.filters).toEqual(expect.arrayContaining([["eq", ["id", CALL_ID]], ["is", ["metadata->>owner_recap_emailed_at", null]], ["select", ["id"]]]));
     expect(claim?.payload.metadata).toMatchObject({ call_type: "owner", channel: "web", owner_recap_emailed_at: expect.any(String) });
     expect(sendOwnerAssistantRecapNotification).toHaveBeenCalledTimes(1);
-    expect(sendOwnerAssistantRecapNotification).toHaveBeenCalledWith({ organizationId: "org-1", callId: CALL_ID, channel: "web", items: ITEMS });
+    expect(sendOwnerAssistantRecapNotification).toHaveBeenCalledWith({ organizationId: "org-1", callId: CALL_ID, channel: "web", items: ITEMS, timesInDefaultZone: false });
     expect(console.log).toHaveBeenCalledWith("[Internal] Owner recap email:", { callId: CALL_ID, organizationId: "org-1", outcome: "sent" });
   });
 
@@ -193,5 +201,24 @@ describe("call-completed step 4d: the owner-assistant recap", () => {
     await POST(ended({ callId: undefined }));
     await runAfter();
     expect(buildOwnerRecap).not.toHaveBeenCalled();
+  });
+});
+
+describe("call-completed: SCRUM-597 review fixes", () => {
+  it("an unreadable org timezone still sends the recap — in Sydney time, and says so", async () => {
+    db.tzError = { code: "57014" };
+    await POST(ended());
+    await runAfter();
+    expect(buildOwnerRecap).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ timezone: "Australia/Sydney" }));
+    expect(sendOwnerAssistantRecapNotification).toHaveBeenCalledWith(expect.objectContaining({ timesInDefaultZone: true }));
+  });
+
+  it("an unreadable call row pages CALL_METADATA_READ_FAILED (an owner call would lose its recap) and the route still answers", async () => {
+    db.storedError = { code: "57014", message: "timeout" };
+    const res = await POST(ended());
+    expect(res.status).toBe(200);
+    await runAfter();
+    expect(pageSentry).toHaveBeenCalledWith(expect.objectContaining({ reason: SENTRY_REASONS.CALL_METADATA_READ_FAILED, level: "error", extras: { callId: CALL_ID, organizationId: "org-1" } }));
+    expect(buildOwnerRecap).not.toHaveBeenCalled(); // it can't tell this was an owner call
   });
 });

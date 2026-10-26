@@ -187,6 +187,9 @@ async function emailOwnerPinLockOnce(
   return outcome;
 }
 
+/** SCRUM-597: how far before the call's start a text attempt still counts for its recap. */
+const RECAP_SINCE_MARGIN_MS = 10 * 60_000;
+
 /**
  * SCRUM-597: claim the call's recap email, once. The write is conditional — it
  * only lands while metadata.owner_recap_emailed_at is absent — so a retried
@@ -234,16 +237,17 @@ async function claimOwnerRecap(supabase: ReturnType<typeof createAdminClient>, c
  */
 async function emailOwnerRecapOnce(
   supabase: ReturnType<typeof createAdminClient>,
-  call: { callId: string; organizationId: string; channel: "web" | "phone" }
+  call: { callId: string; organizationId: string; channel: "web" | "phone"; since: Date }
 ): Promise<"sent" | "skipped" | "no_changes" | "claimed_elsewhere" | "failed"> {
-  const { callId, organizationId, channel } = call;
+  const { callId, organizationId, channel, since } = call;
   try {
-    const timezone = (await readOrgTimezoneOnce(supabase, organizationId, "the owner recap email")) || "Australia/Sydney";
-    const items = await buildOwnerRecap(supabase, { organizationId, callId, timezone });
+    const orgTimezone = await readOrgTimezoneOnce(supabase, organizationId, "the owner recap email");
+    const timezone = orgTimezone || "Australia/Sydney";
+    const items = await buildOwnerRecap(supabase, { organizationId, callId, timezone, since });
     if (items === null) throw new Error("the call's changes could not be read");
     if (items.length === 0) return "no_changes";
     if (!(await claimOwnerRecap(supabase, callId))) return "claimed_elsewhere";
-    return await sendOwnerAssistantRecapNotification({ organizationId, callId, channel, items });
+    return await sendOwnerAssistantRecapNotification({ organizationId, callId, channel, items, timesInDefaultZone: !orgTimezone });
   } catch (err) {
     pageSentry({
       service: "next-api",
@@ -332,6 +336,16 @@ export async function POST(request: Request) {
     if (fetchError) {
       console.error("[Internal] Failed to fetch existing call metadata — owner-call and PIN-lockout-email checks skipped:", {
         callId, error: fetchError,
+      });
+      // SCRUM-597: an OWNER call read this way runs the customer pipeline and loses
+      // its recap email (what the assistant changed) — so this pages, not just logs.
+      pageSentry({
+        service: "next-api",
+        reason: SENTRY_REASONS.CALL_METADATA_READ_FAILED,
+        level: "error",
+        err: fetchError,
+        message: "call metadata unreadable — an owner call would run the customer pipeline and lose its recap email",
+        extras: { callId, organizationId },
       });
     } else {
       storedMetadata = (existingCall?.metadata || {}) as Record<string, unknown>;
@@ -637,7 +651,13 @@ export async function POST(request: Request) {
   // failure pages and never fails the route. Reads the DB row's metadata, never
   // the payload.
   if (isOwnerCall && callId) {
-    const recapCall = { callId, organizationId, channel: storedMetadata?.channel === "web" ? ("web" as const) : ("phone" as const) };
+    const recapCall = {
+      callId,
+      organizationId,
+      channel: storedMetadata?.channel === "web" ? ("web" as const) : ("phone" as const),
+      // Text attempts from before the session never count (a margin covers setup).
+      since: new Date(Date.now() - durationSeconds * 1000 - RECAP_SINCE_MARGIN_MS),
+    };
     runAfterResponse(async () => {
       const outcome = await emailOwnerRecapOnce(supabase, recapCall);
       console.log("[Internal] Owner recap email:", { callId, organizationId, outcome });

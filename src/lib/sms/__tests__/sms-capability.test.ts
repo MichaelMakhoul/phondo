@@ -22,7 +22,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   }),
 }));
 
-import { numberingPlanLineType, getTextCapability, lookupLineTypeViaTwilio } from "../sms-capability";
+import { numberingPlanLineType, toNumberingPlanE164, getTextCapability, lookupLineTypeViaTwilio } from "../sms-capability";
 
 const ORG = "11111111-2222-4333-a444-555555555555";
 const ON = { smsEnabled: true, isOptedOut: async () => false };
@@ -48,6 +48,12 @@ describe("numberingPlanLineType (free, no I/O)", () => {
     expect(numberingPlanLineType("+61130055")).toBe("other"); // a 13 number
     expect(numberingPlanLineType("+611300123456")).toBe("other"); // 1300
     expect(numberingPlanLineType("+611800123456")).toBe("other"); // 1800
+  });
+
+  it("only a real E.164 string is classified: a formatted or empty number is null, never 'other'", () => {
+    for (const n of ["+61 412 345 678", "+61412345678 ", "0412 345 678", "", null, undefined]) {
+      expect(numberingPlanLineType(n as any), JSON.stringify(n)).toBeNull();
+    }
   });
 
   it("NANP and other countries can't be told from the number: null", () => {
@@ -169,5 +175,25 @@ describe("lookupLineTypeViaTwilio", () => {
     expect(await lookupLineTypeViaTwilio("+14155551234")).toBe("error");
     lookupFetch.mockRejectedValueOnce(new Error("20003 auth"));
     expect(await lookupLineTypeViaTwilio("+14155551234")).toBe("error");
+  });
+});
+
+describe("toNumberingPlanE164 (what sendCallerSMS classifies)", () => {
+  it("compacts international form, reads a national number as AU, and leaves NANP national numbers alone", () => {
+    expect(toNumberingPlanE164("+61 412 345 678")).toBe("+61412345678");
+    expect(toNumberingPlanE164("+61 (2) 9555-1234")).toBe("+61295551234");
+    expect(toNumberingPlanE164("+61 13 13 13")).toBe("+61131313");
+    expect(toNumberingPlanE164("0412 345 678")).toBe("+61412345678");
+    expect(toNumberingPlanE164("(02) 9555 1234")).toBe("+61295551234");
+    expect(toNumberingPlanE164("+1 (415) 555-1234")).toBe("+14155551234");
+    expect(toNumberingPlanE164("415-555-1234")).toBeNull();
+    expect(toNumberingPlanE164("614-555-1234")).toBeNull(); // a Columbus, OH number, not +61
+    for (const n of ["", "call me", null, undefined]) expect(toNumberingPlanE164(n as any)).toBeNull();
+  });
+  it("feeds numberingPlanLineType the right class", () => {
+    expect(numberingPlanLineType(toNumberingPlanE164("+61 412 345 678"))).toBe("mobile");
+    expect(numberingPlanLineType(toNumberingPlanE164("(02) 9555 1234"))).toBe("landline");
+    expect(numberingPlanLineType(toNumberingPlanE164("+61 13 13 13"))).toBe("other");
+    expect(numberingPlanLineType(toNumberingPlanE164("415-555-1234"))).toBeNull();
   });
 });

@@ -130,3 +130,14 @@ describe("sendOwnerAssistantRecapNotification", () => {
     await expect(sendOwnerAssistantRecapNotification({ organizationId: ORG, callId: CALL, channel: "web", items: ITEMS })).rejects.toBeInstanceOf(NotificationDeliveryError);
   });
 });
+
+describe("SCRUM-597: an unreadable org timezone", () => {
+  it("says the times are in Sydney time when the org's zone couldn't be read — and only then", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
+    await sendOwnerAssistantRecapNotification({ organizationId: ORG, callId: CALL, channel: "web", items: ITEMS, timesInDefaultZone: true });
+    await sendOwnerAssistantRecapNotification({ organizationId: ORG, callId: CALL, channel: "web", items: ITEMS });
+    const [withNote, without] = sent();
+    expect(withNote.html).toContain("Times are shown in Sydney time — we couldn&#39;t read your business&#39;s timezone.".replace(/&#39;/g, "'"));
+    expect(without.html).not.toContain("Times are shown in Sydney time");
+  });
+});

@@ -18,7 +18,7 @@ vi.mock("@/lib/utils/after-response", () => ({ runAfterResponse: vi.fn() }));
 vi.mock("@/lib/voice-cache/invalidate", () => ({ invalidateVoiceScheduleCache: vi.fn() }));
 vi.mock("@/lib/appointments/events", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/appointments/events")>();
-  return { ...actual, recordAppointmentEvent: vi.fn(async () => {}) };
+  return { ...actual, recordAppointmentEvent: vi.fn(async () => true) };
 });
 vi.mock("@/lib/calendar/reschedule-leg", () => ({ performRescheduleLeg: vi.fn() }));
 vi.mock("@/lib/calendar/tool-handlers", async (importOriginal) => {
@@ -31,6 +31,7 @@ vi.mock("@/lib/calendar/tool-handlers", async (importOriginal) => {
 });
 vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn(), captureMessage: vi.fn(), withScope: vi.fn() }));
 vi.mock("@/lib/sms/caller-sms", () => ({ sendCancellationSMS: vi.fn(), sendAppointmentConfirmationSMS: vi.fn() }));
+vi.mock("@/lib/observability/page-sentry", () => ({ pageSentry: vi.fn() }));
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
@@ -41,6 +42,8 @@ import { performRescheduleLeg } from "@/lib/calendar/reschedule-leg";
 import { cancelSingleAppointment, handleCheckAvailability } from "@/lib/calendar/tool-handlers";
 import { serviceTypeQuestion } from "@/lib/calendar/service-type-question";
 import { sendCancellationSMS, sendAppointmentConfirmationSMS } from "@/lib/sms/caller-sms";
+import { pageSentry } from "@/lib/observability/page-sentry";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import { handleOwnerRescheduleAppointment, handleOwnerCancelAppointment } from "../tool-handlers";
 
 type Res = { data: unknown; error: { message?: string; code?: string } | null };
@@ -216,7 +219,7 @@ describe("owner_reschedule_appointment", () => {
     }));
     expect(r.message).toContain("Moved Jane Smith");
     expect(r.message).toContain("Saturday, October 17 at 9:00 AM");
-    expect(r.message).toContain("As you asked, Jane Smith hasn't been told.");
+    expect(r.message).toContain("I haven't let Jane Smith know.");
     expect(r.data).toEqual({
       outcome: "rescheduled",
       appointment_id: APPT,
@@ -480,7 +483,7 @@ describe("owner_cancel_appointment", () => {
       appointmentId: APPT, organizationId: ORG, eventType: "cancelled", actorType: "staff", actorId: null, channel: "voice", callId: CALL, note: "customer rang to cancel",
     }));
     expect(r.message).toContain("Cancelled Jane Smith's job on Friday, October 16 at 10:00 AM");
-    expect(r.message).toContain("As you asked, Jane Smith hasn't been told.");
+    expect(r.message).toContain("I haven't let Jane Smith know.");
     expect(r.data).toEqual({
       outcome: "cancelled", appointment_id: APPT, customer_name: "Jane Smith", customer_phone: "+61412345678",
       when: "Friday, October 16 at 10:00 AM", customer_contact: { method: "none", status: "not_requested" }, customer_notified: false,
@@ -694,36 +697,51 @@ describe("SCRUM-597: every change asks whether to let the customer know", () => 
     db.queues.organizations = [AU_ORG];
     vi.mocked(sendCancellationSMS).mockReset();
     vi.mocked(sendAppointmentConfirmationSMS).mockReset();
+    vi.mocked(recordAppointmentEvent).mockResolvedValue(true);
   });
   afterEach(() => {
     delete process.env.CALLER_SMS_ENABLED;
   });
 
-  it("texts off (production today): the read-back says why it can't tell them and offers only 'none'", async () => {
+  it("texts off (production today): the read-back says it can't tell them and offers the number; only 'none' is offered", async () => {
     const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: false }, ctx);
     expect(r.data).toMatchObject({
-      outcome: "needs_confirmation", contact_options: ["none"], contact_note: "Texts to customers are switched off for now.", customer_notified: false,
+      outcome: "needs_confirmation", contact_options: ["none"], contact_note: "Texting customers isn't available yet.", customer_notified: false,
     });
     expect(r.message).toContain("cancel Jane Smith's job on Friday, October 16 at 10:00 AM");
-    expect(r.message).toContain("You can't let Jane Smith know yourself (Texts to customers are switched off for now)");
-    expect(r.message).toContain('notify_customer is "none"');
+    expect(r.message).toContain("You can't let Jane Smith know yourself (Texting customers isn't available yet): say so in a few words and offer to read out their number after the change.");
+    expect(r.message).toContain('confirmed=true and notify_customer "none"');
     expect(cancelSingleAppointment).not.toHaveBeenCalled();
   });
 
-  it("texts on and a mobile: the move's read-back offers a text or leave it, after an org-scoped opt-out read", async () => {
+  it("texts on and a mobile: the move's read-back offers a text or not telling them (not the ambiguous 'leave it'), after an org-scoped opt-out read", async () => {
     process.env.CALLER_SMS_ENABLED = "true";
     const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME }, ctx);
     expect(r.data).toMatchObject({ outcome: "needs_confirmation", contact_options: ["text", "none"] });
     expect((r.data as any).contact_note).toBeUndefined();
-    expect(r.message).toContain("ask whether to let Jane Smith know: by text, or leave it.");
-    expect(r.message).toContain('"text", "none"');
+    expect(r.message).toContain("In the same question, ask whether to let Jane Smith know: by text, or not tell them.");
+    expect(r.message).not.toMatch(/leave it/);
+    expect(r.message).toContain('notify_customer set to their answer: "text", "none"');
     const optOut = db.log.find((o) => o.table === "caller_sms_optouts");
     expect(optOut && filter(optOut, "eq")).toEqual([["phone_number", "+61412345678"], ["organization_id", ORG]]);
     expect(performRescheduleLeg).not.toHaveBeenCalled();
   });
 
+  it("with nothing to choose (texts off), a bare yes is the whole answer: the change happens, 'none' assumed — no second question", async () => {
+    const cancel = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true }, ctx);
+    expect(cancelSingleAppointment).toHaveBeenCalledTimes(1);
+    expect(cancel.data).toMatchObject({ outcome: "cancelled", customer_contact: { method: "none", status: "not_requested" }, customer_notified: false });
+    expect(cancel.message).toContain("Cancelled Jane Smith's job on Friday, October 16 at 10:00 AM. I haven't let Jane Smith know.");
+    queueBefore(1);
+    db.queues.organizations = [AU_ORG];
+    const move = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true, notify_customer: "garbage" as any }, ctx);
+    expect(performRescheduleLeg).toHaveBeenCalledTimes(1);
+    expect(move.data).toMatchObject({ outcome: "rescheduled", customer_contact: { method: "none", status: "not_requested" } });
+  });
+
   for (const tool of ["move", "cancel"] as const) {
-    it(`a ${tool} confirmed without a valid notify_customer changes NOTHING and asks the question first`, async () => {
+    it(`with a choice (texts on, a mobile), a ${tool} confirmed without a valid notify_customer changes NOTHING and asks the question`, async () => {
+      process.env.CALLER_SMS_ENABLED = "true";
       const invalid: unknown[] = [undefined, "", "sms", "yes", "Text", true];
       for (const notify_customer of invalid) {
         queueBefore(1);
@@ -732,8 +750,9 @@ describe("SCRUM-597: every change asks whether to let the customer know", () => 
           ? await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true, notify_customer: notify_customer as any }, ctx)
           : await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true, notify_customer: notify_customer as any }, ctx);
         expect(r.success).toBe(false);
-        expect(r.data).toMatchObject({ outcome: "needs_confirmation", contact_options: ["none"], customer_notified: false });
-        expect(r.message).toContain("Nothing has changed yet: the owner hasn't said whether to let Jane Smith know.");
+        expect(r.data).toMatchObject({ outcome: "needs_confirmation", contact_options: ["text", "none"], customer_notified: false });
+        // One question, ending on a question mark: the gate re-arms on this result, so the next confirm passes.
+        expect(r.message).toContain("Nothing has changed yet: the owner said yes but not whether to let Jane Smith know. Ask them now: should Jane Smith get a text, or not be told?");
       }
       expect(performRescheduleLeg).not.toHaveBeenCalled();
       expect(cancelSingleAppointment).not.toHaveBeenCalled();
@@ -749,24 +768,24 @@ describe("SCRUM-597: every change asks whether to let the customer know", () => 
     expect(r.data).toMatchObject({
       outcome: "cancelled", customer_contact: { method: "text", status: "not_sent", reason: "texts_paused" }, customer_notified: false,
     });
-    expect(r.message).toContain("I couldn't text Jane Smith: texts to customers are switched off for now.");
+    expect(r.message).toContain("I couldn't text Jane Smith: texting customers isn't available yet.");
   });
 
-  it("'text' on a mobile with texts on: the cancellation text goes out for that booking, only after the cancel", async () => {
+  it("'text' on a mobile with texts on: the cancellation text goes out for that booking, past the hourly cap, only after the cancel", async () => {
     process.env.CALLER_SMS_ENABLED = "true";
     vi.mocked(sendCancellationSMS).mockResolvedValue({ sent: true, status: "sent" } as any);
     const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true, notify_customer: "text" }, ctx);
-    expect(sendCancellationSMS).toHaveBeenCalledWith(ORG, "+61412345678", new Date(BEFORE.start_time), TZ, APPT);
+    expect(sendCancellationSMS).toHaveBeenCalledWith(ORG, "+61412345678", new Date(BEFORE.start_time), TZ, APPT, { skipRateLimit: true });
     expect(vi.mocked(cancelSingleAppointment).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(sendCancellationSMS).mock.invocationCallOrder[0]);
     expect(r.data).toMatchObject({ outcome: "cancelled", customer_contact: { method: "text", status: "sent" }, customer_notified: true });
     expect(r.message).toContain("Cancelled Jane Smith's job on Friday, October 16 at 10:00 AM. I've texted Jane Smith to let them know.");
   });
 
-  it("'text' on a move: the NEW time's confirmation goes out for the NEW leg, only after the move", async () => {
+  it("'text' on a move: the NEW time's confirmation goes out for the NEW leg, past the hourly cap, only after the move", async () => {
     process.env.CALLER_SMS_ENABLED = "true";
     vi.mocked(sendAppointmentConfirmationSMS).mockResolvedValue({ sent: true, status: "sent" } as any);
     const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true, notify_customer: "text" }, ctx);
-    expect(sendAppointmentConfirmationSMS).toHaveBeenCalledWith(ORG, "+61412345678", new Date("2026-10-16T22:00:00.000Z"), TZ, undefined, NEW_LEG);
+    expect(sendAppointmentConfirmationSMS).toHaveBeenCalledWith(ORG, "+61412345678", new Date("2026-10-16T22:00:00.000Z"), TZ, undefined, NEW_LEG, { skipRateLimit: true });
     expect(vi.mocked(performRescheduleLeg).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(sendAppointmentConfirmationSMS).mock.invocationCallOrder[0]);
     expect(sendCancellationSMS).not.toHaveBeenCalled(); // a move never says "cancelled"
     expect(r.data).toMatchObject({ outcome: "rescheduled", customer_contact: { method: "text", status: "sent" }, customer_notified: true });
@@ -810,5 +829,73 @@ describe("SCRUM-597: every change asks whether to let the customer know", () => 
     const orgReads = db.log.filter((o) => o.table === "organizations");
     expect(orgReads).toHaveLength(1);
     expect(filter(orgReads[0], "select")).toEqual([["timezone, country"]]);
+  });
+
+  it("a change whose audit row failed pages OWNER_CHANGE_NOT_AUDITED (the owner's recap would miss it) — and still reports the change", async () => {
+    vi.mocked(recordAppointmentEvent).mockResolvedValueOnce(false);
+    const cancel = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true, notify_customer: "none" }, ctx);
+    expect(cancel.data).toMatchObject({ outcome: "cancelled" });
+    expect(pageSentry).toHaveBeenCalledWith(expect.objectContaining({
+      reason: SENTRY_REASONS.OWNER_CHANGE_NOT_AUDITED, level: "error",
+      extras: { organizationId: ORG, callId: CALL, appointmentId: APPT, change: "cancelled" },
+    }));
+    vi.mocked(pageSentry).mockClear();
+    queueBefore(1);
+    db.queues.organizations = [AU_ORG];
+    vi.mocked(recordAppointmentEvent).mockResolvedValueOnce(false);
+    await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true, notify_customer: "none" }, ctx);
+    expect(pageSentry).toHaveBeenCalledWith(expect.objectContaining({ extras: expect.objectContaining({ appointmentId: NEW_LEG, change: "rescheduled" }) }));
+    vi.mocked(pageSentry).mockClear();
+    queueBefore(1);
+    db.queues.organizations = [AU_ORG];
+    await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true, notify_customer: "none" }, ctx);
+    expect(pageSentry).not.toHaveBeenCalled(); // audited: no page
+  });
+});
+
+// SCRUM-597 (test lens N2-N4): edges the first round of tests didn't reach.
+describe("SCRUM-597: contact edge cases", () => {
+  const AU = { data: { timezone: TZ, country: "AU" }, error: null };
+  const US = { data: { timezone: TZ, country: "US" }, error: null };
+  beforeEach(() => {
+    db.queues.organizations = [AU];
+    vi.mocked(sendCancellationSMS).mockReset();
+    vi.mocked(sendAppointmentConfirmationSMS).mockReset();
+  });
+  afterEach(() => {
+    delete process.env.CALLER_SMS_ENABLED;
+  });
+
+  it("A: 'text' on a move that can't go out: the move happens, customer_notified stays false, and the result says why", async () => {
+    const off = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true, notify_customer: "text" }, ctx);
+    expect(sendAppointmentConfirmationSMS).not.toHaveBeenCalled();
+    expect(off.data).toMatchObject({ outcome: "rescheduled", customer_contact: { method: "text", status: "not_sent", reason: "texts_paused" }, customer_notified: false });
+    process.env.CALLER_SMS_ENABLED = "true";
+    queueBefore(1);
+    db.queues.organizations = [AU];
+    vi.mocked(sendAppointmentConfirmationSMS).mockResolvedValueOnce({ sent: false, status: "skipped", reason: "org_disabled" } as any);
+    const refused = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true, notify_customer: "text" }, ctx);
+    expect(refused.data).toMatchObject({ customer_contact: { method: "text", status: "not_sent", reason: "org_disabled" }, customer_notified: false });
+    expect(refused.message).toContain("customer texts are turned off in your settings");
+  });
+
+  it("B: texts on — the cancel's read-back offers a text for a mobile, and only 'none' (with the reason) for a landline", async () => {
+    process.env.CALLER_SMS_ENABLED = "true";
+    db.queues.appointments = [{ data: BEFORE, error: null }, { data: { ...BEFORE, attendee_phone: "(02) 9555 1234" }, error: null }];
+    db.queues.organizations = [AU, AU];
+    const mobile = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT }, ctx);
+    expect(mobile.data).toMatchObject({ outcome: "needs_confirmation", contact_options: ["text", "none"] });
+    const landline = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT }, ctx);
+    expect(landline.data).toMatchObject({ contact_options: ["none"], contact_note: "Their number is a landline, so it can't take a text." });
+    expect(cancelSingleAppointment).not.toHaveBeenCalled();
+  });
+
+  it("C: the org's own country normalises the number — a national-format AU mobile is textable for an AU org, not a US one", async () => {
+    process.env.CALLER_SMS_ENABLED = "true";
+    const national = { data: { ...BEFORE, attendee_phone: "0412 345 678" }, error: null };
+    db.queues.appointments = [national, national];
+    db.queues.organizations = [AU, US];
+    expect((await handleOwnerCancelAppointment(ORG, { appointment_id: APPT }, ctx)).data).toMatchObject({ contact_options: ["text", "none"] });
+    expect((await handleOwnerCancelAppointment(ORG, { appointment_id: APPT }, ctx)).data).toMatchObject({ contact_options: ["none"], contact_note: "There's no mobile number on this booking." });
   });
 });

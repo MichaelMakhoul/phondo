@@ -4,7 +4,7 @@
 // Every step fails closed: when in doubt, no text.
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getTwilioClient } from "@/lib/twilio/client";
-import { parsePhoneToE164, type SupportedCountry } from "@/lib/phone/normalize";
+import { isE164, parsePhoneToE164, type SupportedCountry } from "@/lib/phone/normalize";
 
 export type LineType = "mobile" | "landline" | "other";
 
@@ -15,13 +15,28 @@ export type LineType = "mobile" | "landline" | "other";
  * under +61 (13/1300/1800, 05, satellite…) is "other". NANP (+1) mixes mobiles and
  * landlines in every area code, so it needs a carrier lookup (null here).
  */
-export function numberingPlanLineType(e164: string): LineType | null {
-  if (!e164.startsWith("+61")) return null;
+export function numberingPlanLineType(e164: string | null | undefined): LineType | null {
+  // Only a real E.164 string is classified: "+61 412 345 678" is a mobile written
+  // with spaces, not an "other" number (toNumberingPlanE164 cleans it first).
+  if (!isE164(e164) || !e164.startsWith("+61")) return null;
   const national = /^\+61(\d{9})$/.exec(e164)?.[1];
   if (!national) return "other";
   if (national[0] === "4") return "mobile";
   if ("2378".includes(national[0])) return "landline";
   return "other";
+}
+
+/**
+ * A stored number in E.164 for numberingPlanLineType, or null. International form
+ * with punctuation ("+61 412 345 678", "+61 (2) 9555-1234") is compacted; a national
+ * number ("0412 345 678", "(02) 9555 1234") is read as AU, the only plan classified
+ * for free — a NANP national number doesn't parse as AU, so it stays unclassified.
+ */
+export function toNumberingPlanE164(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const compact = raw.replace(/[\s().-]/g, "");
+  if (isE164(compact)) return compact;
+  return parsePhoneToE164(raw, "AU");
 }
 
 /** Why a customer can't be texted (the order checks run in). */

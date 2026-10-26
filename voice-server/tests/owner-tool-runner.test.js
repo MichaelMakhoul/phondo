@@ -1414,7 +1414,7 @@ describe("SCRUM-597: the customer-contact sentence, the stored summary and the i
       " I've texted Dr. J. Smith to let them know.",
       " I couldn't text Dr. J. Smith: their number is a landline. I can read you their number if you want to let them know.",
       " I can't call customers yet, so Dr. J. Smith hasn't been told. I can read you their number if you want to let them know.",
-      " As you asked, Dr. J. Smith hasn't been told.",
+      " I haven't let Dr. J. Smith know. I can read you their number if you want to tell them yourself.",
     ]) {
       assert.equal(describeOwnerToolCall("owner_cancel_appointment", {}, change + tail, true), change, tail);
     }
@@ -1431,7 +1431,7 @@ describe("SCRUM-597: the customer-contact sentence, the stored summary and the i
   it("the stored summary carries the customer outcome per change", () => {
     const audit = [
       { name: "owner_list_appointments", successful: true, ownerDetail: "Checked today's jobs" },
-      { name: "owner_cancel_appointment", successful: true, ownerDetail: describeOwnerToolCall("owner_cancel_appointment", {}, "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM. As you asked, Bob Lee hasn't been told.", true, contact({ method: "none", status: "not_requested" })) },
+      { name: "owner_cancel_appointment", successful: true, ownerDetail: describeOwnerToolCall("owner_cancel_appointment", {}, "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM. I haven't let Bob Lee know. I can read you their number if you want to tell them yourself.", true, contact({ method: "none", status: "not_requested" })) },
     ];
     assert.equal(buildOwnerCallSummary(audit), "Owner call: Checked today's jobs; Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM — customer not told.");
   });
@@ -1457,5 +1457,33 @@ describe("SCRUM-597: the customer-contact sentence, the stored summary and the i
       assert.ok(told[0].includes(expected), `${JSON.stringify(customer_contact)} → ${told[0]}`);
       assert.ok(!told[0].includes("Bob Lee"), "never PR B's prose in a user-turn message");
     }
+  });
+});
+
+// SCRUM-597 (test lens N1): a confirm the owner did answer, which PR B sends back for
+// the notify_customer answer, re-arms the gate — so the owner's NEXT answer confirms
+// (two answers in all, never a third read-back).
+describe("SCRUM-597: a confirm PR B bounces back for notify_customer re-arms the gate", () => {
+  const prB597 = (name, args) => {
+    if (name !== "owner_cancel_appointment") return { message: "ok", data: {} };
+    if (args.confirmed !== true) return NEEDS_CONFIRMATION;
+    if (!["text", "call", "none"].includes(args.notify_customer)) {
+      return { success: false, message: "Nothing has changed yet: the owner said yes but not whether to let Bob Lee know. Ask them now: should Bob Lee get a text, or not be told?", data: { outcome: "needs_confirmation", appointment_id: "a1", contact_options: ["text", "none"], customer_notified: false } };
+    }
+    return { ...CANCELLED, data: { ...CANCELLED.data, customer_contact: { method: args.notify_customer, status: "not_requested" } } };
+  };
+  const go = (s, d, args) => captureConsole(() => runOwnerToolCall(s, { name: "owner_cancel_appointment", args }, d.deps));
+  it("yes without the answer → PR B asks → the owner answers → the confirm with notify_customer goes through (two owner answers)", async () => {
+    const s = makeSession(); const d = makeDeps(prB597);
+    await go(s, d, { appointment_id: "a1" }); // the read-back
+    assistantTurn(s); ownerSpeaks(s); // "yes"
+    await go(s, d, { appointment_id: "a1", confirmed: true }); // no notify_customer: PR B asks
+    assert.equal(d.calls.at(-1).args.confirmed, true, "the owner's yes passed the gate");
+    assistantTurn(s); ownerSpeaks(s); // the question, then "text him"
+    await go(s, d, { appointment_id: "a1", confirmed: true, notify_customer: "text" });
+    assert.equal(d.calls.at(-1).args.confirmed, true, "re-armed by PR B's question: the answer confirms");
+    assert.equal(d.calls.at(-1).args.notify_customer, "text");
+    assert.equal(auditFor(s, "owner_cancel_appointment").at(-1).successful, true);
+    assert.equal(auditFor(s, "owner_confirm_gate").length, 0, "never refused");
   });
 });

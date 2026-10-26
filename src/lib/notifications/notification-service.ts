@@ -893,6 +893,8 @@ export interface OwnerAssistantRecapData {
   channel: "web" | "phone";
   /** From buildOwnerRecap: the audit trail and the text log, never the AI's words. */
   items: OwnerRecapItem[];
+  /** The org's timezone couldn't be read, so the times are in Sydney time (said in the email). */
+  timesInDefaultZone?: boolean;
 }
 
 /**
@@ -921,13 +923,17 @@ export async function sendOwnerAssistantRecapNotification(
       to: email,
       subject: `Your assistant changed ${n} booking${n === 1 ? "" : "s"} — please check`,
       template: "owner-assistant-recap",
-      data: { items: data.items, channel: data.channel, callId: data.callId },
+      data: { items: data.items, channel: data.channel, callId: data.callId, timesInDefaultZone: data.timesInDefaultZone === true },
     }));
   }
   return settleChannels("owner-assistant-recap", data.organizationId, channels, droppedChannels);
 }
 
-/** One recap line about the customer (every value escaped by the caller's template). */
+/**
+ * One recap line about the customer. Exhaustive (no default): a new outcome — the
+ * call outcomes SCRUM-598 adds — must be worded here before it compiles, never
+ * shown as "not told".
+ */
 function recapToldLine(item: OwnerRecapItem): string {
   switch (item.told) {
     case "texted":
@@ -935,9 +941,29 @@ function recapToldLine(item: OwnerRecapItem): string {
     case "text_failed":
       return "The text to the customer failed — please let them know yourself.";
     case "not_texted":
-      return `Customer not texted${item.toldWhy ? ` (${escapeHtml(item.toldWhy)})` : ""}.`;
-    default:
+      return `Customer not texted (${escapeHtml(item.toldWhy)}).`;
+    case "not_told":
       return "Customer not told.";
+    default: {
+      const unhandled: never = item;
+      return unhandled;
+    }
+  }
+}
+
+/** What changed, worded (exhaustive, like recapToldLine). */
+function recapChangeLine(item: OwnerRecapItem, who: string, when: string): string {
+  switch (item.change) {
+    case "cancelled":
+      return `Cancelled ${who}'s job on ${when}`;
+    case "moved":
+      return `Moved ${who}'s job${item.from ? ` from ${escapeHtml(String(item.from))}` : ""} to ${when}`;
+    case "booked":
+      return `Booked ${who} for ${when}`;
+    default: {
+      const unhandled: never = item.change;
+      return unhandled;
+    }
   }
 }
 
@@ -945,12 +971,7 @@ function recapToldLine(item: OwnerRecapItem): string {
 function recapRow(item: OwnerRecapItem): string {
   const who = `<strong>${escapeHtml(String(item.customer ?? ""))}</strong>`;
   const when = escapeHtml(String(item.when ?? ""));
-  const what =
-    item.change === "cancelled"
-      ? `Cancelled ${who}'s job on ${when}`
-      : item.change === "moved"
-        ? `Moved ${who}'s job${item.from ? ` from ${escapeHtml(String(item.from))}` : ""} to ${when}`
-        : `Booked ${who} for ${when}`;
+  const what = recapChangeLine(item, who, when);
   return `<tr><td style="padding: 8px; border-bottom: 1px solid #ddd;">${what}<br/><span style="color: #6b7280; font-size: 13px;">${recapToldLine(item)}</span></td></tr>`;
 }
 
@@ -1580,6 +1601,7 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       <h2>What your assistant changed</h2>
       <p>Your assistant made ${items.length} change${items.length === 1 ? "" : "s"} ${where}. This list comes from your diary and our text log, not from what the AI said.</p>
       <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">${items.map(recapRow).join("")}</table>
+      ${d.timesInDefaultZone === true ? `<p style="color: #6b7280; font-size: 13px;">Times are shown in Sydney time — we couldn't read your business's timezone.</p>` : ""}
       <p><strong>If anything here isn't what you asked for</strong>, fix it in Appointments and let the customer know.</p>
       <p><a href="${base}/appointments">Open Appointments</a> &nbsp;·&nbsp; <a href="${base}/calls/${d.callId}">See the conversation</a></p>
     `;

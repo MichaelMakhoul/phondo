@@ -5,31 +5,37 @@
 // never from anything the AI said.
 import { formatWhen } from "./time";
 import { sanitizeCustomerText } from "./sanitize";
+import { parseConfirmationIdempotencyKey } from "@/lib/sms/caller-sms";
 
 export type RecapChange = "cancelled" | "moved" | "booked";
-export type RecapTold = "texted" | "text_failed" | "not_texted" | "not_told";
 
-export interface OwnerRecapItem {
+/** What happened to the customer. Only "not_texted" carries a reason (SCRUM-598 adds call outcomes). */
+export type RecapTold =
+  | { told: "texted" }
+  | { told: "text_failed" }
+  | { told: "not_texted"; toldWhy: string }
+  | { told: "not_told" };
+
+export type OwnerRecapItem = {
   change: RecapChange;
   customer: string;
   /** Spoken form (formatWhen) of the job's time: the cancelled time, the new time, or the booked time. */
   when: string;
   /** A move's old time (spoken form). */
   from?: string;
-  told: RecapTold;
-  /** Why a text didn't go out, in a few words (not_texted only). */
-  toldWhy?: string;
-}
+} & RecapTold;
 
 const NAME_MAX = 80;
 
 /** appointment_confirmations.status → what the recap says about the customer. */
-function toldFromStatus(status: unknown): { told: RecapTold; toldWhy?: string } {
+function toldFromStatus(status: unknown): RecapTold {
   switch (status) {
     case "sent":
     case "delivered":
-    case "pending":
       return { told: "texted" };
+    case "pending":
+      // Only the column default — caller-sms always records an outcome. Never over-claim.
+      return { told: "not_texted", toldWhy: "we couldn't confirm the text went out" };
     case "failed":
     case "undelivered":
       return { told: "text_failed" };
@@ -40,7 +46,8 @@ function toldFromStatus(status: unknown): { told: RecapTold; toldWhy?: string } 
     case "opted_out":
       return { told: "not_texted", toldWhy: "they've opted out of texts" };
     case "skipped_cap":
-      return { told: "not_texted", toldWhy: "they were texted about it moments before" };
+      // Never "already texted about this": the earlier text may have been about the old time.
+      return { told: "not_texted", toldWhy: "another text went to them moments before, so this one was held back" };
     default:
       return { told: "not_texted", toldWhy: "the text didn't go out" };
   }
@@ -53,13 +60,24 @@ function toldFromStatus(status: unknown): { told: RecapTold; toldWhy?: string } 
  *   them on the cancelled row and on a move's NEW leg); `created` is a booking made
  *   on the call (SCRUM-598's AI call to a customer).
  * - A move's old time comes from the leg it replaced (rescheduled_from_id).
- * - Whether the customer was told comes from appointment_confirmations: the
- *   cancellation text on a cancelled row, the confirmation text on a new leg or a
- *   booking (the intent is the third part of idempotency_key).
+ * - Whether the customer was told comes from appointment_confirmations attempted
+ *   since the session started: the cancellation text on a cancelled row, the
+ *   confirmation text on a new leg or a booking (the intent is in idempotency_key).
  */
 export async function buildOwnerRecap(
   supabase: any,
-  { organizationId, callId, timezone }: { organizationId: string; callId: string; timezone: string }
+  {
+    organizationId,
+    callId,
+    timezone,
+    since,
+  }: {
+    organizationId: string;
+    callId: string;
+    timezone: string;
+    /** Text attempts before this (an earlier cancellation of a reinstated booking…) never count. */
+    since: Date;
+  }
 ): Promise<OwnerRecapItem[] | null> {
   const { data: events, error: eventsError } = await supabase
     .from("appointment_events")
@@ -106,15 +124,17 @@ export async function buildOwnerRecap(
     .from("appointment_confirmations")
     .select("appointment_id, idempotency_key, status")
     .eq("organization_id", organizationId)
-    .in("appointment_id", ids);
+    .in("appointment_id", ids)
+    .gte("last_attempt_at", since.toISOString());
   if (textsError) {
     console.error("[OwnerRecap] appointment_confirmations read failed:", { organizationId, callId, error: textsError });
     return null;
   }
   const textFor = (appointmentId: string, intent: "cancellation" | "confirmation") =>
-    (texts ?? []).find(
-      (t: any) => t.appointment_id === appointmentId && String(t.idempotency_key ?? "").split(":")[2] === intent && String(t.idempotency_key ?? "").split(":")[1] === "sms"
-    );
+    (texts ?? []).find((t: any) => {
+      const key = parseConfirmationIdempotencyKey(t.idempotency_key);
+      return t.appointment_id === appointmentId && key?.channel === "sms" && key.intent === intent;
+    });
 
   const items: OwnerRecapItem[] = [];
   for (const e of rows) {
@@ -129,7 +149,7 @@ export async function buildOwnerRecap(
     const when = formatWhen(new Date(appt.start_time), timezone);
     const change: RecapChange = e.event_type === "cancelled" ? "cancelled" : e.event_type === "rescheduled" ? "moved" : "booked";
     const text = textFor(appt.id, change === "cancelled" ? "cancellation" : "confirmation");
-    const told = text ? toldFromStatus(text.status) : { told: "not_told" as const };
+    const told: RecapTold = text ? toldFromStatus(text.status) : { told: "not_told" };
     const prior = change === "moved" && appt.rescheduled_from_id ? priorById.get(appt.rescheduled_from_id) : undefined;
     items.push({
       change,

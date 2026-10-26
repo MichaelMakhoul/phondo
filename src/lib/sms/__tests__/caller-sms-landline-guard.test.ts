@@ -96,3 +96,32 @@ describe("sendCallerSMS: never text a number that can't take one", () => {
     expect(upserts[0].row.status).toBe("skipped_disabled");
   });
 });
+
+describe("sendCallerSMS: stored numbers come formatted", () => {
+  it("a mobile written with spaces is a mobile (not 'other'); formatted and national landlines are still skipped", async () => {
+    const { sendCancellationSMS } = await loadCallerSms(true);
+    const mobile = await sendCancellationSMS(ORG, "+61 412 345 678", START, "Australia/Sydney", APPT);
+    expect(mobile.reason).not.toBe("not_mobile");
+    for (const landline of ["+61 2 9555 1234", "(02) 9555 1234", "02 9555 1234 "]) {
+      upserts.length = 0;
+      expect(await sendCancellationSMS(ORG, landline, START, "Australia/Sydney", APPT), landline).toEqual({ sent: false, status: "skipped", reason: "not_mobile" });
+      expect(upserts[0]?.row.status).toBe("skipped_no_contact");
+    }
+    expect(twilioCreate).not.toHaveBeenCalled();
+  });
+
+  it("a NANP national number isn't read as AU, so it isn't guarded (later gates decide)", async () => {
+    const { sendCancellationSMS } = await loadCallerSms(true);
+    expect((await sendCancellationSMS(ORG, "415-555-1234", START, "Australia/Sydney", APPT)).reason).not.toBe("not_mobile");
+  });
+});
+
+// SCRUM-597 (test lens N5): the guard covers every customer text, not just booking texts.
+describe("sendCallerSMS: the landline guard on a missed-call text-back", () => {
+  it("a missed-call text-back to an AU landline is skipped as not_mobile and never sent", async () => {
+    const { sendMissedCallTextBack } = await loadCallerSms(true);
+    expect(await sendMissedCallTextBack(ORG, "+61295551234")).toEqual({ sent: false, status: "skipped", reason: "not_mobile" });
+    expect(twilioCreate).not.toHaveBeenCalled();
+    expect(upserts).toHaveLength(0); // no booking, no confirmation row
+  });
+});
