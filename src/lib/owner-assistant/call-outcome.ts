@@ -25,6 +25,8 @@ export type CallResult =
   | { kind: "failed_on_our_side" }
   /** A fax or another machine that isn't a voicemail answered; the call hung up (code lens N7). */
   | { kind: "machine_answered" }
+  /** The sweeper gave up: Twilio never told us how the call ended (tests lens — never "didn't go through"). */
+  | { kind: "unknown_end" }
   /** The conversation was cut off on our side (the phone system restarted mid-call, or its record couldn't be saved). */
   | { kind: "cut_off"; seconds: number }
   | { kind: "failed" };
@@ -95,6 +97,7 @@ export function callResultOf(row: { status?: unknown; outcome?: unknown; duratio
     return { kind: "answered", seconds, endedOnAFault: row.status === "failed", sureItWasAPerson: notify.answered_by === "human" };
   }
   if (typeof notify.answered_by === "string" && MACHINE_ANSWERS.has(notify.answered_by)) return { kind: "machine_answered" };
+  if (notify.swept === true && notify.twilio_status === "unknown") return { kind: "unknown_end" };
   switch (row.status) {
     case "no-answer":
       return { kind: "no_answer" };

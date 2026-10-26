@@ -1065,6 +1065,16 @@ describe("SCRUM-598: owner_call_customer", () => {
     expect(r.message).not.toContain(" — ");
   });
 
+  it("(test lens) an empty-string date is no date (the model sends \"\" for a field it doesn't use); a from-only window reads 'from'", async () => {
+    const r = await ask({ purpose: "find_new_time", earliest_date: "", latest_date: "", time_of_day: "morning" });
+    expect(checkCustomerCall).toHaveBeenCalledWith(expect.objectContaining({ purpose: "find_new_time", window: { earliest: null, latest: null, timeOfDay: "morning" } }));
+    expect(r.message).toContain("on Friday, October 16 at 10:00 AM — in the morning.");
+    queueBefore(1);
+    db.queues.organizations = [AU_ORG];
+    const from = await ask({ purpose: "find_new_time", earliest_date: "2026-10-19", latest_date: "" });
+    expect(from.message).toContain("on Friday, October 16 at 10:00 AM — from Monday, October 19.");
+  });
+
   it("a call that can't be made: not_available with the reason, and the number offered", async () => {
     vi.mocked(checkCustomerCall).mockResolvedValueOnce({ canCall: false, reason: "number_cap" });
     const r = await ask({});

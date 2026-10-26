@@ -1037,3 +1037,17 @@ describe("SCRUM-598 (test lens): the stream start registers the call and checks 
     assert.equal(live.has("CA-1"), false);
   });
 });
+
+describe("SCRUM-598 (test lens, rounds 1-3): timing constants the slice stubs hide", () => {
+  const timing = () => runSlice({ from: "const NOTIFY_VOICEMAIL_MARK = ", to: "const NOTIFY_WRAP_UP_NOTICE", scope: {}, names: ["NOTIFY_VOICEMAIL_MAX_MS", "NOTIFY_WRAP_UP_AT_MS"] });
+  it("the wrap-up notice lands at least a minute before Twilio's TimeLimit cuts the call", () => {
+    const { NOTIFY_WRAP_UP_AT_MS } = timing();
+    assert.ok(NOTIFY_WRAP_UP_AT_MS <= customerCall.CALL_TIME_LIMIT_SECONDS * 1000 - 60_000, `${NOTIFY_WRAP_UP_AT_MS} ms`);
+    assert.ok(NOTIFY_WRAP_UP_AT_MS >= 120_000, "not so early it cuts a normal call short");
+  });
+  it("a voicemail that is never spoken gives the line back within a minute", () => {
+    const { NOTIFY_VOICEMAIL_MAX_MS } = timing();
+    assert.ok(NOTIFY_VOICEMAIL_MAX_MS <= 60_000, `${NOTIFY_VOICEMAIL_MAX_MS} ms`);
+    assert.ok(NOTIFY_VOICEMAIL_MAX_MS >= 20_000, "long enough for a slow first turn");
+  });
+});

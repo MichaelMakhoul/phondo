@@ -33,6 +33,7 @@ const customerCall = vs("customer-call.js") as {
   markSetupFailed: (supabase: unknown, notify: Record<string, unknown>, reason: string) => Promise<boolean>;
   finishCustomerCall: (row: Record<string, unknown>, what: Record<string, unknown>, deps: Record<string, unknown>) => Promise<{ finalized: boolean; reason: string }>;
   parseTimeWindow: (v: unknown) => { window: unknown } | null;
+  sweepStuckCustomerCalls: (deps: Record<string, unknown>) => Promise<{ swept: number; checked: number; closed: number }>;
 };
 const runner = vs("owner-tool-runner.js") as {
   describeOwnerToolCall: (name: string, args: object, message: string, successful: boolean, data?: unknown) => string | null;
@@ -209,6 +210,34 @@ describe("website ↔ voice server: what a customer call's row says", () => {
     expect(await finish("ringing", { twilioStatus: "completed", durationSeconds: 3, answeredBy: "fax" })).toEqual({ kind: "machine_answered" });
     expect(await finish("queued", { twilioStatus: "no-answer", durationSeconds: 0 })).toEqual({ kind: "no_answer" });
     expect(await finish("queued", { twilioStatus: "busy", durationSeconds: 0 })).toEqual({ kind: "busy" });
+  });
+
+  it("a call the sweeper gives up on (Twilio never told us how it ended) reads 'we don't know', never 'didn't go through' (tests lens)", async () => {
+    const sid = `CA${"0123456789abcdef".repeat(2)}`;
+    const row = {
+      id: CALL, organization_id: ORG, assistant_id: "asst-1", vapi_call_id: `sh_${sid}`, caller_phone: "+61412345678", status: "ringing",
+      created_at: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+      metadata: { call_type: CUSTOMER_NOTIFY_CALL_TYPE, notify: customerCall.notifyMetadata(NOTIFY) },
+    };
+    const writes: Array<Record<string, any>> = [];
+    const chain = (result: unknown) => {
+      const b: any = {};
+      for (const m of ["select", "eq", "in", "like", "lt", "order", "limit"]) b[m] = () => b;
+      b.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => Promise.resolve(result).then(res, rej);
+      return b;
+    };
+    const db = {
+      from: () => ({
+        select: () => chain({ data: [row], error: null }),
+        update: (payload: Record<string, any>) => {
+          writes.push(payload);
+          return chain({ data: [{ id: CALL }], error: null });
+        },
+      }),
+    };
+    const done = await customerCall.sweepStuckCustomerCalls({ supabase: db, hasLiveSession: () => false, fetchTwilioCall: async () => null, notifyCallCompleted: async () => {} });
+    expect(done.swept).toBe(1);
+    expect(callResultOf({ status: writes[0].status, outcome: null, metadata: writes[0].metadata })).toEqual({ kind: "unknown_end" });
   });
   it("the owner tool names match, and owner_call_customer declares exactly the arguments the route reads", () => {
     expect([...OWNER_TOOL_NAMES]).toEqual([...ownerTools.OWNER_TOOL_NAMES]);

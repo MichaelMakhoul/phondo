@@ -103,6 +103,7 @@ describe("sendCustomerCallOutcomeNotification", () => {
       // Silent lens N7: an AMD "unknown" is never stated as a person answering.
       [{ kind: "answered", seconds: 70, endedOnAFault: false, sureItWasAPerson: false }, "they answered", "The call connected (the phone system couldn&#39;t tell whether a person or a voicemail answered — the summary says what happened) — the call lasted 1 min 10 s."],
       [{ kind: "machine_answered" }, "a fax or machine answered", "A fax or another machine answered, so nothing was said — the number on the booking may be wrong."],
+      [{ kind: "unknown_end" }, "we couldn't confirm how it went", "We couldn&#39;t get the phone system&#39;s record of this call, so we can&#39;t say how it went — check Calls before you ring them."],
       [{ kind: "no_answer" }, "no answer", "No answer, and no message left."],
       [{ kind: "busy" }, "their line was busy", "Their line was busy. Nothing was said."],
       [{ kind: "dropped" }, "they hung up straight away", "They picked up but the call ended before the assistant spoke."],
@@ -191,6 +192,7 @@ describe("sendCustomerCallOutcomeNotification", () => {
       ["move, wrong person", { purpose: "moved", result: answered, assistantOutcome: "wrong_person" }, `Jane Smith hasn't been told about this change${RING}`],
       ["cancel, answered, no outcome", { purpose: "cancelled", result: answered, assistantOutcome: null }, `Jane Smith may not have heard about this change${RING}`],
       ["move, cut off", { purpose: "moved", result: { kind: "cut_off", seconds: 40 }, assistantOutcome: null }, `Jane Smith may not have heard about this change${RING}`],
+      ["cancel, the sweeper never learnt how it ended", { purpose: "cancelled", result: { kind: "unknown_end" }, assistantOutcome: null }, `Jane Smith may not have heard about this change${RING}`],
       ["cancel, kind path ('other')", { purpose: "cancelled", result: answered, assistantOutcome: "other" }, `Jane Smith may not have heard about this change (see the assistant's note)${RING}`],
       ["cancel, do not call", { purpose: "cancelled", result: answered, assistantOutcome: "do_not_call" }, "Jane Smith may not have heard about this change (see the assistant's note), and they asked not to be called again."],
       ["move, message not confirmed played", { purpose: "moved", result: unplayed, assistantOutcome: null }, `Jane Smith may not have heard about this change (we couldn't confirm the message played to the end)${RING}`],

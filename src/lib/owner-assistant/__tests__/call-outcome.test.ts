@@ -71,6 +71,9 @@ describe("callResultOf", () => {
     expect(callResultOf({ status: "completed", outcome: "voicemail", metadata: { notify: { mode: "voicemail" } } })).toEqual({ kind: "voicemail", playedToEnd: false });
     // Silent lens G1: a voicemail-mode call with no message spoken is never "voicemail".
     expect(callResultOf({ status: "failed", outcome: "failed", metadata: { notify: { mode: "voicemail" } } })).toEqual({ kind: "voicemail_not_left" });
+    // Tests lens: a call the sweeper gave up on (Twilio never told us) is "we don't know", never a known failure.
+    expect(callResultOf({ status: "failed", outcome: null, metadata: { notify: { swept: true, twilio_status: "unknown" } } })).toEqual({ kind: "unknown_end" });
+    expect(callResultOf({ status: "failed", outcome: null, metadata: { notify: { swept: true, twilio_status: "failed" } } })).toEqual({ kind: "failed" });
     // Code lens N7: a fax the voice server hung up on is never "they hung up straight away".
     expect(callResultOf({ status: "completed", outcome: null, metadata: { notify: { answered_by: "fax" } } })).toEqual({ kind: "machine_answered" });
     expect(callResultOf({ status: "completed", outcome: null, metadata: { notify: { answered_by: "human" } } })).toEqual({ kind: "dropped" });

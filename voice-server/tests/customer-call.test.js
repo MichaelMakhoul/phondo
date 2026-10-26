@@ -1162,3 +1162,22 @@ describe("SCRUM-598 (test lens): edges the suite didn't reach", () => {
     assert.deepEqual(await cc.checkCustomerCall(req(), "check", checkDeps(sb)), { ok: false, reason: "number_cap" });
   });
 });
+
+describe("SCRUM-598 (test lens, rounds 1-3): window, retry and sweep edges", () => {
+  it("a one-day window (earliest = latest) is a window, never 'malformed'", () => {
+    assert.deepEqual(cc.parseTimeWindow({ earliest: "2026-11-02", latest: "2026-11-02", timeOfDay: "morning" }), { window: { earliest: "2026-11-02", latest: "2026-11-02", timeOfDay: "morning" } });
+  });
+
+  it("G1: a voicemail-mode call that left no message doesn't block a retry about the same thing", async () => {
+    const notLeft = { id: "c", caller_phone: PHONE, status: "completed", outcome: "failed", metadata: { notify: { appointment_id: APPT, purpose: "confirm", mode: "voicemail" } } };
+    const sb = fakeSupabase(responder(world({ recent: [notLeft] })));
+    assert.equal((await cc.checkCustomerCall(req(), "check", checkDeps(sb))).ok, true);
+  });
+
+  it("sweeper: the open-call query includes in-progress rows (a session lost mid-call is what it's for)", async () => {
+    const sb = fakeSupabase((q) => (q.op === "select" ? { data: [], error: null } : undefined));
+    await cc.sweepStuckCustomerCalls({ supabase: sb, now: () => NOW, hasLiveSession: () => false, fetchTwilioCall: async () => null, notifyCallCompleted: async () => {} });
+    const q = sb.queries.find((x) => x.op === "select");
+    assert.ok(has(q, "in", "status", ["queued", "ringing", "in-progress"]), JSON.stringify(q.filters));
+  });
+});

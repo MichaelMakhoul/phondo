@@ -137,3 +137,10 @@ describe("the owner's words", () => {
     expect(callNote("no_caller_number")).toBe("I can't call them: you don't have a Phondo phone number to call from yet — set one up under Phone Numbers.");
   });
 });
+
+describe("SCRUM-598 (test lens, rounds 1-3): callablePhone", () => {
+  it("a number already in +61 form that isn't a mobile or landline (1300, 05…) is still not callable", () => {
+    expect(callablePhone("+61 1300 123 456")).toBeNull();
+    expect(callablePhone("+61 550 123 456")).toBeNull();
+  });
+});

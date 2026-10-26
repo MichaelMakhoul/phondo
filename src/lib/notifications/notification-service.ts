@@ -1024,6 +1024,8 @@ function callResultShort(result: CallResult): string {
       return "the call failed on our side";
     case "machine_answered":
       return "a fax or machine answered";
+    case "unknown_end":
+      return "we couldn't confirm how it went";
     case "cut_off":
       return "the call was cut off";
     case "failed":
@@ -1063,6 +1065,8 @@ function callResultLine(result: CallResult): string {
       return "They picked up, but the call failed on our side before the assistant could speak — please give them a ring.";
     case "machine_answered":
       return "A fax or another machine answered, so nothing was said — the number on the booking may be wrong.";
+    case "unknown_end":
+      return "We couldn't get the phone system's record of this call, so we can't say how it went — check Calls before you ring them.";
     case "cut_off":
       return `The call was cut off on our side after ${callLength(result.seconds)} — check the recording and give them a call if needed.`;
     case "failed":
@@ -1148,6 +1152,7 @@ function newsReach(r: CallOutcomeReport): NewsReach {
     case "voicemail":
       return result.playedToEnd ? "message" : "unsure";
     case "cut_off":
+    case "unknown_end":
       return "unsure";
     case "voicemail_not_left":
     case "no_answer":
