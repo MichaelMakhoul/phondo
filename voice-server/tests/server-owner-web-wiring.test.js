@@ -112,7 +112,7 @@ describe("/ws/test: the owner branch (source)", () => {
     assert.match(handler, /if \(reason === "end_call"\) \{\s*setTimeout\(\(\) => \{\s*if \(ws\.readyState === WebSocket\.OPEN\) \{\s*ws\.send\(JSON\.stringify\(\{ type: "ended", reason: "owner-ended" \}\)\);\s*ws\.close\(1000, "Owner said goodbye"\);\s*\}\s*\}, 1000\);/);
     assert.match(handler, /if \(code !== 1000\) \{\s*session\.callFailed = true;/);
     assert.match(handler, /if \(session\?\.ownerMode\) session\.callFailed = true;\s*if \(ws\.readyState === WebSocket\.OPEN\) \{\s*ws\.send\(JSON\.stringify\(\{ type: "error", message: session\?\.ownerMode \? OWNER_WEB_PROBLEM_MESSAGE : "AI session error" \}\)\);/);
-    assert.match(handler, /if \(session\.ownerMode\) \{\s*session\._toolCallInFlight = true;\s*try \{\s*return await runOwnerToolCall\(session, toolCall, \{ executeToolCall, scheduleCache, sendText: \(text\) => session\?\.geminiSession\?\.sendText\(text\) \}\);/);
+    assert.match(handler, /if \(session\.ownerMode\) \{\s*session\._toolCallInFlight = true;\s*try \{\s*const ownerResult = await runOwnerToolCall\(session, toolCall, \{ executeToolCall, scheduleCache, sendText: \(text\) => session\?\.geminiSession\?\.sendText\(text\) \}\);\s*notifyBookingsChanged\(ws, toolCall\.name, ownerResult\); \/\/ SCRUM-597\s*return ownerResult;/);
   });
 
   it("classic: no spoken disclosure, the owner greeting, the owner's speech on the gate's clock", () => {
@@ -188,6 +188,7 @@ function makeLoop({ turns, ownerResults = [], ttsBytes = 8000 }) {
     parseToolArgs: (tc) => JSON.parse(tc.function.arguments || "{}"),
     executeToolCall: async (name, args, ctx) => { calls.push(["executeToolCall", name, ctx]); return "customer tool ok"; },
     runOwnerToolCall: async (s, tc, deps) => { calls.push(["runOwnerToolCall", tc.name, Object.keys(deps).sort()]); return ownerResults.shift() || { message: "done" }; },
+    notifyBookingsChanged: (w, name, ret) => calls.push(["notifyBookingsChanged", name, ret]), // SCRUM-597
     ownerToolLoopReply: (s, last) => `<loop reply after ${last ? last.name : "nothing"}>`,
     scheduleCache: { invalidate() {} },
     noteAssistantSpeech: () => calls.push(["noteAssistantSpeech"]),
@@ -292,6 +293,22 @@ describe("handleTestUserSpeech on an owner session (classic, run for real)", () 
     await h.handleTestUserSpeech(s, h.ws, "Move Bob's job to Thursday at 2");
     assert.equal(h.calls.filter((c) => c[0] === "runOwnerToolCall").length, 3);
     assert.match(s.messages.at(-1).content, /shall I go ahead\?$/);
+  });
+
+  it("SCRUM-597: every owner runner result goes to notifyBookingsChanged with its tool name (the page refreshes after a change)", async () => {
+    const h = makeLoop({
+      turns: [
+        { toolCalls: [{ name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true, notify_customer: "none" } }] },
+        { sentences: ["Done."] },
+      ],
+      ownerResults: [{ message: "Cancelled", data: { outcome: "cancelled" } }],
+    });
+    const s = ownerWebSession();
+    await h.handleTestUserSpeech(s, h.ws, "Yes, cancel it");
+    const n = h.calls.filter((c) => c[0] === "notifyBookingsChanged");
+    assert.equal(n.length, 1);
+    assert.equal(n[0][1], "owner_cancel_appointment");
+    assert.deepEqual(n[0][2], { message: "Cancelled", data: { outcome: "cancelled" } });
   });
 
   it("a tool loop that never answers ends on the last tool's own words, never 'could you repeat that?'", async () => {

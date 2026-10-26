@@ -11,6 +11,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { DEMO_ORG_ID } from "@/lib/demo/config";
 import { ssrfSafeFetch, escapeHtml } from "@/lib/security/validation";
+import type { OwnerRecapItem } from "@/lib/owner-assistant/recap";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import * as Sentry from "@sentry/nextjs";
 import { Resend } from "resend";
@@ -885,6 +886,95 @@ export async function sendOwnerPinLockedNotification(
   return settleChannels("owner-pin-locked", data.organizationId, channels, droppedChannels);
 }
 
+export interface OwnerAssistantRecapData {
+  organizationId: string;
+  callId: string;
+  /** Where the owner talked to their assistant. */
+  channel: "web" | "phone";
+  /** From buildOwnerRecap: the audit trail and the text log, never the AI's words. */
+  items: OwnerRecapItem[];
+  /** The org's timezone couldn't be read, so the times are in Sydney time (said in the email). */
+  timesInDefaultZone?: boolean;
+}
+
+/**
+ * SCRUM-597: the owner-assistant recap — what the owner's assistant actually
+ * changed on one call, so the owner can catch a mistake (the AI mishearing or
+ * making something up) before it becomes a dispute with a customer. The owner
+ * asked for it after every change, so there is no preference or plan gate, and it
+ * goes to the OWNER only (getOrganizationOwnerEmail), like the PIN-lockout alert.
+ * Nothing to report ⇒ "skipped". Same honest settle semantics as every other owner
+ * alert — no owner email ⇒ throws.
+ */
+export async function sendOwnerAssistantRecapNotification(
+  data: OwnerAssistantRecapData
+): Promise<NotificationSendResult> {
+  if (skipDemoOrg("owner-assistant-recap", data.organizationId)) return "skipped";
+  if (data.items.length === 0) return "skipped";
+
+  const email = await getOrganizationOwnerEmail(data.organizationId);
+  const channels: Promise<void>[] = [];
+  const droppedChannels: string[] = [];
+  if (!email) {
+    droppedChannels.push("owner-email");
+  } else {
+    const n = data.items.length;
+    channels.push(sendEmail({
+      to: email,
+      subject: `Your assistant changed ${n} booking${n === 1 ? "" : "s"} — please check`,
+      template: "owner-assistant-recap",
+      data: { items: data.items, channel: data.channel, callId: data.callId, timesInDefaultZone: data.timesInDefaultZone === true },
+    }));
+  }
+  return settleChannels("owner-assistant-recap", data.organizationId, channels, droppedChannels);
+}
+
+/**
+ * One recap line about the customer. Exhaustive (no default): a new outcome — the
+ * call outcomes SCRUM-598 adds — must be worded here before it compiles, never
+ * shown as "not told".
+ */
+function recapToldLine(item: OwnerRecapItem): string {
+  switch (item.told) {
+    case "texted":
+      return "Customer texted.";
+    case "text_failed":
+      return "The text to the customer failed — please let them know yourself.";
+    case "not_texted":
+      return `Customer not texted (${escapeHtml(item.toldWhy)}).`;
+    case "not_told":
+      return "Customer not told.";
+    default: {
+      const unhandled: never = item;
+      return unhandled;
+    }
+  }
+}
+
+/** What changed, worded (exhaustive, like recapToldLine). */
+function recapChangeLine(item: OwnerRecapItem, who: string, when: string): string {
+  switch (item.change) {
+    case "cancelled":
+      return `Cancelled ${who}'s job on ${when}`;
+    case "moved":
+      return `Moved ${who}'s job${item.from ? ` from ${escapeHtml(String(item.from))}` : ""} to ${when}`;
+    case "booked":
+      return `Booked ${who} for ${when}`;
+    default: {
+      const unhandled: never = item.change;
+      return unhandled;
+    }
+  }
+}
+
+/** One recap row (customer text escaped here: the array never passes the top-level escaping). */
+function recapRow(item: OwnerRecapItem): string {
+  const who = `<strong>${escapeHtml(String(item.customer ?? ""))}</strong>`;
+  const when = escapeHtml(String(item.when ?? ""));
+  const what = recapChangeLine(item, who, when);
+  return `<tr><td style="padding: 8px; border-bottom: 1px solid #ddd;">${what}<br/><span style="color: #6b7280; font-size: 13px;">${recapToldLine(item)}</span></td></tr>`;
+}
+
 /**
  * Format an appointment date in the org's timezone, unambiguously.
  *
@@ -1499,6 +1589,23 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       <p><strong>If this wasn't you, set a new PIN</strong> in Settings → Your assistant line: that unlocks it straight away and the old PIN stops working.</p>
       <p>If it was you, it unlocks by itself after 15 minutes (or after 24 hours if there were too many tries in one day). Until then, calls from that number are answered as normal customer calls.</p>
     `,
+    // SCRUM-597 — the owner-assistant recap. `items` is an array, which the
+    // top-level escaping above does NOT reach, so recapRow escapes every value.
+    // The copy stays true to the source: the list comes from the diary and the
+    // text log, not from what the AI said.
+    "owner-assistant-recap": (d) => {
+      const items: OwnerRecapItem[] = Array.isArray(d.items) ? d.items : [];
+      const base = escapeHtml((process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai").replace(/\/$/, ""));
+      const where = d.channel === "web" ? "in your dashboard" : "on your assistant line";
+      return `
+      <h2>What your assistant changed</h2>
+      <p>Your assistant made ${items.length} change${items.length === 1 ? "" : "s"} ${where}. This list comes from your diary and our text log, not from what the AI said.</p>
+      <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">${items.map(recapRow).join("")}</table>
+      ${d.timesInDefaultZone === true ? `<p style="color: #6b7280; font-size: 13px;">Times are shown in Sydney time — we couldn't read your business's timezone.</p>` : ""}
+      <p><strong>If anything here isn't what you asked for</strong>, fix it in Appointments and let the customer know.</p>
+      <p><a href="${base}/appointments">Open Appointments</a> &nbsp;·&nbsp; <a href="${base}/calls/${d.callId}">See the conversation</a></p>
+    `;
+    },
     "appointment-booked": (d) => `
       <h2>New Appointment Booked</h2>
       <p>A new appointment has been booked by <strong>${d.callerName || d.callerPhone}</strong>.</p>

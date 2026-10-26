@@ -114,7 +114,14 @@ describe("recordAppointmentEvent (SCRUM-398)", () => {
   it("never throws when the insert errors or throws (best-effort)", async () => {
     const erroring: any = { from: () => ({ insert: vi.fn().mockResolvedValue({ error: { message: "boom" } }) }) };
     const throwing: any = { from: () => ({ insert: vi.fn().mockRejectedValue(new Error("network")) }) };
-    await expect(recordAppointmentEvent(erroring, input)).resolves.toBeUndefined();
-    await expect(recordAppointmentEvent(throwing, input)).resolves.toBeUndefined();
+    // SCRUM-597: never throws — and says the event wasn't recorded (the owner recap relies on these rows).
+    await expect(recordAppointmentEvent(erroring, input)).resolves.toBe(false);
+    await expect(recordAppointmentEvent(throwing, input)).resolves.toBe(false);
+  });
+
+  it("resolves true when the event is recorded, and for a skipped no-op edit (nothing was wanted)", async () => {
+    const ok: any = { from: () => ({ insert: vi.fn().mockResolvedValue({ error: null }) }) };
+    await expect(recordAppointmentEvent(ok, input)).resolves.toBe(true);
+    await expect(recordAppointmentEvent(ok, { ...input, eventType: "edited", changedFields: [] })).resolves.toBe(true);
   });
 });

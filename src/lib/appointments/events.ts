@@ -117,16 +117,20 @@ export interface AppointmentEventInput {
  * break the mutation it records. Requires the service-role client (the table has no
  * INSERT policy; only service_role writes). An `edited`/`status_changed` event with
  * no actual field changes is skipped so the log isn't polluted with no-ops.
+ *
+ * Resolves false when a wanted event was NOT recorded (SCRUM-597: the owner's recap
+ * email is built from these rows, so the owner tools page on false). Existing callers
+ * may ignore it.
  */
 export async function recordAppointmentEvent(
   admin: ServiceRoleSupabaseClient,
   input: AppointmentEventInput
-): Promise<void> {
+): Promise<boolean> {
   if (
     (input.eventType === "edited" || input.eventType === "status_changed") &&
     (!input.changedFields || input.changedFields.length === 0)
   ) {
-    return;
+    return true;
   }
   try {
     const { error } = await (admin as any).from("appointment_events").insert({
@@ -146,9 +150,12 @@ export async function recordAppointmentEvent(
         level: "warning",
         extra: { error: error.message, eventType: input.eventType },
       });
+      return false;
     }
+    return true;
   } catch (err) {
     console.error("[appointment-events] insert threw (non-fatal):", err);
     Sentry.captureException(err);
+    return false;
   }
 }

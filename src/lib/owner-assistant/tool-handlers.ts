@@ -6,8 +6,9 @@
 // query is org-scoped in SQL; ids come back in `data` so the model never has
 // to speak them. Anything a customer wrote (names, numbers, notes, reasons,
 // summaries) is flattened to one capped line first (sanitize.ts) — it lands in a
-// session that also holds the reschedule/cancel tools. SMS to customers is paused
-// (SCRUM-264) — every change says so.
+// session that also holds the reschedule/cancel tools. SCRUM-597: every change
+// asks whether to let the customer know (customer-contact.ts) and reports what
+// actually happened.
 import { createAdminClient, type ServiceRoleSupabaseClient } from "@/lib/supabase/admin";
 import {
   errorResult,
@@ -25,6 +26,8 @@ import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { isValidUUID } from "@/lib/security/validation";
 import { runAfterResponse } from "@/lib/utils/after-response";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
+import { pageSentry } from "@/lib/observability/page-sentry";
+import { SENTRY_REASONS } from "@/lib/security/error-ids";
 import {
   OWNER_RANGES,
   type OwnerRange,
@@ -36,6 +39,16 @@ import {
 } from "./time";
 import { sanitizeCustomerText } from "./sanitize";
 import { isOwnerCallMetadata } from "./owner-call";
+import {
+  contactCustomer,
+  contactOutcomeSentence,
+  getContactOptions,
+  isCustomerNotified,
+  parseContactMethod,
+  type ContactMethod,
+  type ContactOptions,
+  type CustomerContactResult,
+} from "./customer-contact";
 
 export const OWNER_TOOL_NAMES = [
   "owner_list_appointments",
@@ -140,6 +153,27 @@ async function getOrgTimezone(supabase: any, organizationId: string): Promise<st
     return null;
   }
   return data?.timezone || DEFAULT_TZ;
+}
+
+/**
+ * SCRUM-597: the zone plus the country, for the write tools. A customer's number is
+ * normalised in the org's country before deciding whether it can take a text. Same
+ * fault rule as getOrgTimezone: a failed read is null (the caller reports a fault).
+ */
+async function getOrgZoneAndCountry(
+  supabase: any,
+  organizationId: string
+): Promise<{ tz: string; country: string | null } | null> {
+  const { data, error } = await supabase
+    .from("organizations")
+    .select("timezone, country")
+    .eq("id", organizationId)
+    .single();
+  if (error) {
+    console.error("[owner-assistant] failed to load org timezone/country:", { organizationId, error });
+    return null;
+  }
+  return { tz: data?.timezone || DEFAULT_TZ, country: data?.country ?? null };
 }
 
 function toItem(row: any, tz: string): OwnerAppointmentItem {
@@ -342,7 +376,14 @@ export interface OwnerRescheduleData {
   to?: string;
   /** On slot_taken: the free times that day, when the calendar could list them (absent otherwise). */
   alternatives?: string;
-  customer_notified: false;
+  /** On needs_confirmation: how the customer can be told now ("none" always included). */
+  contact_options?: ContactMethod[];
+  /** On needs_confirmation: why text isn't offered, when it isn't. */
+  contact_note?: string;
+  /** After the change: what happened to the owner's choice of telling the customer. */
+  customer_contact?: CustomerContactResult;
+  /** True only when the customer was actually told (a text went out). */
+  customer_notified: boolean;
 }
 export interface OwnerCancelData {
   outcome: "cancelled" | "needs_confirmation" | "not_found" | "external_calendar" | "rate_limited";
@@ -351,15 +392,13 @@ export interface OwnerCancelData {
   customer_phone?: string | null;
   /** Spoken form of the job's time (formatWhen). */
   when?: string;
-  customer_notified: false;
+  contact_options?: ContactMethod[];
+  contact_note?: string;
+  customer_contact?: CustomerContactResult;
+  customer_notified: boolean;
 }
 
 const NOT_FOUND_MSG = "I can't find that job. It may have already been moved or cancelled.";
-// Phase 1 never contacts the customer: a reschedule sends nothing and a cancel runs
-// with suppressSms, so this stays true even once caller SMS is switched back on
-// (SCRUM-264). Revisit it, and the `customer_notified` literal type, when customer
-// notification is added.
-const NOT_NOTIFIED = " The customer has NOT been notified — I can read you their number if you want to let them know.";
 const RATE_LIMITED_MSG = "There have been several changes in a row just now — give it a minute and try again.";
 const SLOT_TAKEN_NO_ALTERNATIVES_MSG = "That time's taken — want to try another time?";
 const CANCEL_FAULT_MSG = "I couldn't cancel that booking — something went wrong on our side. Please check it in the dashboard.";
@@ -370,6 +409,51 @@ const DEFAULT_CANCEL_REASON = "Cancelled by the business owner by phone";
 const REASON_MAX = 500;
 /** The column default, for a row that somehow has no duration. */
 const DEFAULT_DURATION_MINUTES = 30;
+
+/**
+ * SCRUM-597: the owner's recap email lists only the changes in appointment_events, so
+ * a change whose audit row failed would be missing from it with nobody told — page.
+ */
+function pageUnaudited(organizationId: string, callId: string, appointmentId: string, change: "cancelled" | "rescheduled"): void {
+  pageSentry({
+    service: "next-api",
+    reason: SENTRY_REASONS.OWNER_CHANGE_NOT_AUDITED,
+    level: "error",
+    message: `an owner ${change} change was made but not audited — the owner's recap email will miss it`,
+    extras: { organizationId, callId, appointmentId, change },
+  });
+}
+
+/** The ways this customer can be told right now, spoken ("text", "text or call"); "" when there are none. */
+function contactWays(contact: ContactOptions): string {
+  return contact.options.filter((m) => m !== "none").map((m) => (m === "text" ? "text" : "call")).join(" or ");
+}
+
+/**
+ * SCRUM-597: the read-back, with the "let them know?" question in the same breath.
+ * Only the ways that work for this customer right now are offered. With none, there
+ * is nothing to choose: the model says so and offers the number, and a bare yes
+ * confirms (notify_customer "none" is assumed — see the handlers).
+ */
+function readBackMessage(change: string, customer: string, contact: ContactOptions, tool: string): string {
+  const ways = contactWays(contact);
+  if (!ways) {
+    const why = contact.note ? ` (${contact.note.replace(/[.!?]+$/, "")})` : "";
+    return `Read this back and get a clear yes before changing anything: ${change}. Telling ${customer} isn't possible from here${why}: say so in a few words (for example "I can't text them") and offer to read out their number after the change. If the owner confirms, call ${tool} again with confirmed=true and notify_customer "none".`;
+  }
+  const note = contact.note ? ` ${contact.note}` : "";
+  return `Read this back and get a clear yes before changing anything: ${change}. In the same question, ask whether to let ${customer} know: by ${ways}, or not tell them.${note} If the owner confirms, call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
+}
+
+/**
+ * A confirm that came without the owner's answer on telling the customer, when there
+ * IS a choice: nothing changes, and the model asks it now (one question — the
+ * confirmation gate is re-armed by this result, so the next confirm passes).
+ */
+function askContactMessage(customer: string, contact: ContactOptions, tool: string): string {
+  const note = contact.note ? ` ${contact.note}` : "";
+  return `Nothing has changed yet: the owner said yes but not whether to let ${customer} know. Ask them now: should ${customer} get a ${contactWays(contact)}, or not be told?${note} Then call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
+}
 
 /**
  * The owner tools change only Phondo's own bookings. Anything else lives in a diary
@@ -459,12 +543,13 @@ async function loadOwnerAppointment(
 
 export async function handleOwnerRescheduleAppointment(
   organizationId: string,
-  args: { appointment_id?: string; new_datetime?: string; confirmed?: unknown },
+  args: { appointment_id?: string; new_datetime?: string; confirmed?: unknown; notify_customer?: string },
   ctx: OwnerCallContext
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
-  const tz = await getOrgTimezone(supabase, organizationId);
-  if (!tz) return errorResult(TROUBLE);
+  const org = await getOrgZoneAndCountry(supabase, organizationId);
+  if (!org) return errorResult(TROUBLE);
+  const tz = org.tz;
 
   const before = await loadOwnerAppointment(supabase, organizationId, args.appointment_id);
   if (before === undefined) return errorResult(TROUBLE);
@@ -501,12 +586,37 @@ export async function handleOwnerRescheduleAppointment(
   const to = formatWhen(newStart, tz);
   const customer = sanitizeCustomerText(before.attendee_name, NAME_MAX) ?? "the customer";
 
-  if (args.confirmed !== true) {
-    return {
-      success: false,
-      message: `Read this back and get a clear yes before changing anything: move ${customer}'s job from ${from} to ${to}. If the owner confirms, call owner_reschedule_appointment again with confirmed=true.`,
-      data: rescheduleData({ outcome: "needs_confirmation", appointment_id: before.id, customer_name: customer, from, to, customer_notified: false }),
-    };
+  // SCRUM-597: a confirm needs the owner's answer on telling the customer too —
+  // without one, nothing changes and the question is asked first. With nothing to
+  // choose (the customer can't be texted or called), a bare yes is the whole answer.
+  const chosen = args.confirmed === true ? parseContactMethod(args.notify_customer) : null;
+  let method: ContactMethod;
+  if (chosen) {
+    method = chosen;
+  } else {
+    const contact = await getContactOptions(organizationId, before.attendee_phone, org.country);
+    if (args.confirmed === true && !contactWays(contact)) {
+      method = "none";
+    } else {
+      const change = `move ${customer}'s job from ${from} to ${to}`;
+      return {
+        success: false,
+        message:
+          args.confirmed === true
+            ? askContactMessage(customer, contact, "owner_reschedule_appointment")
+            : readBackMessage(change, customer, contact, "owner_reschedule_appointment"),
+        data: rescheduleData({
+          outcome: "needs_confirmation",
+          appointment_id: before.id,
+          customer_name: customer,
+          from,
+          to,
+          contact_options: contact.options,
+          ...(contact.note ? { contact_note: contact.note } : {}),
+          customer_notified: false,
+        }),
+      };
+    }
   }
 
   if (!(await ownerMutationAllowed(supabase, organizationId))) {
@@ -602,7 +712,7 @@ export async function handleOwnerRescheduleAppointment(
   });
   // Audit on the NEW leg (the history renders the move from the leg itself).
   const { legWorthy } = partitionRescheduleChanges(diffAppointmentFields(snapshotForAudit(before), snapshotForAudit(inserted)));
-  await recordAppointmentEvent(supabase, {
+  const audited = await recordAppointmentEvent(supabase, {
     appointmentId: inserted.id,
     organizationId,
     eventType: "rescheduled",
@@ -612,10 +722,22 @@ export async function handleOwnerRescheduleAppointment(
     changedFields: legWorthy,
     callId: ctx.callId,
   });
+  if (!audited) pageUnaudited(organizationId, ctx.callId, inserted.id, "rescheduled");
 
+  // The text (if asked for) is about the NEW time, on the new leg.
+  const contact = await contactCustomer({
+    orgId: organizationId,
+    method,
+    kind: "moved",
+    appointmentId: inserted.id,
+    startTime: newStart,
+    phone: inserted.attendee_phone ?? before.attendee_phone,
+    country: org.country,
+    timezone: tz,
+  });
   return {
     success: true,
-    message: `Moved ${customer} from ${from} to ${to}.${NOT_NOTIFIED}`,
+    message: `Moved ${customer} from ${from} to ${to}.${contactOutcomeSentence(contact, customer)}`,
     data: rescheduleData({
       outcome: "rescheduled",
       appointment_id: before.id,
@@ -624,19 +746,21 @@ export async function handleOwnerRescheduleAppointment(
       customer_phone: sanitizeCustomerText(before.attendee_phone, PHONE_MAX),
       from,
       to,
-      customer_notified: false,
+      customer_contact: contact,
+      customer_notified: isCustomerNotified(contact),
     }),
   };
 }
 
 export async function handleOwnerCancelAppointment(
   organizationId: string,
-  args: { appointment_id?: string; confirmed?: unknown; reason?: string },
+  args: { appointment_id?: string; confirmed?: unknown; reason?: string; notify_customer?: string },
   ctx: OwnerCallContext
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
-  const tz = await getOrgTimezone(supabase, organizationId);
-  if (!tz) return errorResult(TROUBLE);
+  const org = await getOrgZoneAndCountry(supabase, organizationId);
+  if (!org) return errorResult(TROUBLE);
+  const tz = org.tz;
 
   const appt = await loadOwnerAppointment(supabase, organizationId, args.appointment_id);
   if (appt === undefined) return errorResult(TROUBLE);
@@ -655,12 +779,35 @@ export async function handleOwnerCancelAppointment(
   const when = formatWhen(new Date(appt.start_time), tz);
   const customer = sanitizeCustomerText(appt.attendee_name, NAME_MAX) ?? "the customer";
 
-  if (args.confirmed !== true) {
-    return {
-      success: false,
-      message: `Read this back and get a clear yes before cancelling: cancel ${customer}'s job on ${when}. If the owner confirms, call owner_cancel_appointment again with confirmed=true.`,
-      data: cancelData({ outcome: "needs_confirmation", appointment_id: appt.id, customer_name: customer, when, customer_notified: false }),
-    };
+  // SCRUM-597: as for a move, a confirm needs the owner's answer on telling the
+  // customer — unless there is nothing to choose.
+  const chosen = args.confirmed === true ? parseContactMethod(args.notify_customer) : null;
+  let method: ContactMethod;
+  if (chosen) {
+    method = chosen;
+  } else {
+    const contact = await getContactOptions(organizationId, appt.attendee_phone, org.country);
+    if (args.confirmed === true && !contactWays(contact)) {
+      method = "none";
+    } else {
+      const change = `cancel ${customer}'s job on ${when}`;
+      return {
+        success: false,
+        message:
+          args.confirmed === true
+            ? askContactMessage(customer, contact, "owner_cancel_appointment")
+            : readBackMessage(change, customer, contact, "owner_cancel_appointment"),
+        data: cancelData({
+          outcome: "needs_confirmation",
+          appointment_id: appt.id,
+          customer_name: customer,
+          when,
+          contact_options: contact.options,
+          ...(contact.note ? { contact_note: contact.note } : {}),
+          customer_notified: false,
+        }),
+      };
+    }
   }
 
   if (!(await ownerMutationAllowed(supabase, organizationId))) {
@@ -674,8 +821,9 @@ export async function handleOwnerCancelAppointment(
   // Model-supplied: one bounded line before it reaches the booking row and the audit log.
   const reason = sanitizeCustomerText(args.reason, REASON_MAX) ?? DEFAULT_CANCEL_REASON;
   // Frees the row and refreshes the voice schedule cache (only Phondo's own bookings
-  // get this far). suppressSms: phase 1 never texts the customer, which is what
-  // customer_notified:false promises. requireActive: the write is org-scoped and only
+  // get this far). suppressSms: the owner's own choice of telling the customer is
+  // carried out below (contactCustomer), where who can be texted is checked and the
+  // result reported. requireActive: the write is org-scoped and only
   // lands while the row is still confirmed/pending, so a move that slipped in since
   // the lookup is not overwritten (and the owner is not told "Cancelled" while the
   // moved booking stays live). Its failure replies are worded for a caller ("…someone
@@ -693,7 +841,7 @@ export async function handleOwnerCancelAppointment(
     return errorResult(CANCEL_FAULT_MSG);
   }
 
-  await recordAppointmentEvent(supabase, {
+  const audited = await recordAppointmentEvent(supabase, {
     appointmentId: appt.id,
     organizationId,
     eventType: "cancelled",
@@ -703,17 +851,29 @@ export async function handleOwnerCancelAppointment(
     note: reason,
     callId: ctx.callId,
   });
+  if (!audited) pageUnaudited(organizationId, ctx.callId, appt.id, "cancelled");
 
+  const contact = await contactCustomer({
+    orgId: organizationId,
+    method,
+    kind: "cancelled",
+    appointmentId: appt.id,
+    startTime: new Date(appt.start_time),
+    phone: appt.attendee_phone,
+    country: org.country,
+    timezone: tz,
+  });
   return {
     success: true,
-    message: `Cancelled ${customer}'s job on ${when}.${NOT_NOTIFIED}`,
+    message: `Cancelled ${customer}'s job on ${when}.${contactOutcomeSentence(contact, customer)}`,
     data: cancelData({
       outcome: "cancelled",
       appointment_id: appt.id,
       customer_name: customer,
       customer_phone: sanitizeCustomerText(appt.attendee_phone, PHONE_MAX),
       when,
-      customer_notified: false,
+      customer_contact: contact,
+      customer_notified: isCustomerNotified(contact),
     }),
   };
 }
