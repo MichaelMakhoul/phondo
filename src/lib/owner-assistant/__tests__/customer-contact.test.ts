@@ -123,6 +123,12 @@ describe("contactOutcomeSentence", () => {
     expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "caller_opted_out" }, "J")).toContain("opted out");
     expect(contactOutcomeSentence({ method: "text", status: "not_sent", reason: "something_new" }, "J")).toContain("the text didn't go through");
   });
+  it("a cap that couldn't be checked says so — never that a text went out moments ago", () => {
+    const s = contactOutcomeSentence({ method: "text", status: "not_sent", reason: "cap_check_failed" }, "J");
+    expect(s).toContain("I couldn't check their recent texts, so I held it back");
+    expect(s).not.toMatch(/moments ago/);
+  });
+
   it("a held-back text never reads as if the customer already knows about THIS change", () => {
     const s = contactOutcomeSentence({ method: "text", status: "not_sent", reason: "rate_limited" }, "J");
     expect(s).toContain("another text went to them moments ago, so this one was held back");

@@ -166,10 +166,12 @@ describe("an owner-requested text is exempt ONLY from the hourly cap", () => {
     expect(await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, { ownerRequested: true })).toEqual({ sent: false, status: "blocked_plan", reason: "plan_not_eligible" });
     expect(twilioCreate).not.toHaveBeenCalled();
   });
-  it("an owner cap that can't be counted holds the text back (fails closed)", async () => {
+  it("an owner cap that can't be counted holds the text back (fails closed) — recorded as the failed check, not a cap hit", async () => {
     db.ownerError = { code: "57014" };
     const { sendCancellationSMS } = await load();
-    expect(await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, { ownerRequested: true })).toEqual({ sent: false, status: "blocked_ratelimit", reason: "rate_limited" });
+    // Never "rate_limited": the owner would hear "another text went to them moments ago".
+    expect(await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, { ownerRequested: true })).toEqual({ sent: false, status: "skipped", reason: "cap_check_failed" });
     expect(twilioCreate).not.toHaveBeenCalled();
+    expect(db.upserts.at(-1)).toMatchObject({ status: "skipped_db_error" });
   });
 });

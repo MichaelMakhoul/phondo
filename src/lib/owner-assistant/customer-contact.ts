@@ -70,6 +70,8 @@ const SEND_WHY: Record<string, string> = {
   rate_limited: "another text went to them moments ago, so this one was held back",
   plan_not_eligible: "customer texts aren't included in your plan",
   no_org_phone_number: "there's no business number to text from",
+  cap_check_failed: "I couldn't check their recent texts, so I held it back",
+  db_error: "I couldn't check your text settings, so I held it back",
 };
 
 export async function getContactOptions(

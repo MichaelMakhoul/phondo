@@ -83,3 +83,12 @@ describe("useVoiceTest: a start stopped mid-way gives up", () => {
     expect(start.indexOf("superseded()")).toBeLessThan(start.indexOf("new WebSocket("));
   });
 });
+
+// SCRUM-597 round 3 (silent lens note): a page restored from the back/forward cache
+// offers Start again instead of sitting on a "connecting" whose start() gave up.
+describe("useVoiceTest: pagehide goes back to idle", () => {
+  const hook = readFileSync(join(process.cwd(), "src/lib/voice-test/use-voice-test.ts"), "utf-8");
+  it("the pagehide teardown cleans up, then sets idle and not speaking", () => {
+    expect(hook).toMatch(/const teardown = \(\) => \{\s*cleanup\(\);\s*updateStatus\("idle"\);\s*setIsAssistantSpeaking\(false\);\s*\};\s*window\.addEventListener\("pagehide", teardown\);/);
+  });
+});

@@ -309,6 +309,7 @@ describe("SCRUM-597 review: the page behind the bubble, and the copy", () => {
 describe("SCRUM-597 round 2: the open calendar panel refreshes too", () => {
   it("an open appointment panel refetches when the assistant changes a booking", () => {
     const panel = read("src/app/(dashboard)/calendar/appointment-detail-panel.tsx");
-    expect(panel).toMatch(/useEffect\(\(\) => onBookingsChanged\(\(\) => \{\s*if \(open && viewId\) void fetchAppointment\(\);\s*\}\), \[open, viewId, fetchAppointment\]\);/);
+    // ...but not while the owner is editing it (the refetch would swap the form for a spinner).
+    expect(panel).toMatch(/useEffect\(\(\) => onBookingsChanged\(\(\) => \{\s*if \(open && viewId && !editing\) void fetchAppointment\(\);\s*\}\), \[open, viewId, editing, fetchAppointment\]\);/);
   });
 });

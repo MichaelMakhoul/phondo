@@ -191,10 +191,12 @@ export function AppointmentDetailPanel({
   }, [open, viewId, fetchAppointment]);
 
   // SCRUM-597: the owner's assistant changed a booking — an open panel shows it now,
-  // not the old time until it's reopened.
+  // not the old time until it's reopened. Not while the owner is editing it: the
+  // refetch would swap the form for a spinner under their typing (saving shows the
+  // fresh state anyway).
   useEffect(() => onBookingsChanged(() => {
-    if (open && viewId) void fetchAppointment();
-  }), [open, viewId, fetchAppointment]);
+    if (open && viewId && !editing) void fetchAppointment();
+  }), [open, viewId, editing, fetchAppointment]);
 
   // SCRUM-397: enter full edit mode — load the practitioner/service options and seed
   // the form (and the diff snapshot) from the current appointment. The synthetic

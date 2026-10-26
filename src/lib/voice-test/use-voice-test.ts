@@ -461,7 +461,13 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
   // on to fight the next one for the speaker. `pagehide` (not `visibilitychange`)
   // so a plain tab-switch during an active call doesn't hang up on the caller.
   useEffect(() => {
-    const teardown = () => cleanup();
+    // SCRUM-597: back to idle too — a page restored from the back/forward cache must
+    // offer Start again, not sit on a "connecting" whose start() has given up.
+    const teardown = () => {
+      cleanup();
+      updateStatus("idle");
+      setIsAssistantSpeaking(false);
+    };
     window.addEventListener("pagehide", teardown);
     return () => window.removeEventListener("pagehide", teardown);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps

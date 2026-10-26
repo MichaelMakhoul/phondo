@@ -253,9 +253,10 @@ const OWNER_TEXTS_PER_HOUR = 3;
 /**
  * SCRUM-597: the looser cap for owner-requested texts — at most OWNER_TEXTS_PER_HOUR
  * appointment texts (confirmations and cancellations together) sent to this number
- * from this org in the last hour. Fails closed, like isRateLimited.
+ * from this org in the last hour. A failed count is "error" (the caller holds the text
+ * back and says it couldn't check — never that the customer was texted moments ago).
  */
-async function isOwnerRequestedRateLimited(phone: string, orgId: string): Promise<boolean> {
+async function ownerTextCapState(phone: string, orgId: string): Promise<"ok" | "limited" | "error"> {
   const supabase = createAdminClient();
   const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const { count, error } = await (supabase as any)
@@ -274,9 +275,9 @@ async function isOwnerRequestedRateLimited(phone: string, orgId: string): Promis
       scope.setExtras({ orgId, code: error.code });
       Sentry.captureException(error);
     });
-    return true; // Fail closed: treat as rate limited
+    return "error"; // Fail closed
   }
-  return (count ?? 0) >= OWNER_TEXTS_PER_HOUR;
+  return (count ?? 0) >= OWNER_TEXTS_PER_HOUR ? "limited" : "ok";
 }
 
 async function logSMSSend(params: {
@@ -704,9 +705,24 @@ async function sendCallerSMS(params: {
   // the one-per-hour cap for automated texts — the booking's own confirmation may have
   // gone out minutes ago, about the old time — but gets a looser per-number cap, so a
   // looping model or a misused owner session can't flood one customer.
-  const rateLimited = ownerRequested === true
-    ? await isOwnerRequestedRateLimited(callerPhone, orgId)
-    : await isRateLimited(callerPhone, messageType, orgId);
+  const ownerCap = ownerRequested === true ? await ownerTextCapState(callerPhone, orgId) : null;
+  if (ownerCap === "error") {
+    // Held back (fail closed) — and recorded as the failed check it was, not as a cap hit.
+    if (appointment) {
+      await upsertAppointmentConfirmation({
+        orgId,
+        appointmentId: appointment.appointmentId,
+        appointmentStartTime: appointment.appointmentStartTime,
+        channel: "sms",
+        intent: appointment.intent,
+        recipient: callerPhone,
+        status: "skipped_db_error",
+        errorMessage: "owner-text cap could not be counted",
+      });
+    }
+    return { sent: false, status: "skipped", reason: "cap_check_failed" };
+  }
+  const rateLimited = ownerCap !== null ? ownerCap === "limited" : await isRateLimited(callerPhone, messageType, orgId);
   if (rateLimited) {
     await logSMSSend({
       orgId,

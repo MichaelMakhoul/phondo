@@ -49,6 +49,8 @@ function toldFromStatus(status: unknown): RecapTold {
       return { told: "not_texted", toldWhy: "no mobile number to text" };
     case "opted_out":
       return { told: "not_texted", toldWhy: "they've opted out of texts" };
+    case "skipped_db_error":
+      return { told: "not_texted", toldWhy: "we couldn't run a check, so the text was held back" };
     case "skipped_cap":
       // Never "already texted about this": the earlier text may have been about the old time.
       return { told: "not_texted", toldWhy: "another text went to them moments before, so this one was held back" };
@@ -88,7 +90,7 @@ export async function buildOwnerRecap(
     .select("appointment_id, event_type, created_at")
     .eq("organization_id", organizationId)
     .eq("call_id", callId)
-    .in("event_type", ["cancelled", "rescheduled", "created"])
+    .in("event_type", Object.keys(CHANGE_BY_EVENT))
     .order("created_at", { ascending: true });
   if (eventsError) {
     console.error("[OwnerRecap] appointment_events read failed:", { organizationId, callId, error: eventsError });
