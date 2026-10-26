@@ -1022,6 +1022,8 @@ function callResultShort(result: CallResult): string {
       return "they hung up straight away";
     case "failed_on_our_side":
       return "the call failed on our side";
+    case "machine_answered":
+      return "a fax or machine answered";
     case "cut_off":
       return "the call was cut off";
     case "failed":
@@ -1059,6 +1061,8 @@ function callResultLine(result: CallResult): string {
       return "They picked up but the call ended before the assistant spoke.";
     case "failed_on_our_side":
       return "They picked up, but the call failed on our side before the assistant could speak — please give them a ring.";
+    case "machine_answered":
+      return "A fax or another machine answered, so nothing was said — the number on the booking may be wrong.";
     case "cut_off":
       return `The call was cut off on our side after ${callLength(result.seconds)} — check the recording and give them a call if needed.`;
     case "failed":

@@ -23,6 +23,8 @@ export type CallResult =
   | { kind: "dropped" }
   /** Picked up, but our side failed before the assistant could speak. */
   | { kind: "failed_on_our_side" }
+  /** A fax or another machine that isn't a voicemail answered; the call hung up (code lens N7). */
+  | { kind: "machine_answered" }
   /** The conversation was cut off on our side (the phone system restarted mid-call, or its record couldn't be saved). */
   | { kind: "cut_off"; seconds: number }
   | { kind: "failed" };
@@ -63,6 +65,12 @@ const PHONE_MAX = 32;
 /** A cancel made on the call lands between its start and a little after its end. */
 const CANCEL_WINDOW_SLACK_MS = 2 * 60_000;
 const ACTIVE = new Set(["confirmed", "pending"]);
+/**
+ * Twilio's AnsweredBy values the voice server hangs up on — neither a person (or
+ * "unknown") it talks to, nor a voicemail it leaves a message on. The parity test
+ * holds this to the voice server's own two sets.
+ */
+export const MACHINE_ANSWERS: ReadonlySet<string> = new Set(["fax", "machine_start"]);
 
 function isPurpose(v: unknown): v is CallPurpose {
   return typeof v === "string" && (CALL_PURPOSES as readonly string[]).includes(v);
@@ -83,6 +91,7 @@ export function callResultOf(row: { status?: unknown; outcome?: unknown; duratio
   if (row.outcome === "answered") {
     return { kind: "answered", seconds, endedOnAFault: row.status === "failed", sureItWasAPerson: notify.answered_by === "human" };
   }
+  if (typeof notify.answered_by === "string" && MACHINE_ANSWERS.has(notify.answered_by)) return { kind: "machine_answered" };
   switch (row.status) {
     case "no-answer":
       return { kind: "no_answer" };

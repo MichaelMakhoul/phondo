@@ -102,6 +102,7 @@ describe("sendCustomerCallOutcomeNotification", () => {
       [{ kind: "failed_on_our_side" }, "the call failed on our side", "They picked up, but the call failed on our side before the assistant could speak — please give them a ring."],
       // Silent lens N7: an AMD "unknown" is never stated as a person answering.
       [{ kind: "answered", seconds: 70, endedOnAFault: false, sureItWasAPerson: false }, "they answered", "The call connected (the phone system couldn&#39;t tell whether a person or a voicemail answered — the summary says what happened) — the call lasted 1 min 10 s."],
+      [{ kind: "machine_answered" }, "a fax or machine answered", "A fax or another machine answered, so nothing was said — the number on the booking may be wrong."],
       [{ kind: "no_answer" }, "no answer", "No answer, and no message left."],
       [{ kind: "busy" }, "their line was busy", "Their line was busy. Nothing was said."],
       [{ kind: "dropped" }, "they hung up straight away", "They picked up but the call ended before the assistant spoke."],
@@ -177,7 +178,7 @@ describe("sendCustomerCallOutcomeNotification", () => {
     // A change the customer wasn't told about.
     expect(await nextOf({ purpose: "cancelled", result: { kind: "no_answer" }, assistantOutcome: null })).toBe(`Jane Smith hasn't been told about this change${RING}`);
     expect(await nextOf({ purpose: "moved", result: answered, assistantOutcome: "wrong_person" })).toBe(`Jane Smith hasn't been told about this change${RING}`);
-    for (const result of [{ kind: "busy" }, { kind: "dropped" }, { kind: "failed" }, { kind: "failed_on_our_side" }, { kind: "voicemail_not_left" }] as const) {
+    for (const result of [{ kind: "busy" }, { kind: "dropped" }, { kind: "failed" }, { kind: "failed_on_our_side" }, { kind: "voicemail_not_left" }, { kind: "machine_answered" }] as const) {
       expect(await nextOf({ purpose: "cancelled", result, assistantOutcome: null }), result.kind).toBe(`Jane Smith hasn't been told about this change${RING}`);
     }
     expect(await nextOf({ purpose: "cancelled", result: answered, assistantOutcome: null })).toBe(`Jane Smith may not have heard about this change${RING}`);

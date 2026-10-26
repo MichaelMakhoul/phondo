@@ -564,6 +564,71 @@ Watch for:
 - Logs hold no caller words unless `DEBUG_TRANSCRIPTS=true` (SCRUM-339); it is not set in
   production.
 
+## Customer calls (SCRUM-598)
+
+The owner's assistant can phone a customer about one booking: after a cancel or
+a move ("let them know by call"), or through `owner_call_customer` to confirm a
+booking or find a new time. The voice server places the call from the org's
+Phondo number and runs it as a receptionist session with an OUTBOUND CALL
+section last (`lib/notify-call-prompt.js`). The owner gets one email per call,
+built from the call row and the diary (`src/lib/owner-assistant/call-outcome.ts`).
+It ships dark: nothing is offered until the flag is set.
+
+### What a call needs
+
+`lib/customer-call.js` checks all of this twice, when the owner's read-back is
+built and again at placement:
+
+- `OWNER_CUSTOMER_CALLS_ENABLED=true` and Gemini Live (`GEMINI_API_KEY`). The
+  classic pipeline never runs these calls.
+- A request from that org's own owner session. The demo org is never called from.
+- An AU org and an AU mobile or landline (`+61[23478]…`) that matches the
+  booking's number exactly, between 8 am and 8 pm in the org's time.
+- An active, AI-on Twilio number with an assistant. It is the caller ID, so
+  ringing back reaches the receptionist.
+- Caps over 24 hours: 20 calls per org, 2 per customer number, and 1 per booking
+  and purpose. A number that asked not to be called is never called again.
+- A backstop of 30 placements per 10 minutes across all orgs.
+
+### How a call ends
+
+- **The session's cleanup** writes the row and calls call-completed, which sends
+  the email.
+- **Twilio's status callback** finishes the calls nobody talked on: no answer,
+  busy, failed, or a fax.
+- **A sweeper** runs every 5 minutes while the flag is on. It finishes rows
+  stuck for 15+ minutes from Twilio's own record of the call, and gives up
+  after 2 hours (finished as unknown).
+- **One machine.** Live customer calls are tracked in memory
+  (`liveCustomerCalls`), so the status callback must reach the machine running
+  the session. The app runs one machine today. **Before scaling to two, make
+  the session's final write conditional.** Otherwise a callback on the other
+  machine finishes a live call as "cut off", and the owner can get two
+  contradicting emails.
+
+### Alerts
+
+Every line starts `[CustomerCall]`:
+`{fly_app_name="phondo-voice"} |= "[CustomerCall]"`.
+
+| `[ALERT:error]` line | Meaning | Action |
+|---|---|---|
+| `placement backstop hit` | 30 placements in 10 minutes across all orgs | Look for a loop (same org or booking). Unset the flag if it's runaway. |
+| `Twilio refused the call` / `returned no call sid` | `calls.create` failed (code and status only, never the message) | Look up the Twilio error code; check the from-number. |
+| `Twilio accepted call … after the timeout — cancelling it` | Twilio took over 9 s; the call was cancelled | Nothing, unless `could not cancel` follows. |
+| `could not cancel …` | A call may be ringing with no row | Find the sid in Twilio's call log and cancel it. |
+| `call row not written — cancelling the call` | The insert failed after Twilio accepted | Check Supabase. The call was cancelled. |
+| `record was not written after its conversation` | Both writes of a finished conversation failed | Check Supabase. The sweeper finishes it as cut off. |
+| `could not finish call … no outcome email` | The final row write failed | Check Supabase. The sweeper retries. |
+| `status: row unreadable` / `status handling threw` | Twilio's status callback couldn't be handled | The sweeper retries within about 20 minutes. |
+| `sweep: open customer calls unreadable` / `sweep threw` | The sweeper failed | Check Supabase. It runs again in 5 minutes. |
+| `could not read call … to stamp` / `could not stamp call …` | A do-not-call, a setup failure or the answer type wasn't saved | A lost do-not-call matters: tell the owner. |
+| `no call context` / `no briefing` / `the line now belongs to another org` / `wasn't waiting for this stream` | The session couldn't start | The row is stamped `setup_failed`, and the email says it failed on our side. |
+| `INTERNAL_API_URL/SECRET unset — no outcome email` | The voice server can't reach Next.js | Set the secrets. |
+
+On the web side, a failed outcome email pages with
+`reason=customer-call-outcome-email-failed`.
+
 ## Pipeline switching & kill switches
 
 | Goal | Action |
@@ -578,6 +643,8 @@ Watch for:
 | Revert the voice model (SCRUM-588) | `fly secrets set GEMINI_LIVE_MODEL=models/gemini-3.1-flash-live-preview -a phondo-voice` |
 | Revert post-call analysis / Tier-2 validator models | `fly secrets set ANALYSIS_MODEL=gpt-4.1-mini VALIDATOR_MODEL=claude-haiku-4-5-20251001 -a phondo-voice` |
 | Per-number AI off (calls forward instead) | `phone_numbers.ai_enabled=false` in DB / dashboard toggle |
+| AI calls to customers on (SCRUM-598) | `fly secrets set OWNER_CUSTOMER_CALLS_ENABLED=true -a phondo-voice` |
+| AI calls to customers off (stops even calls already ringing, at their TwiML fetch) | `fly secrets unset OWNER_CUSTOMER_CALLS_ENABLED -a phondo-voice` |
 
 Proof of which pipeline a call ran (tool/transcript logs say `[GeminiLive]` on
 several shared paths): the `[Pipeline] TEST override → …` line and the

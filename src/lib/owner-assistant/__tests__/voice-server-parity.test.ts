@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { CONTACT_METHODS, contactOutcomeSentence, type CustomerContactResult } from "../customer-contact";
 import { CALL_OUTCOMES, CALL_PURPOSES, TIMES_OF_DAY, VOICE_CALL_BLOCK_REASONS } from "../customer-call";
 import { CUSTOMER_NOTIFY_CALL_TYPE } from "../owner-call";
+import { MACHINE_ANSWERS } from "../call-outcome";
 import { OWNER_TOOL_NAMES } from "../tool-handlers";
 
 // SCRUM-597 (types lens F6): the "let them know?" contract lives on both sides — the
@@ -24,6 +25,8 @@ const customerCall = vs("customer-call.js") as {
   CALL_OUTCOMES: readonly string[];
   TIMES_OF_DAY: readonly string[];
   CUSTOMER_NOTIFY_CALL_TYPE: string;
+  AMD_CONVERSATION: ReadonlySet<string>;
+  AMD_VOICEMAIL: ReadonlySet<string>;
   notifyMetadata: (notify: Record<string, unknown>, extra?: Record<string, unknown>) => Record<string, unknown>;
 };
 const runner = vs("owner-tool-runner.js") as {
@@ -80,6 +83,15 @@ describe("website ↔ voice server: the customer-contact contract", () => {
     expect([...TIMES_OF_DAY]).toEqual([...customerCall.TIMES_OF_DAY]);
     // ...and a drifted call type would run the customer pipeline (a text-back to the customer we rang).
     expect(CUSTOMER_NOTIFY_CALL_TYPE).toBe(customerCall.CUSTOMER_NOTIFY_CALL_TYPE);
+  });
+
+  it("every Twilio AnsweredBy is exactly one of: talked to, a voicemail, or a machine the call hung up on (code lens N7)", () => {
+    // Twilio's documented AnsweredBy values (DetectMessageEnd never sends machine_start; it is kept for safety).
+    const TWILIO_ANSWERED_BY = ["human", "unknown", "fax", "machine_start", "machine_end_beep", "machine_end_silence", "machine_end_other"];
+    for (const v of TWILIO_ANSWERED_BY) {
+      const homes = [customerCall.AMD_CONVERSATION.has(v), customerCall.AMD_VOICEMAIL.has(v), MACHINE_ANSWERS.has(v)].filter(Boolean).length;
+      expect(homes, v).toBe(1);
+    }
   });
 
   it("the metadata.notify keys the website reads are the ones the voice server writes", () => {

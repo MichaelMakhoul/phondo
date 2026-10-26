@@ -71,6 +71,9 @@ describe("callResultOf", () => {
     expect(callResultOf({ status: "completed", outcome: "voicemail", metadata: { notify: { mode: "voicemail" } } })).toEqual({ kind: "voicemail", playedToEnd: false });
     // Silent lens G1: a voicemail-mode call with no message spoken is never "voicemail".
     expect(callResultOf({ status: "failed", outcome: "failed", metadata: { notify: { mode: "voicemail" } } })).toEqual({ kind: "voicemail_not_left" });
+    // Code lens N7: a fax the voice server hung up on is never "they hung up straight away".
+    expect(callResultOf({ status: "completed", outcome: null, metadata: { notify: { answered_by: "fax" } } })).toEqual({ kind: "machine_answered" });
+    expect(callResultOf({ status: "completed", outcome: null, metadata: { notify: { answered_by: "human" } } })).toEqual({ kind: "dropped" });
     // Silent lens N4: our own setup failure wins over every other reading.
     expect(callResultOf({ status: "completed", outcome: null, metadata: { notify: { setup_failed: "no-briefing", mode: "conversation" } } })).toEqual({ kind: "failed_on_our_side" });
     expect(callResultOf({ status: "completed", outcome: null, duration_seconds: 95, metadata: { notify: { cut_off: true } } })).toEqual({ kind: "cut_off", seconds: 95 });
