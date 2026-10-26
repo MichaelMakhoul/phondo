@@ -27,13 +27,17 @@ function fakeDeepgram({ readyState = 1, throwOnOpen = null } = {}) {
   return dg;
 }
 
-function make(dgOpts) {
+function make(dgOpts, connectTimeoutMs) {
   const dg = fakeDeepgram(dgOpts);
   const finals = [];
   const lost = [];
-  const t = createOwnerTranscriber({ apiKey: "dg-key", openStream: dg.open, industry: "plumbing", onFinal: (x) => finals.push(x), onLost: (w) => lost.push(w) });
+  const t = createOwnerTranscriber({
+    apiKey: "dg-key", openStream: dg.open, industry: "plumbing", onFinal: (x) => finals.push(x), onLost: (w) => lost.push(w),
+    ...(connectTimeoutMs ? { connectTimeoutMs } : {}),
+  });
   return { t, dg, finals, lost };
 }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 describe("createOwnerTranscriber", () => {
   it("opens one English Deepgram stream with the org's industry for keyterms", () => {
@@ -76,17 +80,33 @@ describe("createOwnerTranscriber", () => {
     assert.equal(dg.ws.sent.length, 0);
   });
 
-  it("an unexpected close loses it; a normal close (1000/1005) doesn't", () => {
-    for (const code of [1000, 1005]) {
+  it("ANY close we didn't ask for loses it — a 'normal' 1000/1005 from Deepgram's side too (else the owner's lines vanish)", () => {
+    for (const code of [1000, 1005, 1011]) {
       const { t, dg, lost } = make();
       dg.cb.onClose(code);
-      assert.deepEqual(lost, [], `code ${code}`);
-      assert.equal(t.active, true);
+      assert.deepEqual(lost, [`closed with code ${code}`], `code ${code}`);
+      assert.equal(t.active, false);
     }
-    const { t, dg, lost } = make();
-    dg.cb.onClose(1011);
-    assert.deepEqual(lost, ["closed with code 1011"]);
+  });
+
+  it("a stream still connecting after the deadline is lost (a hung handshake would blank every line until it ends)", async () => {
+    const { t, dg, lost } = make({ readyState: 0 }, 20);
+    assert.equal(t.active, true, "still within the deadline");
+    await sleep(60);
+    assert.deepEqual(lost, ["did not connect within 20 ms"]);
     assert.equal(t.active, false);
+    assert.deepEqual(dg.ws.closed, [undefined], "the stuck socket is closed");
+  });
+
+  it("an open stream is never lost by the deadline; close() cancels it", async () => {
+    const open = make({ readyState: 1 }, 20);
+    await sleep(60);
+    assert.deepEqual(open.lost, []);
+    assert.equal(open.t.active, true);
+    const closing = make({ readyState: 0 }, 20);
+    closing.t.close();
+    await sleep(60);
+    assert.deepEqual(closing.lost, [], "our own close: no onLost from the deadline");
   });
 
   it("our own close(): 1000 to Deepgram, inactive, and no onLost for the error/close it causes", () => {
