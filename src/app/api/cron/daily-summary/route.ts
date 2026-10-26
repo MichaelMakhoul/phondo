@@ -7,7 +7,7 @@ import {
   type NotificationSendResult,
 } from "@/lib/notifications/notification-service";
 import * as Sentry from "@sentry/nextjs";
-import { isOwnerCallMetadata } from "@/lib/owner-assistant/owner-call";
+import { isOwnerCallMetadata, isCustomerNotifyCallMetadata } from "@/lib/owner-assistant/owner-call";
 
 // SCRUM-447: every org × up to 3 lookback days of sequential queries + email
 // sends. Vercel's default function duration would cut the run mid-loop —
@@ -158,10 +158,11 @@ export async function GET(req: NextRequest) {
           continue;
         }
 
-        // SCRUM-586: the owner ringing their own assistant is not a customer call.
-        // Filtered in JS on purpose: a SQL metadata->>'call_type' <> 'owner' would drop
-        // NULL-metadata rows (the mock DB can't catch that regression).
-        const customerCalls = (calls ?? []).filter((c: any) => !isOwnerCallMetadata(c.metadata));
+        // SCRUM-586: the owner ringing their own assistant is not a customer call — nor
+        // is the assistant calling a customer for the owner (SCRUM-598). Filtered in JS
+        // on purpose: a SQL metadata->>'call_type' <> 'owner' would drop NULL-metadata
+        // rows (the mock DB can't catch that regression).
+        const customerCalls = (calls ?? []).filter((c: any) => !isOwnerCallMetadata(c.metadata) && !isCustomerNotifyCallMetadata(c.metadata));
         if (customerCalls.length === 0) {
           skipped++;
           continue;

@@ -884,9 +884,9 @@ describe("/ws/test: inbound audio and teardown feed and close the owner's transc
 describe("notifyBookingsChanged, run for real", () => {
   const start = src.indexOf("function notifyBookingsChanged(ws, name, result) {");
   const code = src.slice(start, src.indexOf("\n}\n", start) + 3);
-  const { OWNER_WRITE_TOOL_NAMES } = require("../lib/owner-tools");
+  const { OWNER_CHANGE_TOOL_NAMES } = require("../lib/owner-tools");
   const { ownerResultSucceeded } = require("../lib/owner-tool-runner");
-  const notify = (ws, name, result) => run(`${code}\nnotifyBookingsChanged(ws, name, result);`, { ws, name, result, OWNER_WRITE_TOOL_NAMES, ownerResultSucceeded, WebSocket: { OPEN: 1 } });
+  const notify = (ws, name, result) => run(`${code}\nnotifyBookingsChanged(ws, name, result);`, { ws, name, result, OWNER_CHANGE_TOOL_NAMES, ownerResultSucceeded, WebSocket: { OPEN: 1 } });
 
   it("a successful owner cancel or move tells the page; nothing else does", () => {
     const cases = [
@@ -897,6 +897,8 @@ describe("notifyBookingsChanged, run for real", () => {
       ["owner_cancel_appointment", { message: "trouble" }, false],
       ["owner_list_appointments", { message: "2 jobs", data: { count: 2 } }, false],
       ["check_availability", { message: "free at 9" }, false],
+      // SCRUM-598: placing a call to a customer changes no booking.
+      ["owner_call_customer", { message: "Calling Jane", data: { outcome: "calling" } }, false],
     ];
     for (const [name, result, tells] of cases) {
       const ws = fakeWs();

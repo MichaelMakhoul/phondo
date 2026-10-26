@@ -50,3 +50,12 @@ test("every PIN-gate outcome — including a lockout check that errored — is s
     assert.equal(updates.find((u) => u.payload.metadata).payload.metadata.owner_auth, ownerAuth);
   }
 });
+
+test("SCRUM-598 (test lens): a customer call keeps its request and outcome in metadata.notify — the write replaces metadata", async () => {
+  updates.length = 0;
+  const notify = { purpose: "confirm", appointment_id: "a-1", requested_by_call_id: "o-1", mode: "conversation", answered_by: "human", outcome: "do_not_call", note: "asked not to be called" };
+  await completeCallRecord("call-3", { status: "completed", durationSeconds: 70, transcript: "…", callType: "customer_notify", notify, outcome: "answered" });
+  const main = updates.find((u) => u.payload.metadata);
+  assert.deepEqual(main.payload.metadata, { voice_provider: "self_hosted", call_type: "customer_notify", notify });
+  assert.equal(main.payload.outcome, "answered");
+});

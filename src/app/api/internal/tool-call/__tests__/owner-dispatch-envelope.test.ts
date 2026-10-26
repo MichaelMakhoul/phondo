@@ -16,8 +16,9 @@ vi.mock("@/lib/calendar/tool-handlers", () => ({
   handleLookupAppointment: vi.fn(async () => ({ success: true, message: "found" })),
   errorResult: (message: string) => ({ success: false, error: true, message }),
 }));
-vi.mock("@/lib/owner-assistant/tool-handlers", () => ({
-  OWNER_TOOL_NAMES: ["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment"],
+vi.mock("@/lib/owner-assistant/tool-handlers", async () => ({
+  // The REAL list (test lens): a hard-coded copy hid owner_call_customer from these tests.
+  OWNER_TOOL_NAMES: (await import("@/lib/owner-assistant/tool-names")).OWNER_TOOL_NAMES,
   handleOwnerListAppointments: vi.fn(async () => ({ success: true, message: "jobs" })),
   handleOwnerListMessages: vi.fn(async () => ({ success: true, message: "msgs" })),
   handleOwnerRescheduleAppointment: vi.fn(async () => ({ success: true, message: "moved" })),

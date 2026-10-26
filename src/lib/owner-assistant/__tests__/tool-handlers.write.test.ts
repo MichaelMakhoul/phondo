@@ -32,6 +32,12 @@ vi.mock("@/lib/calendar/tool-handlers", async (importOriginal) => {
 vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn(), captureMessage: vi.fn(), withScope: vi.fn() }));
 vi.mock("@/lib/sms/caller-sms", () => ({ sendCancellationSMS: vi.fn(), sendAppointmentConfirmationSMS: vi.fn() }));
 vi.mock("@/lib/observability/page-sentry", () => ({ pageSentry: vi.fn() }));
+// SCRUM-598: the voice server's call client — calls are off by default here (as in
+// production until the Fly flag is on); the SCRUM-598 blocks below switch them on.
+vi.mock("../customer-call", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../customer-call")>();
+  return { ...real, checkCustomerCall: vi.fn(), placeCustomerCall: vi.fn() };
+});
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
@@ -44,7 +50,8 @@ import { serviceTypeQuestion } from "@/lib/calendar/service-type-question";
 import { sendCancellationSMS, sendAppointmentConfirmationSMS } from "@/lib/sms/caller-sms";
 import { pageSentry } from "@/lib/observability/page-sentry";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
-import { handleOwnerRescheduleAppointment, handleOwnerCancelAppointment } from "../tool-handlers";
+import { handleOwnerRescheduleAppointment, handleOwnerCancelAppointment, handleOwnerCallCustomer } from "../tool-handlers";
+import { checkCustomerCall, placeCustomerCall } from "../customer-call";
 
 type Res = { data: unknown; error: { message?: string; code?: string } | null };
 type Op = { table: string; filters: Array<{ name: string; args: unknown[] }> };
@@ -106,6 +113,8 @@ beforeEach(() => {
     inserted: { ...BEFORE, id: NEW_LEG, start_time: "2026-10-16T22:00:00+00:00", end_time: "2026-10-16T23:00:00+00:00", rescheduled_from_id: APPT },
   });
   vi.clearAllMocks();
+  vi.mocked(checkCustomerCall).mockResolvedValue({ canCall: false, reason: "calls_disabled" });
+  vi.mocked(placeCustomerCall).mockResolvedValue({ placed: false, reason: "calls_disabled" });
   vi.useFakeTimers({ now: NOW });
 });
 afterEach(() => {
@@ -802,12 +811,12 @@ describe("SCRUM-597: every change asks whether to let the customer know", () => 
     expect(r.message).toContain("their number is a landline");
   });
 
-  it("'call' isn't available yet: the change happens and nobody is called or texted", async () => {
+  it("'call' with calls switched off: the change happens and nobody is called or texted", async () => {
     process.env.CALLER_SMS_ENABLED = "true";
     const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true, notify_customer: "call" }, ctx);
     expect(performRescheduleLeg).toHaveBeenCalledTimes(1);
     expect(sendAppointmentConfirmationSMS).not.toHaveBeenCalled();
-    expect(r.data).toMatchObject({ outcome: "rescheduled", customer_contact: { method: "call", status: "not_available" }, customer_notified: false });
+    expect(r.data).toMatchObject({ outcome: "rescheduled", customer_contact: { method: "call", status: "not_placed", reason: "calls_disabled" }, customer_notified: false });
     expect(r.message).toContain("I can't call customers yet");
   });
 
@@ -899,5 +908,227 @@ describe("SCRUM-597: contact edge cases", () => {
     db.queues.organizations = [AU, US];
     expect((await handleOwnerCancelAppointment(ORG, { appointment_id: APPT }, ctx)).data).toMatchObject({ contact_options: ["text", "none"] });
     expect((await handleOwnerCancelAppointment(ORG, { appointment_id: APPT }, ctx)).data).toMatchObject({ contact_options: ["none"], contact_note: "There's no mobile number on this booking." });
+  });
+});
+
+// ─── SCRUM-598: calling the customer ─────────────────────────────────────────
+
+describe("SCRUM-598: 'call' on a change — offered only when the voice server says so, placed after the change", () => {
+  const AU_ORG = { data: { timezone: TZ, country: "AU" }, error: null };
+  beforeEach(() => {
+    db.queues.organizations = [AU_ORG];
+    vi.mocked(recordAppointmentEvent).mockResolvedValue(true);
+    vi.mocked(checkCustomerCall).mockResolvedValue({ canCall: true });
+    vi.mocked(placeCustomerCall).mockResolvedValue({ placed: true, callId: "call-77" });
+  });
+
+  it("a move's read-back offers a call, after checking it for THIS booking (the leg as it stands) and this owner session", async () => {
+    const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: false }, ctx);
+    expect(r.data).toMatchObject({ outcome: "needs_confirmation", contact_options: ["call", "none"] });
+    expect(checkCustomerCall).toHaveBeenCalledWith({ organizationId: ORG, appointmentId: APPT, purpose: "moved", phone: "+61412345678", requestedByCallId: CALL });
+    // Clients lens M8: the owner hears what a call does before choosing.
+    expect(r.message).toContain("by call (a call also checks the new time suits them), or not tell them");
+    expect(placeCustomerCall).not.toHaveBeenCalled();
+  });
+
+  it("a cancel's read-back says its call also offers another time (clients lens M8); with no call there's no hint", async () => {
+    const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: false }, ctx);
+    expect(r.message).toContain("by call (a call also offers them another time), or not tell them");
+    queueBefore(1);
+    db.queues.organizations = [AU_ORG];
+    vi.mocked(checkCustomerCall).mockResolvedValueOnce({ canCall: false, reason: "voice_unreachable" });
+    const none = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: false }, ctx);
+    expect(none.message).not.toContain("a call also");
+  });
+
+  it("(test lens) a cancel's read-back checks the call for the cancel itself (purpose 'cancelled')", async () => {
+    const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: false }, ctx);
+    expect(r.data).toMatchObject({ outcome: "needs_confirmation", contact_options: ["call", "none"] });
+    expect(checkCustomerCall).toHaveBeenCalledWith({ organizationId: ORG, appointmentId: APPT, purpose: "cancelled", phone: "+61412345678", requestedByCallId: CALL });
+  });
+
+  it("a confirmed move with 'call' places the call about the NEW leg, after the change", async () => {
+    const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true, notify_customer: "call" }, ctx);
+    expect(performRescheduleLeg).toHaveBeenCalledTimes(1);
+    expect(placeCustomerCall).toHaveBeenCalledWith({ organizationId: ORG, appointmentId: NEW_LEG, purpose: "moved", phone: "+61412345678", requestedByCallId: CALL });
+    expect(vi.mocked(performRescheduleLeg).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(placeCustomerCall).mock.invocationCallOrder[0]);
+    expect(r.data).toMatchObject({ outcome: "rescheduled", customer_contact: { method: "call", status: "calling", callId: "call-77" }, customer_notified: true });
+    expect(r.message).toContain("I'm calling Jane Smith now to tell them the new time and check it suits. You'll get an email when the call's done.");
+  });
+
+  it("a confirmed cancel with 'call' places the call about the cancelled booking", async () => {
+    vi.mocked(cancelSingleAppointment).mockResolvedValueOnce({ success: true, message: "ok" } as any);
+    const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true, notify_customer: "call" }, ctx);
+    expect(placeCustomerCall).toHaveBeenCalledWith({ organizationId: ORG, appointmentId: APPT, purpose: "cancelled", phone: "+61412345678", requestedByCallId: CALL });
+    expect(r.data).toMatchObject({ outcome: "cancelled", customer_contact: { method: "call", status: "calling" } });
+    expect(r.message).toContain("I'm calling Jane Smith now to let them know, and to offer them another time. You'll get an email when the call's done.");
+  });
+
+  it("a call that can't be placed at the moment of dialling: the change stands, the owner hears why", async () => {
+    vi.mocked(placeCustomerCall).mockResolvedValueOnce({ placed: false, reason: "outside_hours" });
+    const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true, notify_customer: "call" }, ctx);
+    expect(r.success).toBe(true);
+    expect(r.data).toMatchObject({ outcome: "rescheduled", customer_contact: { method: "call", status: "not_placed", reason: "outside_hours" }, customer_notified: false });
+    expect(r.message).toContain("I couldn't call Jane Smith: it's outside calling hours (8 am to 8 pm), and I can't schedule calls for later yet — ask me again after 8 am.");
+  });
+
+  it("a call refused for a reason worth saying is noted in the read-back; a fault leaves it out quietly", async () => {
+    vi.mocked(checkCustomerCall).mockResolvedValueOnce({ canCall: false, reason: "do_not_call" });
+    const noted = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: false }, ctx);
+    expect(noted.data).toMatchObject({ contact_options: ["none"], contact_note: "Texting customers isn't available yet. I can't call them: they've asked not to be called." });
+    queueBefore(1);
+    db.queues.organizations = [AU_ORG];
+    vi.mocked(checkCustomerCall).mockResolvedValueOnce({ canCall: false, reason: "voice_unreachable" });
+    const quiet = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: false }, ctx);
+    expect(quiet.data).toMatchObject({ contact_options: ["none"], contact_note: "Texting customers isn't available yet." });
+  });
+});
+
+describe("SCRUM-598: owner_call_customer", () => {
+  const AU_ORG = { data: { timezone: TZ, country: "AU" }, error: null };
+  beforeEach(() => {
+    db.queues.organizations = [AU_ORG];
+    vi.mocked(checkCustomerCall).mockResolvedValue({ canCall: true });
+    vi.mocked(placeCustomerCall).mockResolvedValue({ placed: true, callId: "call-88" });
+  });
+  const ask = (args: Record<string, unknown>) => handleOwnerCallCustomer(ORG, { appointment_id: APPT, purpose: "confirm", ...args }, ctx);
+
+  it("without confirmed: checks the call, places NOTHING, and hands back the read-back", async () => {
+    const r = await ask({});
+    expect(r.success).toBe(false);
+    expect(r.data).toEqual({ outcome: "needs_confirmation", appointment_id: APPT, customer_name: "Jane Smith", when: "Friday, October 16 at 10:00 AM", purpose: "confirm" });
+    expect(r.message).toBe("Read this back and get a clear yes before calling: call Jane Smith now to check they're still OK for their booking on Friday, October 16 at 10:00 AM. If the owner confirms, call owner_call_customer again with confirmed=true and the same purpose.");
+    expect(checkCustomerCall).toHaveBeenCalledWith({ organizationId: ORG, appointmentId: APPT, purpose: "confirm", phone: "+61412345678", requestedByCallId: CALL, window: null });
+    expect(placeCustomerCall).not.toHaveBeenCalled();
+    expect(rateLimitDistributed).not.toHaveBeenCalled(); // a read-back is free
+  });
+
+  it("only the JSON boolean true places it", async () => {
+    for (const confirmed of ["true", 1, "yes", null]) {
+      queueBefore(1);
+      db.queues.organizations = [AU_ORG];
+      expect(((await ask({ confirmed })).data as any).outcome).toBe("needs_confirmation");
+    }
+    expect(placeCustomerCall).not.toHaveBeenCalled();
+  });
+
+  it("confirmed: rate-limited like every owner write, then placed — 'calling', with the call's id", async () => {
+    const r = await ask({ confirmed: true });
+    expect(rateLimitDistributed).toHaveBeenCalledTimes(1);
+    expect(placeCustomerCall).toHaveBeenCalledWith({ organizationId: ORG, appointmentId: APPT, purpose: "confirm", phone: "+61412345678", requestedByCallId: CALL, window: null });
+    expect(r.success).toBe(true);
+    expect(r.message).toBe("Calling Jane Smith now to check they're still OK for their booking on Friday, October 16 at 10:00 AM. You'll get an email when the call's done.");
+    expect(r.data).toEqual({ outcome: "calling", appointment_id: APPT, customer_name: "Jane Smith", when: "Friday, October 16 at 10:00 AM", purpose: "confirm", call_id: "call-88" });
+    expect(checkCustomerCall).not.toHaveBeenCalled(); // the voice server re-checks as it places
+    expect(performRescheduleLeg).not.toHaveBeenCalled();
+    expect(cancelSingleAppointment).not.toHaveBeenCalled();
+  });
+
+  it("finding a new time carries a STRUCTURED window — read back to the owner, never free text (security lens F2)", async () => {
+    // NOW is Thursday 15 October 2026 (Sydney).
+    const r = await ask({ purpose: "find_new_time", earliest_date: "2026-10-19", latest_date: "2026-10-23", time_of_day: "morning" });
+    expect(r.message).toContain("call Jane Smith now to find a new time for their booking on Friday, October 16 at 10:00 AM — between Monday, October 19 and Friday, October 23, in the morning.");
+    expect(r.message).toContain("the same purpose, earliest_date, latest_date and time_of_day");
+    // Clients lens R2-2: only the days and the time of day reach the call — the owner hears that before saying yes.
+    expect(r.message).toContain('Only those days and that time of day reach the call: if the owner asked for anything else (a day to skip, a time like "after 3", a particular person), say that can\'t be passed on before they confirm.');
+    const window = { earliest: "2026-10-19", latest: "2026-10-23", timeOfDay: "morning" };
+    expect(checkCustomerCall).toHaveBeenCalledWith(expect.objectContaining({ purpose: "find_new_time", window }));
+    expect(r.data).toMatchObject({ outcome: "needs_confirmation", window });
+    queueBefore(1);
+    db.queues.organizations = [AU_ORG];
+    await ask({ earliest_date: "2026-10-19" });
+    expect(checkCustomerCall).toHaveBeenLastCalledWith(expect.objectContaining({ purpose: "confirm", window: null }), );
+  });
+
+  it("a window that isn't real days from today up to 90 days ahead (or a time of day off the list) places nothing and asks again", async () => {
+    for (const bad of [
+      { earliest_date: "next week" },
+      { earliest_date: "2026-10-14" }, // yesterday
+      { latest_date: "2027-03-01" }, // beyond 90 days
+      { earliest_date: "2026-10-23", latest_date: "2026-10-19" },
+      { earliest_date: "2026-02-30" },
+      { time_of_day: "lunchtime" },
+    ]) {
+      queueBefore(1);
+      db.queues.organizations = [AU_ORG];
+      const r = await ask({ purpose: "find_new_time", ...bad });
+      expect(r.data, JSON.stringify(bad)).toMatchObject({ outcome: "needs_confirmation", purpose: "find_new_time" });
+      expect(r.message).toContain("I need the days for the new time as dates like 2026-10-15");
+    }
+    expect(checkCustomerCall).not.toHaveBeenCalled();
+    expect(placeCustomerCall).not.toHaveBeenCalled();
+  });
+
+  it("a window that constrains nothing is no window", async () => {
+    const r = await ask({ purpose: "find_new_time", time_of_day: "any" });
+    expect(checkCustomerCall).toHaveBeenCalledWith(expect.objectContaining({ window: null }));
+    expect(r.message).not.toContain(" — ");
+  });
+
+  it("(test lens) an empty-string date is no date (the model sends \"\" for a field it doesn't use); a from-only window reads 'from'", async () => {
+    const r = await ask({ purpose: "find_new_time", earliest_date: "", latest_date: "", time_of_day: "morning" });
+    expect(checkCustomerCall).toHaveBeenCalledWith(expect.objectContaining({ purpose: "find_new_time", window: { earliest: null, latest: null, timeOfDay: "morning" } }));
+    expect(r.message).toContain("on Friday, October 16 at 10:00 AM — in the morning.");
+    queueBefore(1);
+    db.queues.organizations = [AU_ORG];
+    const from = await ask({ purpose: "find_new_time", earliest_date: "2026-10-19", latest_date: "" });
+    expect(from.message).toContain("on Friday, October 16 at 10:00 AM — from Monday, October 19.");
+  });
+
+  it("a call that can't be made: not_available with the reason, and the number offered", async () => {
+    vi.mocked(checkCustomerCall).mockResolvedValueOnce({ canCall: false, reason: "number_cap" });
+    const r = await ask({});
+    expect(r.data).toMatchObject({ outcome: "not_available", reason: "number_cap" });
+    expect("customer_notified" in (r.data as object)).toBe(false);
+    // Clients lens S2: nothing was tried yet at the read-back — "can't", not "couldn't".
+    expect(r.message).toBe("I can't call Jane Smith: they've already had two calls from you today. I can read you their number if you want to ring them yourself.");
+    queueBefore(1);
+    db.queues.organizations = [AU_ORG];
+    vi.mocked(placeCustomerCall).mockResolvedValueOnce({ placed: false, reason: "place_unconfirmed" });
+    const unsure = await ask({ confirmed: true });
+    expect(unsure.message).toBe("I'm not sure the call to Jane Smith went out — check Calls in the dashboard before you ring them yourself.");
+    queueBefore(1);
+    db.queues.organizations = [AU_ORG];
+    vi.mocked(checkCustomerCall).mockResolvedValueOnce({ canCall: false, reason: "calls_disabled" });
+    expect((await ask({})).message).toBe("I can't call customers yet. I can read you their number if you want to ring them yourself.");
+    // Refused at the moment of dialling: it was tried — "couldn't".
+    queueBefore(1);
+    db.queues.organizations = [AU_ORG];
+    vi.mocked(placeCustomerCall).mockResolvedValueOnce({ placed: false, reason: "outside_hours" });
+    expect((await ask({ confirmed: true })).message).toBe("I couldn't call Jane Smith: it's outside calling hours (8 am to 8 pm), and I can't schedule calls for later yet — ask me again after 8 am. I can read you their number if you want to ring them yourself.");
+  });
+
+  it("no purpose (or an unknown one): asks which, places nothing", async () => {
+    for (const purpose of [undefined, "survey", "cancel"]) {
+      queueBefore(1);
+      db.queues.organizations = [AU_ORG];
+      const r = await handleOwnerCallCustomer(ORG, { appointment_id: APPT, purpose, confirmed: true }, ctx);
+      expect(r.data).toMatchObject({ outcome: "needs_confirmation" });
+      expect(r.message).toContain('purpose "confirm" or "find_new_time"');
+    }
+    expect(checkCustomerCall).not.toHaveBeenCalled();
+    expect(placeCustomerCall).not.toHaveBeenCalled();
+  });
+
+  it("a booking already started, another org's, or in another diary: never a call", async () => {
+    queueBefore(1, { ...BEFORE, start_time: "2026-10-15T02:00:00+00:00" });
+    const past = await ask({ confirmed: true });
+    expect(past.data).toMatchObject({ outcome: "not_available", reason: "wrong_state" });
+    expect(past.message).toContain("has already started, so there's nothing to call about");
+    db.queues.appointments = [{ data: null, error: null }];
+    db.queues.organizations = [AU_ORG];
+    expect(((await ask({ confirmed: true })).data as any).outcome).toBe("not_found");
+    queueBefore(1, { ...BEFORE, provider: "cliniko", external_id: "ck-1" });
+    db.queues.organizations = [AU_ORG];
+    expect(((await ask({ confirmed: true })).data as any).outcome).toBe("external_calendar");
+    expect(placeCustomerCall).not.toHaveBeenCalled();
+    expect(checkCustomerCall).not.toHaveBeenCalled();
+  });
+
+  it("rate-limited: nothing placed", async () => {
+    vi.mocked(rateLimitDistributed).mockResolvedValueOnce({ allowed: false } as any);
+    const r = await ask({ confirmed: true });
+    expect(r.data).toMatchObject({ outcome: "rate_limited" });
+    expect(placeCustomerCall).not.toHaveBeenCalled();
   });
 });

@@ -10,8 +10,8 @@ const { buildOwnerPrompt } = require("../lib/owner-prompt");
 // SCRUM-587 — the owner tool set is PR B's contract, declared verbatim, flat.
 describe("owner tool declarations", () => {
   const byName = Object.fromEntries(ot.ownerToolDefinitions.map((d) => [d.function.name, d.function]));
-  it("declares exactly the four owner tools with PR B's parameter names", () => {
-    assert.deepEqual(Object.keys(byName).sort(), ["owner_cancel_appointment", "owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment"]);
+  it("declares exactly the five owner tools with PR B's parameter names", () => {
+    assert.deepEqual(Object.keys(byName).sort(), ["owner_call_customer", "owner_cancel_appointment", "owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment"]);
     assert.deepEqual(byName.owner_list_appointments.parameters.properties.range.enum, ["today", "tomorrow", "this_week", "date"]);
     assert.deepEqual(byName.owner_list_appointments.parameters.required, ["range"]);
     assert.deepEqual(Object.keys(byName.owner_list_messages.parameters.properties), []);
@@ -25,6 +25,29 @@ describe("owner tool declarations", () => {
     assert.deepEqual(Object.keys(byName.owner_list_appointments.parameters.properties).sort(), ["date", "range"]);
     assert.deepEqual(Object.keys(byName.owner_reschedule_appointment.parameters.properties).sort(), ["appointment_id", "confirmed", "new_datetime", "notify_customer"]);
     assert.deepEqual(Object.keys(byName.owner_cancel_appointment.parameters.properties).sort(), ["appointment_id", "confirmed", "notify_customer", "reason"]);
+    assert.deepEqual(Object.keys(byName.owner_call_customer.parameters.properties).sort(), ["appointment_id", "confirmed", "earliest_date", "latest_date", "purpose", "time_of_day"]);
+  });
+  it("SCRUM-598: owner_call_customer — two purposes, the same two-call gate, and never a substitute for notify_customer on a change", () => {
+    const t = byName.owner_call_customer;
+    assert.deepEqual(t.parameters.properties.purpose.enum, ["confirm", "find_new_time"]);
+    assert.deepEqual(t.parameters.required, ["appointment_id", "purpose"]);
+    assert.equal(t.parameters.properties.confirmed.type, "boolean");
+    assert.ok(t.description.includes("WITHOUT changing it"));
+    assert.ok(t.description.includes("use notify_customer \"call\" on that change instead"));
+    assert.ok(t.description.includes("First call WITHOUT confirmed: nothing happens"));
+    assert.ok(t.description.indexOf("WITHOUT confirmed") < t.description.indexOf("confirmed=true"));
+    assert.ok(t.description.includes("calling | needs_confirmation | not_available | not_found | external_calendar — only 'calling' means the call is being placed"));
+    // Security lens F2: the window is structured — no free-text field reaches the customer call.
+    assert.deepEqual(t.parameters.properties.time_of_day.enum, ["morning", "afternoon", "evening", "any"]);
+    assert.ok(t.parameters.properties.earliest_date.description.includes("YYYY-MM-DD"));
+    assert.ok(!("note" in t.parameters.properties));
+    // Clients lens R2-2/R2-3: only days and a time of day reach the call, and a range has an end.
+    assert.ok(t.description.includes("only a date range and a time of day reach the call: anything else the owner asks for (a day to skip, \"after 3\", a particular person) can't be passed on — say so in the read-back"));
+    assert.ok(t.parameters.properties.latest_date.description.includes("Set it whenever the owner's words have an end (\"next week\" ends next Sunday"));
+    assert.ok(t.parameters.properties.latest_date.description.includes("without it the call may book any day from earliest_date on"));
+    assert.ok(ot.OWNER_WRITE_TOOL_NAMES.includes("owner_call_customer"), "the confirmation gate guards it");
+    assert.ok(!ot.OWNER_CHANGE_TOOL_NAMES.includes("owner_call_customer"), "it changes no booking");
+    assert.deepEqual([...ot.OWNER_CHANGE_TOOL_NAMES], ["owner_reschedule_appointment", "owner_cancel_appointment"]);
   });
   it("SCRUM-597: notify_customer is the enum PR B parses (text | call | none), optional, on both writes", () => {
     for (const tool of [byName.owner_reschedule_appointment, byName.owner_cancel_appointment]) {
@@ -61,7 +84,7 @@ describe("owner tool declarations", () => {
   it("tells the model which outcomes mean the change happened", () => {
     assert.ok(byName.owner_reschedule_appointment.description.includes("rescheduled | needs_confirmation | not_found | slot_taken | invalid_time | rate_limited"));
     assert.ok(byName.owner_cancel_appointment.description.includes("cancelled | needs_confirmation | not_found | rate_limited"));
-    assert.deepEqual([...ot.OWNER_SUCCESS_OUTCOMES].sort(), ["cancelled", "rescheduled"]);
+    assert.deepEqual([...ot.OWNER_SUCCESS_OUTCOMES].sort(), ["calling", "cancelled", "rescheduled"]);
   });
   it("each write describes PR B's two-call flow: WITHOUT confirmed first for the read-back (data.from/to, data.when), confirmed=true only after the owner's yes", () => {
     for (const [tool, times] of [["owner_reschedule_appointment", "data.from and data.to"], ["owner_cancel_appointment", "data.when"]]) {
@@ -112,7 +135,7 @@ describe("owner check_availability declaration", () => {
 describe("buildOwnerTools", () => {
   it("returns the owner tools plus the three shared read/end tools, nothing customer-facing", () => {
     const names = ot.buildOwnerTools().map((t) => t.function.name);
-    assert.deepEqual(names, ["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment", "get_current_datetime", "check_availability", "end_call"]);
+    assert.deepEqual(names, ["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment", "owner_call_customer", "get_current_datetime", "check_availability", "end_call"]);
     for (const banned of ["book_appointment", "cancel_appointment", "reschedule_appointment", "transfer_call", "schedule_callback", "lookup_appointment", "update_appointment"]) assert.ok(!names.includes(banned), banned);
     assert.deepEqual([...ot.OWNER_ALLOWED_TOOL_NAMES].sort(), [...names].sort());
   });

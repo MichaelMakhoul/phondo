@@ -14,3 +14,19 @@ export function isOwnerCallMetadata(metadata: unknown): boolean {
     (metadata as Record<string, unknown>).call_type === OWNER_CALL_TYPE
   );
 }
+
+/**
+ * SCRUM-598: a call the assistant placed to a customer for the owner
+ * (calls.metadata.call_type === "customer_notify", written by the voice server when
+ * it places the call). Not a customer calling in: no spam scoring, no missed-call
+ * alert, no text-back, not a "message" for the owner, not counted as a customer call.
+ */
+export const CUSTOMER_NOTIFY_CALL_TYPE = "customer_notify";
+
+export function isCustomerNotifyCallMetadata(metadata: unknown): boolean {
+  return (
+    typeof metadata === "object" &&
+    metadata !== null &&
+    (metadata as Record<string, unknown>).call_type === CUSTOMER_NOTIFY_CALL_TYPE
+  );
+}

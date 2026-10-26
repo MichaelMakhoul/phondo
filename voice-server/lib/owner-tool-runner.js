@@ -36,7 +36,7 @@
  * Logs carry tool names, ids of the call and outcome codes only — never tool
  * arguments, customer text or results.
  */
-const { OWNER_TOOL_NAMES, OWNER_WRITE_TOOL_NAMES, OWNER_ALLOWED_TOOL_NAMES, OWNER_SUCCESS_OUTCOMES } = require("./owner-tools");
+const { OWNER_TOOL_NAMES, OWNER_WRITE_TOOL_NAMES, OWNER_CHANGE_TOOL_NAMES, OWNER_ALLOWED_TOOL_NAMES, OWNER_SUCCESS_OUTCOMES } = require("./owner-tools");
 
 const OWNER_MAX_TOOL_CALLS = 10;
 
@@ -72,7 +72,7 @@ const CUSTOMER_FAILURE_LINE = /take your information|having a little trouble rig
  * precedes it. Cutting there, not at the first full stop, keeps "Dr. Jane Smith"
  * whole.
  */
-const CONTACT_SENTENCE = /\s+(?:The customer has NOT been notified\b|I've texted |I couldn't text |I can't call customers yet\b|I haven't let )/i;
+const CONTACT_SENTENCE = /\s+(?:The customer has NOT been notified\b|I've texted |I couldn't text |I can't call customers yet\b|I haven't let |I'm calling |I couldn't call |I'm not sure the call )/i;
 
 /**
  * SCRUM-597: what happened to the customer, for the stored summary, from PR B's
@@ -85,8 +85,21 @@ function contactSummary(data) {
   if (!contact || typeof contact !== "object") return "";
   if (contact.status === "sent") return " — customer texted";
   if (contact.method === "text" && contact.status === "not_sent") return " — customer not texted";
+  // SCRUM-598: a placed call isn't a told customer yet — the outcome email says how it went.
+  if (contact.status === "calling") return " — calling the customer";
+  if (contact.method === "call") return " — customer not called";
   return " — customer not told";
 }
+/**
+ * The in-flight notice's words for the customer, from data.customer_contact.status.
+ * @param {unknown} status
+ */
+function inFlightContact(status) {
+  if (status === "sent") return "WAS texted";
+  if (status === "calling") return "IS being called";
+  return "was NOT told";
+}
+
 /** Fits PR B's longest success line (an 80-character name and two spoken times). */
 const DETAIL_MAX = 200;
 
@@ -237,6 +250,20 @@ function confirmationKey(name, args) {
   const part = (v) => (typeof v === "string" && v !== "" && !v.includes("|") ? v : null);
   const id = part(args.appointment_id);
   if (id === null) return null;
+  // SCRUM-598: a yes to "call to confirm" never places a "find a new time" call, and a
+  // yes to one window for the new time never places a call with another (security
+  // lens F2) — every field the read-back gave is in the key, as new_datetime is for a move.
+  if (name === "owner_call_customer") {
+    const purpose = part(args.purpose);
+    /** @param {unknown} v an optional field: absent is "", a malformed one is null */
+    const optional = (v) => (v === undefined || v === null || v === "" ? "" : part(v));
+    const earliest = optional(args.earliest_date);
+    const latest = optional(args.latest_date);
+    // "any" constrains nothing, as the website reads it: the same key as no time of day (code lens R2-N2).
+    const timeOfDay = args.time_of_day === "any" ? "" : optional(args.time_of_day);
+    if (purpose === null || earliest === null || latest === null || timeOfDay === null) return null;
+    return `${name}|${id}|${purpose}|${earliest}|${latest}|${timeOfDay}`;
+  }
   if (name !== "owner_reschedule_appointment") return `${name}|${id}`;
   const when = part(args.new_datetime);
   return when === null ? null : `${name}|${id}|${when}`;
@@ -389,6 +416,21 @@ function writeDetail(message, fallback, data) {
 }
 
 /**
+ * SCRUM-598: a call placed to a customer, from PR B's data ("Called Jane Smith to
+ * confirm Wednesday, October 28 at 2:30 PM"). PR B's values are already one capped line.
+ * @param {unknown} data
+ */
+function callDetail(data) {
+  const d = data && typeof data === "object" ? /** @type {any} */ (data) : {};
+  const who = typeof d.customer_name === "string" && d.customer_name ? d.customer_name : "a customer";
+  const when = typeof d.when === "string" && d.when ? ` ${d.when}` : " their booking";
+  // PR B's data, read at runtime: a purpose this side doesn't know is said plainly, never guessed.
+  const why = d.purpose === "find_new_time" ? `to find a new time for${when}` : d.purpose === "confirm" ? `to confirm${when}` : `about${when}`;
+  const line = Array.from(`Called ${who} ${why}`);
+  return line.length > DETAIL_MAX ? `${line.slice(0, DETAIL_MAX - 1).join("")}…` : line.join("");
+}
+
+/**
  * What this call did, in the owner's terms — null for calls the summary ignores.
  * @param {string} name
  * @param {Record<string, any>} args
@@ -414,6 +456,8 @@ function describeOwnerToolCall(name, args, message, successful, data) {
       return writeDetail(message, "Moved a job", data);
     case "owner_cancel_appointment":
       return writeDetail(message, "Cancelled a job", data);
+    case "owner_call_customer":
+      return callDetail(data);
     default:
       return null;
   }
@@ -612,7 +656,7 @@ async function runOneOwnerToolCall(session, toolCall, deps) {
   if (cancelledInFlight && forwardArgs.confirmed === true && (successful || outcomeUnknown)) {
     const outcome = outcomeUnknown ? "unknown" : outcomeLabel(outcomeOf(r));
     const notice = successful
-      ? `SYSTEM NOTICE (not the owner speaking): the ${name} call that was interrupted had already gone through — data.outcome is "${outcome}", so the change HAS been made, and the customer ${/** @type {any} */ (r.data)?.customer_contact?.status === "sent" ? "WAS texted" : "was NOT told"}. Tell the owner it went through.`
+      ? `SYSTEM NOTICE (not the owner speaking): the ${name} call that was interrupted had already gone through — data.outcome is "${outcome}", so ${name === "owner_call_customer" ? "the call to the customer IS being placed" : `the change HAS been made, and the customer ${inFlightContact(/** @type {any} */ (r.data)?.customer_contact?.status)}`}. Tell the owner it went through.`
       : `SYSTEM NOTICE (not the owner speaking): the ${name} call that was interrupted had already been sent and its result never came back, so it may have gone through. Tell the owner, and check with owner_list_appointments before changing anything else.`;
     try {
       if (typeof deps.sendText !== "function") throw new Error("no way to reach the model");
@@ -635,7 +679,7 @@ async function runOneOwnerToolCall(session, toolCall, deps) {
   // A real change frees/takes a slot that OTHER sessions for this org may have
   // pre-loaded — owner sessions carry no snapshot themselves. The change has
   // happened either way, so a cache fault must not keep it from the model.
-  if (successful && OWNER_WRITE_TOOL_NAMES.includes(name) && session.organizationId) {
+  if (successful && OWNER_CHANGE_TOOL_NAMES.includes(name) && session.organizationId) {
     try {
       scheduleCache.invalidate(session.organizationId);
     } catch (err) {

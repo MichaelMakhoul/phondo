@@ -12,6 +12,9 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { DEMO_ORG_ID } from "@/lib/demo/config";
 import { ssrfSafeFetch, escapeHtml } from "@/lib/security/validation";
 import type { OwnerRecapItem } from "@/lib/owner-assistant/recap";
+import type { CallOutcomeReport, CallResult, DiaryLine } from "@/lib/owner-assistant/call-outcome";
+import type { CallOutcome, CallPurpose } from "@/lib/owner-assistant/customer-call";
+import { formatPhoneForCountry } from "@/lib/country-config";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import * as Sentry from "@sentry/nextjs";
 import { Resend } from "resend";
@@ -942,6 +945,9 @@ function recapToldLine(item: OwnerRecapItem): string {
       return "The text to the customer failed — please let them know yourself.";
     case "not_texted":
       return `Customer not texted (${escapeHtml(item.toldWhy)}).`;
+    case "calling":
+      // SCRUM-598: placed, not yet told — the call's own email says how it went.
+      return "Your assistant called (or is calling) the customer — see the separate email for how it went.";
     case "not_told":
       return "Customer not told.";
     default: {
@@ -966,6 +972,315 @@ function recapChangeLine(item: OwnerRecapItem, who: string, when: string): strin
     }
   }
 }
+
+export interface CustomerCallOutcomeData {
+  organizationId: string;
+  /** From buildCallOutcome: the phone system's result and the diary, plus the AI's own words labelled. */
+  report: CallOutcomeReport;
+  /** The org's timezone couldn't be read, so the times are in Sydney time (said in the email). */
+  timesInDefaultZone?: boolean;
+}
+
+/**
+ * SCRUM-598: how a call the assistant placed to a customer went — the email the owner
+ * asked for "after the assistant has done that, in case the AI made a mistake or
+ * hallucinated". To the OWNER only (like the recap and the PIN alert), no preference
+ * gate, demo org skipped, honest settle (no owner email ⇒ throws).
+ */
+export async function sendCustomerCallOutcomeNotification(data: CustomerCallOutcomeData): Promise<NotificationSendResult> {
+  if (skipDemoOrg("customer-call-outcome", data.organizationId)) return "skipped";
+  const email = await getOrganizationOwnerEmail(data.organizationId);
+  const channels: Promise<void>[] = [];
+  const droppedChannels: string[] = [];
+  if (!email) {
+    droppedChannels.push("owner-email");
+  } else {
+    channels.push(sendEmail({
+      to: email,
+      subject: `Your assistant called ${data.report.customer} — ${callResultShort(data.report.result)}`,
+      template: "customer-call-outcome",
+      data: { report: data.report, timesInDefaultZone: data.timesInDefaultZone === true },
+    }));
+  }
+  return settleChannels("customer-call-outcome", data.organizationId, channels, droppedChannels);
+}
+
+/** The subject's few words for the result (exhaustive: a new result must be worded). */
+function callResultShort(result: CallResult): string {
+  switch (result.kind) {
+    case "answered":
+      return "they answered";
+    case "voicemail":
+      return "left a voicemail";
+    case "voicemail_not_left":
+      return "voicemail, no message left";
+    case "no_answer":
+      return "no answer";
+    case "busy":
+      return "their line was busy";
+    case "dropped":
+      return "they hung up straight away";
+    case "failed_on_our_side":
+      return "the call failed on our side";
+    case "machine_answered":
+      return "a fax or machine answered";
+    case "unknown_end":
+      return "we couldn't confirm how it went";
+    case "cut_off":
+      return "the call was cut off";
+    case "failed":
+      return "the call didn't go through";
+    default: {
+      const unhandled: never = result;
+      return unhandled;
+    }
+  }
+}
+
+/** "2 min 10 s" / "45 s". */
+function callLength(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m > 0 ? `${m} min${s ? ` ${s} s` : ""}` : `${s} s`;
+}
+
+/** The result row, from the phone system (exhaustive). */
+function callResultLine(result: CallResult): string {
+  switch (result.kind) {
+    case "answered":
+      return `${result.sureItWasAPerson ? "They answered" : "The call connected (the phone system couldn't tell whether a person or a voicemail answered — the summary says what happened)"} — the call lasted ${callLength(result.seconds)}.${result.endedOnAFault ? " It ended on a fault on our side, so check the recording." : ""}`;
+    case "voicemail":
+      return result.playedToEnd
+        ? "Their voicemail picked up and the assistant left a message."
+        : "Their voicemail picked up and the assistant left a message (we couldn't confirm it played to the end).";
+    case "voicemail_not_left":
+      return "Their voicemail picked up, but the assistant couldn't leave a message — give them a ring.";
+    case "no_answer":
+      return "No answer, and no message left.";
+    case "busy":
+      return "Their line was busy. Nothing was said.";
+    case "dropped":
+      return "They picked up but the call ended before the assistant spoke.";
+    case "failed_on_our_side":
+      return "They picked up, but the call failed on our side before the assistant could speak — please give them a ring.";
+    case "machine_answered":
+      return "A fax or another machine answered, so nothing was said — the number on the booking may be wrong.";
+    case "unknown_end":
+      return "We couldn't get the phone system's record of this call, so we can't say how it went — check Calls before you ring them.";
+    case "cut_off":
+      return `The call was cut off on our side after ${callLength(result.seconds)} — check the recording and give them a call if needed.`;
+    case "failed":
+      return "The call didn't go through. Nothing was said.";
+    default: {
+      const unhandled: never = result;
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * One diary line (customer-derived values escaped here: nested data skips the
+ * top-level escaping). `alone`: the only line — "nothing changed" is the whole story.
+ * `purpose`: only a cancel's own call is about a booking that was cancelled before it.
+ */
+function diaryLineHtml(line: DiaryLine, alone: boolean, purpose: CallPurpose): string {
+  switch (line.kind) {
+    case "booked":
+      return `Booked a new time: <strong>${escapeHtml(line.when)}</strong>`;
+    case "moved":
+      return `Moved${line.from ? ` from ${escapeHtml(line.from)}` : ""} to <strong>${escapeHtml(line.when)}</strong>`;
+    case "cancelled":
+      return `Cancelled the booking on <strong>${escapeHtml(line.when)}</strong>`;
+    case "unchanged": {
+      const at = escapeHtml(line.when);
+      let state: string;
+      switch (line.state) {
+        case "booked":
+          state = `still booked for <strong>${at}</strong>`;
+          break;
+        case "cancelled":
+          state = `the booking on ${at} is ${purpose === "cancelled" ? "still" : "now"} cancelled`;
+          break;
+        case "inactive":
+          state = `the booking on ${at} is no longer active`;
+          break;
+        default: {
+          const unhandled: never = line.state;
+          return unhandled;
+        }
+      }
+      // Beside what the call made, it says where the old booking stands.
+      return alone ? `Nothing changed on the call — ${state}` : state.charAt(0).toUpperCase() + state.slice(1);
+    }
+    default: {
+      const unhandled: never = line;
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * "0412 345 678" as a tap-to-call link for an AU number held as +61… (the owner reads
+ * this on their phone — clients lens S4); anything else as written, escaped.
+ */
+function phoneHtml(phone: string): string {
+  const m = /^\+61([23478]\d{8})$/.exec(phone);
+  if (!m) return escapeHtml(phone);
+  return `<a href="tel:${phone}">${escapeHtml(formatPhoneForCountry(`0${m[1]}`, "AU"))}</a>`;
+}
+
+/**
+ * How far the call's news got (exhaustive over the result — types lens N1):
+ * - heard: they answered and reacted to it (confirmed, rebooked, declined, will call back);
+ * - message: a voicemail Twilio confirmed played to the end;
+ * - unsure: cut off, a message not confirmed as played, no outcome recorded, or
+ *   "other" / "do_not_call" — neither means the news landed ("other" is what the
+ *   kind path records when the customer is unwell or has died);
+ * - missed: nobody heard it.
+ */
+type NewsReach = "heard" | "message" | "unsure" | "missed";
+
+/** Outcomes that mean the customer heard the news and reacted to it (clients and silent lenses R2-1). */
+const HEARD_OUTCOMES: ReadonlySet<CallOutcome> = new Set<CallOutcome>(["confirmed", "rebooked", "declined", "will_call_back"]);
+
+function newsReach(r: CallOutcomeReport): NewsReach {
+  const result = r.result;
+  switch (result.kind) {
+    case "answered":
+      if (r.assistantOutcome === "wrong_person") return "missed";
+      return r.assistantOutcome !== null && HEARD_OUTCOMES.has(r.assistantOutcome) ? "heard" : "unsure";
+    case "voicemail":
+      return result.playedToEnd ? "message" : "unsure";
+    case "cut_off":
+    case "unknown_end":
+      return "unsure";
+    case "voicemail_not_left":
+    case "no_answer":
+    case "busy":
+    case "dropped":
+    case "failed_on_our_side":
+    case "machine_answered":
+    case "failed":
+      return "missed";
+    default: {
+      const unhandled: never = result;
+      return unhandled;
+    }
+  }
+}
+
+/** What the diary says the call left behind. A time also cancelled on the call never stands. */
+function diaryState(r: CallOutcomeReport) {
+  const cancelledAt = new Set(r.diary.filter((d) => d.kind === "cancelled").map((d) => d.when));
+  const standing = (d: DiaryLine) => !cancelledAt.has(d.when);
+  return {
+    /** A time moved to or booked on the call that still stands. */
+    newTime: r.diary.some((d) => (d.kind === "moved" || d.kind === "booked") && standing(d)),
+    /** A separate booking made on the call (not a move) that still stands, if any. */
+    bookedNew: r.diary.find((d): d is Extract<DiaryLine, { kind: "booked" }> => d.kind === "booked" && standing(d)) ?? null,
+    /** The booking the call was about was cancelled on the call. */
+    cancelledOnTheCall: r.bookingWhen !== null && r.diary.some((d) => d.kind === "cancelled" && d.when === r.bookingWhen),
+    /** The booking the call was about, as it stands, when the call didn't move or cancel it. */
+    about: r.diary.find((d): d is Extract<DiaryLine, { kind: "unchanged" }> => d.kind === "unchanged") ?? null,
+  };
+}
+
+/**
+ * Clients lens M2: when the customer still doesn't know, didn't confirm, or nothing
+ * was agreed — say so plainly; this email is the owner's only reminder. Null when
+ * there's nothing left to do. With the made-up-action checks off on these calls,
+ * the diary is the check: a "rebooked" it doesn't show is flagged (silent lens R2-1).
+ */
+function nextStepLine(r: CallOutcomeReport): string | null {
+  const who = escapeHtml(r.customer);
+  const noMoreCalls = r.assistantOutcome === "do_not_call";
+  // "Ring them" never follows someone who asked not to be called again.
+  const ring = r.phone && !noMoreCalls ? ` — ring them on ${phoneHtml(r.phone)}` : "";
+  const reach = newsReach(r);
+  const { newTime, bookedNew, cancelledOnTheCall, about } = diaryState(r);
+  if (r.assistantOutcome === "rebooked" && !newTime) {
+    return `The assistant noted it booked or moved a time for ${who}, but your diary shows no new time. Check the call and Appointments${ring}.`;
+  }
+  // A new booking where the call should have moved the old one: both are in the diary
+  // (on a confirm call too — "can we do Thursday instead?" booked, not moved: silent lens R4).
+  if (r.purpose !== "cancelled" && bookedNew && about?.state === "booked") {
+    // Clients lens: the new time named, so it can be judged at a glance (a recall booked on a confirm call is fine).
+    return `A new time (${escapeHtml(bookedNew.when)}) was booked for ${who}, but their booking on ${escapeHtml(about.when)} is still in your diary — cancel it only if the new time replaces it.`;
+  }
+  const seeNote = r.assistantOutcome === "other" || noMoreCalls ? " (see the assistant's note)" : "";
+  const asked = noMoreCalls ? ", and they asked not to be called again" : "";
+  const leftMessage = r.result.kind === "voicemail";
+  const notToldYet = (): string => {
+    if (leftMessage) return `${who} may not have heard about this change (we couldn't confirm the message played to the end)${ring}.`;
+    if (reach === "unsure") return `${who} may not have heard about this change${seeNote}${asked}${ring}.`;
+    return `${who} hasn't been told about this change${ring}.`;
+  };
+  switch (r.purpose) {
+    case "cancelled":
+      return reach === "heard" || reach === "message" ? null : notToldYet();
+    case "moved":
+      if (newTime || reach === "message" || (reach === "heard" && r.assistantOutcome === "confirmed")) return null;
+      // Silent lens R3-1: a move's call also asks whether the new time suits — "declined"
+      // or "will call back" heard the news, but may not have taken the time.
+      if (reach === "heard") {
+        const still = about?.state === "booked" ? ` It's still booked for ${escapeHtml(about.when)}` : "";
+        const then = still ? `${still}${ring}.` : r.phone ? ` Ring them on ${phoneHtml(r.phone)}.` : "";
+        return `${who} heard about the move, but the new time may not suit them (see the assistant's note).${then}`;
+      }
+      return notToldYet();
+    case "confirm":
+      if (newTime || cancelledOnTheCall || (reach === "heard" && r.assistantOutcome === "confirmed")) return null;
+      if (leftMessage) return `${who} hasn't confirmed their booking (the assistant left a message)${ring}.`;
+      if (reach === "heard") return `${who} didn't confirm their booking (see the assistant's note)${ring}.`;
+      if (reach === "unsure") return `${who} may not have confirmed their booking${seeNote || " (check the summary)"}${asked}${ring}.`;
+      return `${who} hasn't confirmed their booking${ring}.`;
+    case "find_new_time": {
+      if (newTime || cancelledOnTheCall) return null;
+      if (leftMessage) return `${who} doesn't know yet that their booking needs to move (the assistant left a message asking them to call back)${ring}.`;
+      if (reach === "missed") return `${who} doesn't know yet that their booking needs to move${ring}.`;
+      // Silent lens R3/R4 (low): "still stands" only when the diary shows the booking still booked.
+      if (!about) return `No new time was agreed — check ${who}'s booking in Appointments${seeNote}${asked}${ring}.`;
+      if (about.state !== "booked") {
+        return `No new time was agreed, and the booking on ${escapeHtml(about.when)} ${about.state === "cancelled" ? "is now cancelled" : "is no longer active"} — check Appointments${seeNote}${asked}.`;
+      }
+      return `No new time was agreed, so ${who}'s booking on ${escapeHtml(about.when)} still stands${seeNote}${asked}. It's back with you${ring}.`;
+    }
+    default: {
+      const unhandled: never = r.purpose;
+      return unhandled;
+    }
+  }
+}
+
+/** Why the call was made, in the email's words. A move's booking is its NEW leg (clients lens M1). */
+function callPurposeLine(report: CallOutcomeReport): string {
+  const at = report.bookingWhen ? escapeHtml(report.bookingWhen) : null;
+  switch (report.purpose) {
+    case "cancelled":
+      return `to tell them their booking${at ? ` on ${at}` : ""} was cancelled`;
+    case "moved":
+      return `to tell them their booking was moved${at ? ` to ${at}` : ""}${report.previousWhen ? ` (from ${escapeHtml(report.previousWhen)})` : ""}`;
+    case "confirm":
+      return `to check they're still OK for ${at ?? "their booking"}`;
+    case "find_new_time":
+      return `to find a new time for their booking${at ? ` on ${at}` : ""}`;
+    default: {
+      const unhandled: never = report.purpose;
+      return unhandled;
+    }
+  }
+}
+
+/** record_call_outcome, worded for the owner — every outcome (the compiler checks). */
+const CALL_OUTCOME_WORDS: Record<CallOutcome, string> = {
+  confirmed: "they're happy with the booking as it is",
+  rebooked: "booked or moved a time for them",
+  declined: "they don't want another time",
+  will_call_back: "they'll call you, or a message was left",
+  wrong_person: "it wasn't them — the message was left with whoever answered",
+  do_not_call: "they asked not to be called again — your assistant won't call them again",
+  other: "something else (see the summary)",
+};
 
 /** One recap row (customer text escaped here: the array never passes the top-level escaping). */
 function recapRow(item: OwnerRecapItem): string {
@@ -1604,6 +1919,40 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       ${d.timesInDefaultZone === true ? `<p style="color: #6b7280; font-size: 13px;">Times are shown in Sydney time — we couldn't read your business's timezone.</p>` : ""}
       <p><strong>If anything here isn't what you asked for</strong>, fix it in Appointments and let the customer know.</p>
       <p><a href="${base}/appointments">Open Appointments</a> &nbsp;·&nbsp; <a href="${base}/calls/${d.callId}">See the conversation</a></p>
+    `;
+    },
+    // SCRUM-598 — how a call to a customer went. `report` is nested, so the
+    // top-level escaping never reaches it: every value is escaped here. The phone
+    // system's result and the diary are facts; the assistant's note, the summary and
+    // the voicemail text are labelled as the AI's own words.
+    "customer-call-outcome": (d) => {
+      const r = d.report as CallOutcomeReport;
+      const base = escapeHtml((process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai").replace(/\/$/, ""));
+      const who = escapeHtml(r.customer);
+      const phone = r.phone ? ` (${phoneHtml(r.phone)})` : "";
+      const next = nextStepLine(r);
+      // Only a call that reached someone has anything to play (clients lens S4).
+      const heard = r.result.kind === "answered" || r.result.kind === "cut_off";
+      const row = (label: string, value: string) =>
+        `<tr><td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold; vertical-align: top;">${label}</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">${value}</td></tr>`;
+      const outcome = r.assistantOutcome ? escapeHtml(CALL_OUTCOME_WORDS[r.assistantOutcome]) : null;
+      const noted = outcome || r.assistantNote
+        ? row("The assistant noted <span style=\"font-weight: normal; color: #6b7280;\">(AI-written)</span>", [outcome, r.assistantNote ? `&ldquo;${escapeHtml(r.assistantNote)}&rdquo;` : null].filter(Boolean).join(" — "))
+        : "";
+      return `
+      <h2>Your assistant called ${who}</h2>
+      <p>You asked it to call ${who}${phone} ${callPurposeLine(r)}. Here's how it went.</p>
+      ${next ? `<p><strong>Next step:</strong> ${next}</p>` : ""}
+      <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+        ${row("Result", escapeHtml(callResultLine(r.result)))}
+        ${row("Your diary", r.diary.length ? r.diary.map((line) => diaryLineHtml(line, r.diary.length === 1, r.purpose)).join("<br/>") : "Nothing changed on the call.")}
+        ${noted}
+        ${r.summary ? row("Summary <span style=\"font-weight: normal; color: #6b7280;\">(AI-written)</span>", escapeHtml(r.summary)) : ""}
+        ${r.voicemailText ? row("Message left", `&ldquo;${escapeHtml(r.voicemailText)}&rdquo;`) : ""}
+      </table>
+      ${d.timesInDefaultZone === true ? `<p style="color: #6b7280; font-size: 13px;">Times are shown in Sydney time — we couldn't read your business's timezone.</p>` : ""}
+      <p>The result and your diary come from our phone system and your bookings.${heard ? ` The notes and summary are the AI's own words — <strong>if anything matters, listen to the call</strong>, and fix it in Appointments.` : ""}</p>
+      <p>${heard ? `<a href="${base}/calls/${escapeHtml(r.callId)}">Listen to the call</a> &nbsp;·&nbsp; ` : ""}<a href="${base}/appointments">Open Appointments</a></p>
     `;
     },
     "appointment-booked": (d) => `

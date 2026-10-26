@@ -187,3 +187,46 @@ describe("SCRUM-597 (silent round 2): a change's text is attempted right after i
     expect(calls("appointment_confirmations").find(([m]) => m === "select")?.[1]).toEqual(["appointment_id, idempotency_key, status, last_attempt_at"]);
   });
 });
+
+// SCRUM-598: a change whose customer the assistant is calling (notify_customer "call").
+describe("buildOwnerRecap — calls placed about a change", () => {
+  const notifyCall = (appointment_id: string, purpose: string) => ({ id: `c-${appointment_id}-${purpose}`, metadata: { call_type: "customer_notify", notify: { appointment_id, purpose, requested_by_call_id: CALL } } });
+  const setUp = () => {
+    queues.appointment_events = [events([[A, "cancelled"], [NEW, "rescheduled"]])];
+    queues.appointments = [
+      { data: [
+        { id: A, attendee_name: "Michael Dunn", start_time: "2026-10-26T01:30:00Z", rescheduled_from_id: null },
+        { id: NEW, attendee_name: "Jane Smith", start_time: "2026-10-29T03:00:00Z", rescheduled_from_id: OLD },
+      ], error: null },
+      { data: [{ id: OLD, start_time: "2026-10-27T22:00:00Z" }], error: null },
+    ];
+    queues.appointment_confirmations = [{ data: [], error: null }];
+  };
+
+  it("a cancel and a move whose customers are being called read 'calling' — read org-, type- and session-scoped", async () => {
+    setUp();
+    queues.calls = [{ data: [notifyCall(A, "cancelled"), notifyCall(NEW, "moved")], error: null }];
+    const items = await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE });
+    expect(items?.map((i) => i.told)).toEqual(["calling", "calling"]);
+    expect(calls("calls")).toEqual([
+      ["select", ["id, metadata"]],
+      ["eq", ["organization_id", ORG]],
+      ["eq", ["metadata->>call_type", "customer_notify"]],
+      ["eq", ["metadata->notify->>requested_by_call_id", CALL]],
+    ]);
+  });
+
+  it("a call about another booking, or for another purpose, is not this change's", async () => {
+    setUp();
+    queues.calls = [{ data: [notifyCall(NEW, "cancelled"), notifyCall(A, "moved"), notifyCall(OLD, "moved")], error: null }];
+    const items = await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE });
+    expect(items?.map((i) => i.told)).toEqual(["not_told", "not_told"]);
+  });
+
+  it("an unreadable call log is a failed recap (null), never 'not told'", async () => {
+    setUp();
+    queues.calls = [{ data: null, error: { message: "boom" } }];
+    expect(await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE })).toBeNull();
+    expect(console.error).toHaveBeenCalled();
+  });
+});
