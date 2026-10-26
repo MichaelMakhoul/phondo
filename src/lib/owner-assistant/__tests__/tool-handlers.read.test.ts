@@ -1031,13 +1031,16 @@ describe("org scoping", () => {
 });
 
 describe("OWNER_TOOL_NAMES", () => {
-  it("is exactly the five tool names the voice server declares (cross-PR contract)", () => {
+  it("is exactly the tool names the voice server declares (cross-PR contract)", () => {
     expect([...OWNER_TOOL_NAMES]).toEqual([
       "owner_list_appointments",
       "owner_list_messages",
       "owner_reschedule_appointment",
       "owner_cancel_appointment",
       "owner_call_customer",
+      "owner_book_appointment",
+      "owner_block_time",
+      "owner_mark_callback_done",
     ]);
   });
 });

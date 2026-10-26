@@ -26,6 +26,9 @@ vi.mock("@/lib/owner-assistant/tool-handlers", async () => ({
   handleOwnerRescheduleAppointment: vi.fn(async () => ({ success: true, message: "moved", data: { outcome: "rescheduled", customer_notified: false } })),
   handleOwnerCancelAppointment: vi.fn(async () => ({ success: false, error: true, message: "trouble" })),
   handleOwnerCallCustomer: vi.fn(async () => ({ success: true, message: "calling", data: { outcome: "calling" } })),
+  handleOwnerBookAppointment: vi.fn(async () => ({ success: true, message: "booked", data: { outcome: "booked" } })),
+  handleOwnerBlockTime: vi.fn(async () => ({ success: true, message: "blocked", data: { outcome: "blocked" } })),
+  handleOwnerMarkCallbackDone: vi.fn(async () => ({ success: true, message: "done", data: { outcome: "callback_done" } })),
 }));
 vi.mock("@/lib/callbacks/tool-handler", () => ({ handleScheduleCallback: vi.fn(async () => ({ success: true, message: "cb" })) }));
 vi.mock("@/lib/service-types", () => ({ getActiveServiceTypes: vi.fn(async () => []) }));
@@ -41,6 +44,9 @@ import {
   handleOwnerRescheduleAppointment,
   handleOwnerCancelAppointment,
   handleOwnerCallCustomer,
+  handleOwnerBookAppointment,
+  handleOwnerBlockTime,
+  handleOwnerMarkCallbackDone,
 } from "@/lib/owner-assistant/tool-handlers";
 import { handleCancelAppointment } from "@/lib/calendar/tool-handlers";
 
@@ -211,5 +217,39 @@ describe("SCRUM-598 (test lens): owner_call_customer reaches its handler with wh
     expect(calls[0][1]).toEqual({ appointment_id: APPT, purpose: "find_new_time", earliest_date: "2026-11-02", latest_date: "2026-11-06", time_of_day: "morning", confirmed: true });
     expect(calls[0][2]).toEqual({ callId: CALL_ID });
     expect(calls[1][1].confirmed).toBe(false);
+  });
+});
+
+describe("SCRUM-599: the book, block and mark-done tools reach their handlers with what the route plucks", () => {
+  it("every argument the voice server declares, as given, with the envelope's callId — and the result passed back as is", async () => {
+    const book = await post({
+      ...base, ownerVerified: true, functionName: "owner_book_appointment",
+      arguments: { customer_name: "Jane Smith", customer_phone: "0412 345 678", start: "2026-10-29T14:00", service_type_id: APPT, notes: "Leaking tap", confirmed: true, notify_customer: "text" },
+    });
+    expect(await book.json()).toEqual({ success: true, message: "booked", data: { outcome: "booked" } });
+    expect(handleOwnerBookAppointment).toHaveBeenCalledWith(
+      ORG,
+      { customer_name: "Jane Smith", customer_phone: "0412 345 678", start: "2026-10-29T14:00", service_type_id: APPT, notes: "Leaking tap", confirmed: true, notify_customer: "text" },
+      { callId: CALL_ID }
+    );
+    await post({ ...base, ownerVerified: true, functionName: "owner_block_time", arguments: { start: "2026-10-30T13:00", end: "2026-10-30T17:00", reason: "Quote visit", confirmed: true } });
+    expect(handleOwnerBlockTime).toHaveBeenCalledWith(ORG, { start: "2026-10-30T13:00", end: "2026-10-30T17:00", reason: "Quote visit", confirmed: true }, { callId: CALL_ID });
+    await post({ ...base, ownerVerified: true, functionName: "owner_mark_callback_done", arguments: { callback_id: APPT, note: "Rang back", confirmed: true } });
+    expect(handleOwnerMarkCallbackDone).toHaveBeenCalledWith(ORG, { callback_id: APPT, note: "Rang back", confirmed: true }, { callId: CALL_ID });
+  });
+
+  it("a handler that throws is the owner's fault line at 200 + error:true (never the customer fallback)", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      vi.mocked(handleOwnerBlockTime).mockRejectedValueOnce(new Error("boom"));
+      const res = await post({ ...base, ownerVerified: true, functionName: "owner_block_time", arguments: { start: "2026-10-30T13:00", end: "2026-10-30T17:00", confirmed: true } });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.error).toBe(true);
+      expect(body.success).toBe(false);
+      expect(body.message).not.toMatch(/take your information/i);
+    } finally {
+      errors.mockRestore();
+    }
   });
 });

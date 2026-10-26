@@ -10,8 +10,8 @@ const { buildOwnerPrompt } = require("../lib/owner-prompt");
 // SCRUM-587 — the owner tool set is PR B's contract, declared verbatim, flat.
 describe("owner tool declarations", () => {
   const byName = Object.fromEntries(ot.ownerToolDefinitions.map((d) => [d.function.name, d.function]));
-  it("declares exactly the five owner tools with PR B's parameter names", () => {
-    assert.deepEqual(Object.keys(byName).sort(), ["owner_call_customer", "owner_cancel_appointment", "owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment"]);
+  it("declares exactly the owner tools with PR B's parameter names", () => {
+    assert.deepEqual(Object.keys(byName).sort(), ["owner_block_time", "owner_book_appointment", "owner_call_customer", "owner_cancel_appointment", "owner_list_appointments", "owner_list_messages", "owner_mark_callback_done", "owner_reschedule_appointment"]);
     assert.deepEqual(byName.owner_list_appointments.parameters.properties.range.enum, ["today", "tomorrow", "this_week", "date"]);
     assert.deepEqual(byName.owner_list_appointments.parameters.required, ["range"]);
     assert.deepEqual(Object.keys(byName.owner_list_messages.parameters.properties), []);
@@ -47,7 +47,7 @@ describe("owner tool declarations", () => {
     assert.ok(t.parameters.properties.latest_date.description.includes("without it the call may book any day from earliest_date on"));
     assert.ok(ot.OWNER_WRITE_TOOL_NAMES.includes("owner_call_customer"), "the confirmation gate guards it");
     assert.ok(!ot.OWNER_CHANGE_TOOL_NAMES.includes("owner_call_customer"), "it changes no booking");
-    assert.deepEqual([...ot.OWNER_CHANGE_TOOL_NAMES], ["owner_reschedule_appointment", "owner_cancel_appointment"]);
+    assert.deepEqual([...ot.OWNER_CHANGE_TOOL_NAMES], ["owner_reschedule_appointment", "owner_cancel_appointment", "owner_book_appointment", "owner_block_time"]);
   });
   it("SCRUM-597: notify_customer is the enum PR B parses (text | call | none), optional, on both writes", () => {
     for (const tool of [byName.owner_reschedule_appointment, byName.owner_cancel_appointment]) {
@@ -84,7 +84,7 @@ describe("owner tool declarations", () => {
   it("tells the model which outcomes mean the change happened", () => {
     assert.ok(byName.owner_reschedule_appointment.description.includes("rescheduled | needs_confirmation | not_found | slot_taken | invalid_time | rate_limited"));
     assert.ok(byName.owner_cancel_appointment.description.includes("cancelled | needs_confirmation | not_found | rate_limited"));
-    assert.deepEqual([...ot.OWNER_SUCCESS_OUTCOMES].sort(), ["calling", "cancelled", "rescheduled"]);
+    assert.deepEqual([...ot.OWNER_SUCCESS_OUTCOMES].sort(), ["blocked", "booked", "callback_done", "calling", "cancelled", "rescheduled"]);
   });
   it("each write describes PR B's two-call flow: WITHOUT confirmed first for the read-back (data.from/to, data.when), confirmed=true only after the owner's yes", () => {
     for (const [tool, times] of [["owner_reschedule_appointment", "data.from and data.to"], ["owner_cancel_appointment", "data.when"]]) {
@@ -135,7 +135,7 @@ describe("owner check_availability declaration", () => {
 describe("buildOwnerTools", () => {
   it("returns the owner tools plus the three shared read/end tools, nothing customer-facing", () => {
     const names = ot.buildOwnerTools().map((t) => t.function.name);
-    assert.deepEqual(names, ["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment", "owner_call_customer", "get_current_datetime", "check_availability", "end_call"]);
+    assert.deepEqual(names, ["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment", "owner_call_customer", "owner_book_appointment", "owner_block_time", "owner_mark_callback_done", "get_current_datetime", "check_availability", "end_call"]);
     for (const banned of ["book_appointment", "cancel_appointment", "reschedule_appointment", "transfer_call", "schedule_callback", "lookup_appointment", "update_appointment"]) assert.ok(!names.includes(banned), banned);
     assert.deepEqual([...ot.OWNER_ALLOWED_TOOL_NAMES].sort(), [...names].sort());
   });
@@ -166,5 +166,50 @@ describe("buildOwnerTools", () => {
     for (const n of ot.OWNER_WRITE_TOOL_NAMES) assert.ok(ot.OWNER_TOOL_NAMES.includes(n), n);
     for (const n of ot.OWNER_SHARED_TOOL_NAMES) assert.ok(!ot.OWNER_TOOL_NAMES.includes(n), n);
     assert.deepEqual([...ot.OWNER_SHARED_TOOL_NAMES], ["get_current_datetime", "check_availability", "end_call"]);
+  });
+});
+
+describe("SCRUM-599: owner_book_appointment, owner_block_time, owner_mark_callback_done", () => {
+  const byName = Object.fromEntries(ot.ownerToolDefinitions.map((d) => [d.function.name, d.function]));
+  it("declare exactly what PR B reads, with the same two-call gate", () => {
+    assert.deepEqual(Object.keys(byName.owner_book_appointment.parameters.properties).sort(), ["confirmed", "customer_name", "customer_phone", "notes", "notify_customer", "service_type_id", "start"]);
+    assert.deepEqual(byName.owner_book_appointment.parameters.required, ["customer_name", "customer_phone", "start"]);
+    assert.deepEqual(Object.keys(byName.owner_block_time.parameters.properties).sort(), ["confirmed", "end", "reason", "start"]);
+    assert.deepEqual(byName.owner_block_time.parameters.required, ["start", "end"]);
+    assert.deepEqual(Object.keys(byName.owner_mark_callback_done.parameters.properties).sort(), ["callback_id", "confirmed", "note"]);
+    assert.deepEqual(byName.owner_mark_callback_done.parameters.required, ["callback_id"]);
+    for (const t of ["owner_book_appointment", "owner_block_time", "owner_mark_callback_done"]) {
+      assert.equal(byName[t].parameters.properties.confirmed.type, "boolean", t);
+      assert.ok(byName[t].description.indexOf("WITHOUT confirmed") < byName[t].description.indexOf("confirmed=true"), t);
+      assert.ok(ot.OWNER_WRITE_TOOL_NAMES.includes(t), `${t} goes through the confirmation gate`);
+    }
+  });
+  it("every write takes the one strict confirm flag", () => {
+    for (const d of ot.ownerToolDefinitions) {
+      if (!ot.OWNER_WRITE_TOOL_NAMES.includes(d.function.name)) continue;
+      assert.equal(d.function.parameters.properties.confirmed.type, "boolean", d.function.name);
+      assert.match(d.function.parameters.properties.confirmed.description, /^The boolean true ONLY after the owner clearly said yes to your read-back\./, d.function.name);
+    }
+  });
+  it("a booking's note can carry the address; a callback's note is read back, so it must stay the same", () => {
+    assert.ok(byName.owner_book_appointment.parameters.properties.notes.description.includes("what's wrong, and the address if they give one"));
+    assert.ok(byName.owner_mark_callback_done.parameters.properties.note.description.includes("It is read back with the rest, so keep the SAME note for the confirm."));
+  });
+  it("a new booking can be texted or not — never called", () => {
+    assert.deepEqual(byName.owner_book_appointment.parameters.properties.notify_customer.enum, ["text", "none"]);
+    assert.ok(byName.owner_book_appointment.description.includes("a call isn't offered for a new booking"));
+    assert.ok(byName.owner_book_appointment.parameters.properties.customer_phone.description.includes("never make one up"));
+  });
+  it("say which outcomes mean it happened", () => {
+    assert.ok(byName.owner_book_appointment.description.includes("booked | needs_confirmation | invalid_details | invalid_time | not_booked | rate_limited | external_calendar — only 'booked' means it happened"));
+    assert.ok(byName.owner_block_time.description.includes("blocked | needs_confirmation | invalid_time | rate_limited | external_calendar — only 'blocked' means it happened"));
+    assert.ok(byName.owner_mark_callback_done.description.includes("callback_done | needs_confirmation | not_found | rate_limited — only 'callback_done' means it happened"));
+  });
+  it("a block never moves or cancels a job, and covers everyone", () => {
+    assert.ok(byName.owner_block_time.description.includes("Blocking never moves or cancels a job: jobs already booked then STAY booked"));
+    assert.ok(byName.owner_block_time.description.includes("Block out time in the WHOLE diary so no one can be booked then (it is for everyone — one person's time off is done in the dashboard)"));
+  });
+  it("the diary-changing writes refresh the schedule cache; marking a callback done doesn't", () => {
+    assert.deepEqual([...ot.OWNER_CHANGE_TOOL_NAMES], ["owner_reschedule_appointment", "owner_cancel_appointment", "owner_book_appointment", "owner_block_time"]);
   });
 });

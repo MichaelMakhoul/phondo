@@ -14,16 +14,22 @@ import {
   errorResult,
   toLocalIsoMinute,
   cancelSingleAppointment,
+  handleBookAppointment,
   handleCheckAvailability,
+  normalizeGivenName,
+  ownerDiaryProvider,
   type ToolResult,
 } from "@/lib/calendar/tool-handlers";
+import { phonesMatchForOwnership } from "@/lib/calendar/appointment-verification";
+import { confirmationIdempotencyKey } from "@/lib/sms/caller-sms";
+import { parsePhoneToE164 } from "@/lib/phone/normalize";
 import { pickName, snapshotForAudit, MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
 import { partitionRescheduleChanges } from "@/lib/calendar/reschedule-core";
 import { performRescheduleLeg } from "@/lib/calendar/reschedule-leg";
 import { isServiceTypeQuestion } from "@/lib/calendar/service-type-question";
 import { diffAppointmentFields, recordAppointmentEvent } from "@/lib/appointments/events";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
-import { isValidUUID } from "@/lib/security/validation";
+import { isValidPhoneNumber, isValidUUID } from "@/lib/security/validation";
 import { runAfterResponse } from "@/lib/utils/after-response";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
 import { pageSentry } from "@/lib/observability/page-sentry";
@@ -36,6 +42,7 @@ import {
   todayISO,
   parseOwnerLocalDatetime,
   formatWhen,
+  formatSpan,
   isRealCalendarDate,
 } from "./time";
 import { addDaysISO } from "@/lib/calendar/tool-handlers";
@@ -47,6 +54,7 @@ import {
   getContactOptions,
   isCustomerNotified,
   parseContactMethod,
+  type ContactKind,
   type ContactMethod,
   type ContactOptions,
   type CustomerContactResult,
@@ -432,7 +440,7 @@ const DEFAULT_DURATION_MINUTES = 30;
  * SCRUM-597: the owner's recap email lists only the changes in appointment_events, so
  * a change whose audit row failed would be missing from it with nobody told — page.
  */
-function pageUnaudited(organizationId: string, callId: string, appointmentId: string, change: "cancelled" | "rescheduled"): void {
+function pageUnaudited(organizationId: string, callId: string, appointmentId: string, change: "cancelled" | "rescheduled" | "created"): void {
   pageSentry({
     service: "next-api",
     reason: SENTRY_REASONS.OWNER_CHANGE_NOT_AUDITED,
@@ -453,17 +461,20 @@ function contactWays(contact: ContactOptions): string {
  * is nothing to choose: the model says so and offers the number, and a bare yes
  * confirms (notify_customer "none" is assumed — see the handlers).
  */
-function readBackMessage(change: string, customer: string, contact: ContactOptions, tool: string, kind: "cancelled" | "moved"): string {
+function readBackMessage(change: string, customer: string, contact: ContactOptions, tool: string, kind: ContactKind): string {
   const ways = contactWays(contact);
   // Clients lens M8: a call does more than tell them — the owner hears that before choosing.
   const callDoes = !contact.options.includes("call")
     ? ""
     : kind === "cancelled"
       ? " (a call also offers them another time)"
-      : " (a call also checks the new time suits them)";
+      : kind === "moved"
+        ? " (a call also checks the new time suits them)"
+        : "";
   if (!ways) {
     const why = contact.note ? ` (${contact.note.replace(/[.!?]+$/, "")})` : "";
-    return `Read this back and get a clear yes before changing anything: ${change}. Telling ${customer} isn't possible from here${why}: say so in a few words (for example "I can't text them") and offer to read out their number after the change. If the owner confirms, call ${tool} again with confirmed=true and notify_customer "none".`;
+    const offerNumber = kind === "booked" ? "" : " and offer to read out their number after the change";
+    return `Read this back and get a clear yes before changing anything: ${change}. Telling ${customer} isn't possible from here${why}: say so in a few words (for example "I can't text them")${offerNumber}. If the owner confirms, call ${tool} again with confirmed=true and notify_customer "none".`;
   }
   const note = contact.note ? ` ${contact.note}` : "";
   return `Read this back and get a clear yes before changing anything: ${change}. In the same question, ask whether to let ${customer} know: by ${ways}${callDoes}, or not tell them.${note} If the owner confirms, call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
@@ -1075,5 +1086,742 @@ export async function handleOwnerCallCustomer(
     success: true,
     message: `Calling ${customer} now to ${CALL_PURPOSE_WORDS[purpose]} their booking on ${when}${windowPhrase(window)}. You'll get an email when the call's done.`,
     data: callData({ outcome: "calling", ...base, call_id: placed.callId }),
+  };
+}
+
+// ─── SCRUM-599: book a new job, block out time, mark a callback done ─────────
+
+export interface OwnerBookData {
+  outcome: "booked" | "needs_confirmation" | "invalid_details" | "invalid_time" | "not_booked" | "rate_limited" | "external_calendar";
+  customer_name?: string;
+  customer_phone?: string;
+  /** Spoken form of the booking's time (formatWhen). */
+  when?: string;
+  /** The service type's name, when one was given. */
+  service?: string;
+  /** The staff member the diary assigned, when it named one. */
+  practitioner?: string;
+  /** On booked: the new booking's id — use it for any further change to the job. */
+  appointment_id?: string;
+  confirmation_code?: string;
+  contact_options?: ContactMethod[];
+  contact_note?: string;
+  customer_contact?: CustomerContactResult;
+  /** True only when the customer was actually told (a text went out). */
+  customer_notified: boolean;
+}
+
+export interface OwnerBlockData {
+  outcome: "blocked" | "needs_confirmation" | "invalid_time" | "rate_limited" | "external_calendar";
+  /** Spoken form of the block (formatSpan). It covers everyone (staff choice isn't in v1). */
+  when?: string;
+  title?: string;
+  /** Jobs already booked in that time — they stay booked. */
+  jobs_in_the_way?: number;
+  /** On blocked: the block's id. */
+  block_id?: string;
+}
+
+export interface OwnerCallbackDoneData {
+  outcome: "callback_done" | "needs_confirmation" | "not_found" | "rate_limited";
+  callback_id?: string;
+  caller_name?: string;
+  reason?: string;
+  /** Spoken form of when the callback request came in. */
+  received?: string;
+  /** The owner's note, as read back. */
+  note?: string;
+}
+
+const bookData = (d: OwnerBookData) => d as unknown as Record<string, unknown>;
+const blockData = (d: OwnerBlockData) => d as unknown as Record<string, unknown>;
+const callbackDoneData = (d: OwnerCallbackDoneData) => d as unknown as Record<string, unknown>;
+
+/** The notes the owner gives a new booking: one short line. */
+const BOOKING_NOTES_MAX = 200;
+/** A block's title, from the owner's reason. */
+const BLOCK_TITLE_MAX = 80;
+const DEFAULT_BLOCK_TITLE = "Time off";
+/** The longest block the assistant makes, in the org's own calendar days (the dashboard does longer). */
+const BLOCK_MAX_DAYS = 14;
+/** How many of the jobs a block covers the read-back names. */
+const BLOCK_JOBS_NAMED = 5;
+const CALLBACK_NOTE_MAX = 200;
+const DEFAULT_CALLBACK_NOTE = "Marked done on your assistant line";
+
+/**
+ * The org owner's user id, for created_by / completed_by (the dashboard shows who did
+ * it). Best effort: a failed read leaves them empty — the change itself never waits on it.
+ */
+async function orgOwnerUserId(supabase: any, organizationId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("org_members")
+    .select("user_id")
+    .eq("organization_id", organizationId)
+    .eq("role", "owner")
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.warn("[owner-assistant] org owner lookup failed (non-fatal):", { organizationId, error });
+    return null;
+  }
+  return typeof data?.user_id === "string" ? data.user_id : null;
+}
+
+/** A service type the owner named, by id, org-scoped and active — its name, null when there's none, undefined on a fault. */
+async function activeServiceName(supabase: any, organizationId: string, id: string): Promise<string | null | undefined> {
+  const { data, error } = await supabase
+    .from("service_types")
+    .select("id, name")
+    .eq("id", id)
+    .eq("organization_id", organizationId)
+    .eq("is_active", true)
+    .maybeSingle();
+  if (error) {
+    console.error("[owner-assistant] service type lookup failed:", { organizationId, id, error });
+    return undefined;
+  }
+  return data ? sanitizeCustomerText(data.name, NAME_MAX) ?? "that service" : null;
+}
+
+/** The diary isn't Phondo's own: what to tell the owner. */
+function externalDiaryMessage(diary: string, what: "booked anything" | "blocked anything"): string {
+  return `Your diary is in ${diary}, so I haven't ${what} — please do it there.`;
+}
+
+/**
+ * SCRUM-599: book a NEW job for a customer. Same two calls as a change: without
+ * `confirmed` nothing is booked and the read-back comes back (with the "let them
+ * know?" question — a text, or nothing: a call about a new booking isn't offered);
+ * with confirmed=true after the owner's yes, the receptionist's own booking path
+ * books it (hours, blocks, clashes, staff assignment, the confirmation code) as the
+ * owner's booking: neither automatic notice goes out, the owner's choice of telling
+ * the customer runs after, and the booking is audited as created on this call (the
+ * recap email lists it). Only Phondo's own diary. Choosing who does the job isn't in
+ * v1 (the owner prompt has no staff list): the diary assigns, as for any booking.
+ */
+export async function handleOwnerBookAppointment(
+  organizationId: string,
+  args: {
+    customer_name?: string;
+    customer_phone?: string;
+    start?: string;
+    service_type_id?: string;
+    notes?: string;
+    confirmed?: unknown;
+    notify_customer?: string;
+  },
+  ctx: OwnerCallContext
+): Promise<ToolResult> {
+  const supabase = createAdminClient();
+  const org = await getOrgZoneAndCountry(supabase, organizationId);
+  if (!org) return errorResult(TROUBLE);
+  const tz = org.tz;
+
+  const invalidDetails = (message: string): ToolResult => ({ success: false, message, data: bookData({ outcome: "invalid_details", customer_notified: false }) });
+  const invalidTime = (message: string): ToolResult => ({ success: false, message, data: bookData({ outcome: "invalid_time", customer_notified: false }) });
+
+  // The customer's name and number are the model's words for what the owner said:
+  // one bounded line each before they reach the diary.
+  const customer = sanitizeCustomerText(args.customer_name, NAME_MAX);
+  if (!customer) return invalidDetails("I need the customer's name for the booking. Who's it for?");
+  const phone = typeof args.customer_phone === "string" ? args.customer_phone.trim() : "";
+  if (!phone || !isValidPhoneNumber(phone)) return invalidDetails(`I need a phone number for ${customer} that the booking can go under. What's their number?`);
+  const start = parseOwnerLocalDatetime(args.start, tz);
+  if (!start) return invalidTime("I need the time as a date and time, like 2026-10-29T14:00.");
+  if (start.getTime() < Date.now()) return invalidTime("That time has already passed. When should the job be?");
+  if (start.getTime() > Date.now() + MAX_BOOKING_HORIZON_MS) return invalidTime("That's more than a year away. When should the job be?");
+  const serviceTypeId = typeof args.service_type_id === "string" && args.service_type_id ? args.service_type_id : undefined;
+  if (serviceTypeId && !isValidUUID(serviceTypeId)) {
+    return invalidDetails("I couldn't match that service. Use an ID from the SERVICE TYPES list, or leave it out.");
+  }
+  const notes = sanitizeCustomerText(args.notes, BOOKING_NOTES_MAX);
+
+  const diary = await ownerDiaryProvider(organizationId);
+  if (diary === "error") return errorResult(TROUBLE);
+  if (diary !== "phondo") {
+    return { success: false, message: externalDiaryMessage(diary, "booked anything"), data: bookData({ outcome: "external_calendar", customer_notified: false }) };
+  }
+  const service = serviceTypeId ? await activeServiceName(supabase, organizationId, serviceTypeId) : null;
+  if (service === undefined) return errorResult(TROUBLE);
+  if (serviceTypeId && !service) return invalidDetails("I couldn't find that service type. Check the SERVICE TYPES list, or leave it out.");
+
+  const when = formatWhen(start, tz);
+  const shownPhone = sanitizeCustomerText(phone, PHONE_MAX) ?? phone;
+  const base = { customer_name: customer, customer_phone: shownPhone, when, ...(service ? { service } : {}) };
+
+  // As for a change: a confirm needs the owner's answer on telling the customer. A
+  // new booking is never offered a call, so "call" is no answer: the question again.
+  const chosen = args.confirmed === true ? parseContactMethod(args.notify_customer) : null;
+  let method: ContactMethod;
+  if (chosen && chosen !== "call") {
+    method = chosen;
+  } else {
+    const contact = await getContactOptions(organizationId, phone, org.country);
+    if (args.confirmed === true && !contactWays(contact)) {
+      method = "none";
+    } else {
+      const change = `book ${customer} (${shownPhone}) for ${service ? `${service} on ` : ""}${when}${notes ? ` — notes: "${notes}"` : ""}`;
+      return {
+        success: false,
+        message:
+          args.confirmed === true
+            ? askContactMessage(customer, contact, "owner_book_appointment")
+            : readBackMessage(change, customer, contact, "owner_book_appointment", "booked"),
+        data: bookData({
+          outcome: "needs_confirmation",
+          ...base,
+          contact_options: contact.options,
+          ...(contact.note ? { contact_note: contact.note } : {}),
+          customer_notified: false,
+        }),
+      };
+    }
+  }
+
+  // The owner says the number the way people do ("0412 345 678"); the diary keeps it
+  // in E.164 like the receptionist's bookings (caller ID) when it parses in the org's
+  // country, and as said otherwise.
+  const bookedPhone = (org.country === "AU" || org.country === "US" ? parsePhoneToE164(phone, org.country) : null) ?? phone;
+
+  /**
+   * The booking from a moment ago, handed back AS IT STANDS (its stored name, service
+   * and note — a retry with other details changes nothing, and says so), with what its
+   * customer was told.
+   */
+  const repeatBooking = async (earlier: SameCallBooking): Promise<ToolResult> => {
+    // A first attempt cut off between its booking and its audit row would leave the
+    // recap email without it: the repeat writes the missing row (silent lens r2 F3).
+    await ensureCreatedAudit(supabase, organizationId, earlier.id, ctx.callId);
+    const contact = await repeatBookingContact(supabase, {
+      organizationId,
+      appointmentId: earlier.id,
+      start,
+      method,
+      phone,
+      country: org.country,
+      timezone: tz,
+      callId: ctx.callId,
+    });
+    const withWhom = earlier.practitioner ? ` with ${earlier.practitioner}` : "";
+    const who = earlier.customer ?? customer;
+    const detailsKept = (serviceTypeId ?? null) !== earlier.serviceTypeId || (notes ?? null) !== earlier.notes;
+    return {
+      success: true,
+      message:
+        `${who} is already booked for ${when}${withWhom} — that's the booking from a moment ago.` +
+        (detailsKept ? " It keeps the service and note it was booked with — the new ones weren't added; they can be changed in Appointments." : "") +
+        (contact
+          ? contactOutcomeSentence(contact, who, "booked")
+          : ` I couldn't check whether ${who} was texted about it — check the booking in Appointments before texting them yourself.`),
+      data: bookData({
+        outcome: "booked",
+        customer_name: who,
+        customer_phone: shownPhone,
+        when,
+        ...(earlier.service ? { service: earlier.service } : {}),
+        ...(earlier.practitioner ? { practitioner: earlier.practitioner } : {}),
+        appointment_id: earlier.id,
+        ...(earlier.confirmationCode ? { confirmation_code: earlier.confirmationCode } : {}),
+        ...(contact ? { customer_contact: contact } : {}),
+        customer_notified: contact ? isCustomerNotified(contact) : false,
+      }),
+    };
+  };
+
+  // This customer (their number and given name), at this time, already booked on this call:
+  // the same booking asked for again after its result never came back. Hand it back —
+  // never book it twice (with two or more staff the diary would happily take a second one).
+  const earlier = await sameCallBooking(supabase, organizationId, ctx.callId, start, bookedPhone, customer);
+  if (earlier === "error") return errorResult(SAME_CALL_READ_FAULT);
+  if (earlier) return repeatBooking(earlier);
+
+  if (!(await ownerMutationAllowed(supabase, organizationId))) {
+    return { success: false, message: RATE_LIMITED_MSG, data: bookData({ outcome: "rate_limited", ...base, customer_notified: false }) };
+  }
+
+  const [firstName, ...rest] = customer.split(" ");
+  const result = await handleBookAppointment(
+    organizationId,
+    {
+      first_name: firstName,
+      ...(rest.length ? { last_name: rest.join(" ") } : {}),
+      phone: bookedPhone,
+      datetime: toLocalIsoMinute(start, tz),
+      ...(notes ? { notes } : {}),
+      ...(serviceTypeId ? { service_type_id: serviceTypeId } : {}),
+    },
+    { callId: ctx.callId, ownerBooking: true }
+  );
+  if (result.data?.ownerRefusal === "external_calendar") {
+    return { success: false, message: result.message, data: bookData({ outcome: "external_calendar", ...base, customer_notified: false }) };
+  }
+  if (result.error === true) {
+    // The booking path's own faults are worded for a caller ("…someone call you back").
+    return errorResult(`I couldn't book that just now — something went wrong on our side. Please check Appointments before trying again.`);
+  }
+  if (!result.success) {
+    // Hours, a block, a clash, a staff member who doesn't do that service… The
+    // booking path's reason is written for a caller; the model says it in its own words.
+    return {
+      success: false,
+      message:
+        `Nothing was booked. The diary said: "${result.message}" Tell the owner in a few words, and offer another time if it's about the time.` +
+        " Outside opening hours or in blocked-out time, the owner can still book it themselves in Appointments.",
+      data: bookData({ outcome: "not_booked", ...base, customer_notified: false }),
+    };
+  }
+
+  const booked = result.data ?? {};
+  const appointmentId = typeof booked.appointmentId === "string" ? booked.appointmentId : null;
+  if (!appointmentId) {
+    console.error("[owner-assistant] booking succeeded without an appointment id:", { organizationId, callId: ctx.callId });
+    return errorResult(`I booked ${customer} but couldn't read the booking back — please check Appointments.`);
+  }
+  if (booked.duplicate === true) {
+    // The diary's own same-call net, which matches by first name only: it's this
+    // booking again only with this customer's number too — another "Jane" booked then
+    // on this call is a clash.
+    const again = await sameCallBookingById(supabase, organizationId, appointmentId, bookedPhone, customer);
+    if (again === "error") return errorResult(SAME_CALL_READ_FAULT);
+    if (!again) {
+      return {
+        success: false,
+        message: "Nothing was booked: that time is taken by another booking made on this call. Offer the owner another time.",
+        data: bookData({ outcome: "not_booked", ...base, customer_notified: false }),
+      };
+    }
+    return repeatBooking(again);
+  }
+
+  // (The booking path refreshes the voice server's schedule cache itself.)
+  const audited = await recordAppointmentEvent(supabase, {
+    appointmentId,
+    organizationId,
+    eventType: "created",
+    actorType: "staff",
+    actorId: null,
+    channel: "voice",
+    callId: ctx.callId,
+  });
+  if (!audited) pageUnaudited(organizationId, ctx.callId, appointmentId, "created");
+
+  const contact = await contactCustomer({
+    orgId: organizationId,
+    method,
+    kind: "booked",
+    appointmentId,
+    startTime: start,
+    phone,
+    country: org.country,
+    timezone: tz,
+    requestedByCallId: ctx.callId,
+  });
+  const assigned = typeof booked.practitionerName === "string" ? sanitizeCustomerText(booked.practitionerName, NAME_MAX) : null;
+  const confirmationCode = typeof booked.confirmationCode === "string" ? booked.confirmationCode : undefined;
+  return {
+    success: true,
+    message: `Booked ${customer} for ${when}${assigned ? ` with ${assigned}` : ""}.${contactOutcomeSentence(contact, customer, "booked")}`,
+    data: bookData({
+      outcome: "booked",
+      ...base,
+      ...(assigned ? { practitioner: assigned } : {}),
+      appointment_id: appointmentId,
+      ...(confirmationCode ? { confirmation_code: confirmationCode } : {}),
+      customer_contact: contact,
+      customer_notified: isCustomerNotified(contact),
+    }),
+  };
+}
+
+/** A live booking made on this owner call: what a repeat of it hands back, as stored. */
+interface SameCallBooking {
+  id: string;
+  confirmationCode: string | null;
+  /** The name it was booked under. */
+  customer: string | null;
+  serviceTypeId: string | null;
+  service: string | null;
+  notes: string | null;
+  practitioner: string | null;
+}
+
+const SAME_CALL_COLS =
+  "id, attendee_first_name, attendee_name, attendee_phone, confirmation_code, service_type_id, notes, service_types(name), practitioners(name)";
+const SAME_CALL_READ_FAULT = "I couldn't check the diary just now — please check Appointments before trying again.";
+
+/**
+ * The same customer: the same number AND the same given name — the receptionist's
+ * own rule (SCRUM-514, findOverlappingBookingFromCall). A family on one mobile (two
+ * children booked at once with two staff) is two bookings, not a repeat (security
+ * lens, round 2); a surname respelled on the retry is still the same customer, never
+ * a second booking (code lens, round 2).
+ */
+function sameCustomer(row: any, phone: string, customer: string): boolean {
+  const given = normalizeGivenName(row?.attendee_first_name || String(row?.attendee_name ?? "").split(" ")[0]);
+  return phonesMatchForOwnership(row?.attendee_phone, phone) && given !== "" && given === normalizeGivenName(customer.split(" ")[0]);
+}
+
+function toSameCallBooking(row: any): SameCallBooking {
+  return {
+    id: row.id,
+    confirmationCode: typeof row.confirmation_code === "string" ? row.confirmation_code : null,
+    customer: sanitizeCustomerText(row.attendee_name, NAME_MAX),
+    serviceTypeId: typeof row.service_type_id === "string" ? row.service_type_id : null,
+    service: sanitizeCustomerText(row.service_types?.name, NAME_MAX),
+    notes: typeof row.notes === "string" && row.notes !== "" ? row.notes : null,
+    practitioner: sanitizeCustomerText(row.practitioners?.name, NAME_MAX),
+  };
+}
+
+/**
+ * The booking's "created" audit row on this call — written now when the first attempt
+ * never got to it (the recap email is built from these rows). A read fault is logged:
+ * whether the row is missing can't be told.
+ */
+async function ensureCreatedAudit(supabase: any, organizationId: string, appointmentId: string, callId: string): Promise<void> {
+  const { data, error } = await supabase
+    .from("appointment_events")
+    .select("id")
+    .eq("organization_id", organizationId)
+    .eq("appointment_id", appointmentId)
+    .eq("event_type", "created")
+    .eq("call_id", callId)
+    .limit(1);
+  if (error) {
+    console.error("[owner-assistant] repeated booking's audit read failed:", { organizationId, appointmentId, error });
+    return;
+  }
+  if (Array.isArray(data) && data.length > 0) return;
+  const audited = await recordAppointmentEvent(supabase, {
+    appointmentId,
+    organizationId,
+    eventType: "created",
+    actorType: "staff",
+    actorId: null,
+    channel: "voice",
+    callId,
+  });
+  if (!audited) pageUnaudited(organizationId, callId, appointmentId, "created");
+}
+
+/** This customer's live booking at `start` made on this call (by their number and given name), or null; "error" on a fault. */
+async function sameCallBooking(
+  supabase: any,
+  organizationId: string,
+  callId: string,
+  start: Date,
+  phone: string,
+  customer: string
+): Promise<SameCallBooking | null | "error"> {
+  const { data, error } = await supabase
+    .from("appointments")
+    .select(SAME_CALL_COLS)
+    .eq("organization_id", organizationId)
+    .eq("call_id", callId)
+    .eq("start_time", start.toISOString())
+    .in("status", ["confirmed", "pending"]);
+  if (error) {
+    console.error("[owner-assistant] same-call booking read failed:", { organizationId, callId, error });
+    return "error";
+  }
+  const row = ((data ?? []) as any[]).find((r) => sameCustomer(r, phone, customer));
+  return row ? toSameCallBooking(row) : null;
+}
+
+/** The booking the diary handed back as this call's — when it's this customer's (by number and given name); "error" on a fault. */
+async function sameCallBookingById(
+  supabase: any,
+  organizationId: string,
+  appointmentId: string,
+  phone: string,
+  customer: string
+): Promise<SameCallBooking | null | "error"> {
+  const { data, error } = await supabase
+    .from("appointments")
+    .select(SAME_CALL_COLS)
+    .eq("id", appointmentId)
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+  if (error) {
+    console.error("[owner-assistant] same-call booking read failed:", { organizationId, appointmentId, error });
+    return "error";
+  }
+  return data && sameCustomer(data, phone, customer) ? toSameCallBooking(data) : null;
+}
+
+/**
+ * What a repeated booking's customer was told. A text the first attempt sent — or may
+ * have sent: caller-sms logs "failed" on a Twilio timeout too, when Twilio may have
+ * taken it — is reported, and never sent twice. When none can have gone (none was
+ * tried — the first attempt stopped before it — or it was held back: skipped_*,
+ * opted_out), the owner's choice now is carried out, with every check the send path
+ * makes. Null when it can't be told — the log can't be read, or holds only its
+ * "pending" default — so nothing is said as fact.
+ */
+async function repeatBookingContact(
+  supabase: any,
+  req: {
+    organizationId: string;
+    appointmentId: string;
+    start: Date;
+    method: ContactMethod;
+    phone: string;
+    country: string | null;
+    timezone: string;
+    callId: string;
+  }
+): Promise<CustomerContactResult | null> {
+  const { data, error } = await supabase
+    .from("appointment_confirmations")
+    .select("status")
+    .eq("organization_id", req.organizationId)
+    .eq("idempotency_key", confirmationIdempotencyKey(req.appointmentId, "sms", "confirmation", req.start.toISOString()))
+    .maybeSingle();
+  if (error) {
+    console.error("[owner-assistant] repeated booking's text log read failed:", { organizationId: req.organizationId, appointmentId: req.appointmentId, error });
+    return null;
+  }
+  if (data?.status === "sent" || data?.status === "delivered") return { method: "text", status: "sent" };
+  // Sent but not delivered (it would not reach them again either), or "failed" — which
+  // may have left Twilio (combined lens r3): reported, never sent again.
+  if (data?.status === "undelivered" || data?.status === "failed") return { method: "text", status: "not_sent", reason: data.status };
+  // The column's default; caller-sms writes an outcome, never "pending": can't tell.
+  if (data?.status === "pending") return null;
+  return contactCustomer({
+    orgId: req.organizationId,
+    method: req.method,
+    kind: "booked",
+    appointmentId: req.appointmentId,
+    startTime: req.start,
+    phone: req.phone,
+    country: req.country,
+    timezone: req.timezone,
+    requestedByCallId: req.callId,
+  });
+}
+
+/**
+ * SCRUM-599: block out time in the diary ("I'm off Friday afternoon"), for everyone
+ * (one staff member's block isn't in v1 — the owner prompt has no staff list). Two
+ * calls. The read-back names the jobs already booked in that time — they stay booked:
+ * blocking never moves or cancels anything (the owner deals with each, one at a
+ * time). The block is the dashboard's own row, linked to this call so the recap
+ * email lists it.
+ */
+export async function handleOwnerBlockTime(
+  organizationId: string,
+  args: { start?: string; end?: string; reason?: string; confirmed?: unknown },
+  ctx: OwnerCallContext
+): Promise<ToolResult> {
+  const supabase = createAdminClient();
+  const tz = await getOrgTimezone(supabase, organizationId);
+  if (!tz) return errorResult(TROUBLE);
+
+  const invalidTime = (message: string): ToolResult => ({ success: false, message, data: blockData({ outcome: "invalid_time" }) });
+  const start = parseOwnerLocalDatetime(args.start, tz);
+  const end = parseOwnerLocalDatetime(args.end, tz);
+  if (!start || !end) return invalidTime("I need the start and end as dates and times, like 2026-10-30T13:00 to 2026-10-30T17:00.");
+  if (end.getTime() <= start.getTime()) return invalidTime("The end has to be after the start. What time should the block finish?");
+  if (end.getTime() <= Date.now()) return invalidTime("That time has already passed. Which time should I block out?");
+  // Two weeks on the org's own calendar, never in milliseconds: across a clock change
+  // exactly two weeks is 335 or 337 hours.
+  const startLocal = toLocalIsoMinute(start, tz);
+  const endLocal = toLocalIsoMinute(end, tz);
+  if (endLocal > `${addDaysISO(startLocal.slice(0, 10), BLOCK_MAX_DAYS)}T${startLocal.slice(11)}`) {
+    return invalidTime("That's longer than two weeks — please block that out in the dashboard.");
+  }
+
+  const diary = await ownerDiaryProvider(organizationId);
+  if (diary === "error") return errorResult(TROUBLE);
+  if (diary !== "phondo") return { success: false, message: externalDiaryMessage(diary, "blocked anything"), data: blockData({ outcome: "external_calendar" }) };
+
+  const title = sanitizeCustomerText(args.reason, BLOCK_TITLE_MAX) ?? DEFAULT_BLOCK_TITLE;
+  const when = formatSpan(start, end, tz);
+  const who = " for everyone";
+  const base = { when, title };
+
+  // The jobs already booked then (live, and not already over — a block from this
+  // morning doesn't name the jobs done since).
+  const { data: jobs, error: jobsError } = await supabase
+    .from("appointments")
+    .select("attendee_name, start_time")
+    .eq("organization_id", organizationId)
+    .in("status", ["confirmed", "pending"])
+    .lt("start_time", end.toISOString())
+    .gt("end_time", new Date(Math.max(start.getTime(), Date.now())).toISOString())
+    .order("start_time", { ascending: true });
+  if (jobsError) {
+    console.error("[owner-assistant] jobs-in-the-way lookup failed:", { organizationId, error: jobsError });
+    return errorResult(TROUBLE);
+  }
+  const inTheWay = (jobs ?? []) as Array<{ attendee_name: string | null; start_time: string }>;
+  const jobsLine = inTheWay.length
+    ? ` ${inTheWay.length === 1 ? "One job is" : `${inTheWay.length} jobs are`} already booked then and will stay booked unless the owner moves or cancels ${inTheWay.length === 1 ? "it" : "them"}: ` +
+      inTheWay
+        .slice(0, BLOCK_JOBS_NAMED)
+        .map((j) => `${sanitizeCustomerText(j.attendee_name, NAME_MAX) ?? "a customer"} on ${formatWhen(new Date(j.start_time), tz)}`)
+        .join("; ") +
+      `${inTheWay.length > BLOCK_JOBS_NAMED ? `, and ${inTheWay.length - BLOCK_JOBS_NAMED} more` : ""}. Say so in the read-back.`
+    : "";
+
+  if (args.confirmed !== true) {
+    return {
+      success: false,
+      message:
+        `Read this back and get a clear yes before changing anything: block out ${when}${who}${title !== DEFAULT_BLOCK_TITLE ? ` ("${title}")` : ""}.${jobsLine}` +
+        ` If the owner confirms, call owner_block_time again with confirmed=true and the same start, end and reason.`,
+      data: blockData({ outcome: "needs_confirmation", ...base, jobs_in_the_way: inTheWay.length }),
+    };
+  }
+
+  // The same block asked for again on this call (its result never came back): hand it
+  // back — a second identical row would only clutter the diary.
+  const { data: sameBlock, error: sameBlockError } = await supabase
+    .from("blocked_times")
+    .select("id, title")
+    .eq("organization_id", organizationId)
+    .eq("created_on_call_id", ctx.callId)
+    .eq("start_time", start.toISOString())
+    .eq("end_time", end.toISOString())
+    .limit(1);
+  if (sameBlockError) {
+    console.error("[owner-assistant] same-call block read failed:", { organizationId, error: sameBlockError });
+    return errorResult(TROUBLE);
+  }
+  if (Array.isArray(sameBlock) && sameBlock.length > 0) {
+    return {
+      success: true,
+      message: `${when} is already blocked out${who} — that's the block from a moment ago.`,
+      data: blockData({
+        outcome: "blocked",
+        ...base,
+        title: sanitizeCustomerText(sameBlock[0].title, BLOCK_TITLE_MAX) ?? DEFAULT_BLOCK_TITLE,
+        jobs_in_the_way: inTheWay.length,
+        block_id: sameBlock[0].id,
+      }),
+    };
+  }
+
+  if (!(await ownerMutationAllowed(supabase, organizationId))) {
+    return { success: false, message: RATE_LIMITED_MSG, data: blockData({ outcome: "rate_limited", ...base }) };
+  }
+  // All-day is ONE whole day, as the dashboard makes them (it shows an all-day block as
+  // a single date); longer blocks keep their start and end.
+  const allDay = startLocal.slice(11) === "00:00" && endLocal.slice(11) === "00:00" && endLocal.slice(0, 10) === addDaysISO(startLocal.slice(0, 10), 1);
+  const createdBy = await orgOwnerUserId(supabase, organizationId);
+  const { data: block, error: insertError } = await supabase
+    .from("blocked_times")
+    .insert({
+      organization_id: organizationId,
+      title,
+      start_time: start.toISOString(),
+      end_time: end.toISOString(),
+      all_day: allDay,
+      reason: "Added by your assistant",
+      practitioner_id: null,
+      created_by: createdBy,
+      // The recap email lists the blocks this call made (migration 00173).
+      created_on_call_id: ctx.callId,
+    })
+    .select("id")
+    .single();
+  if (insertError || !block) {
+    console.error("[owner-assistant] block insert failed:", { organizationId, error: insertError ?? "no row" });
+    return errorResult("I couldn't block that time out — something went wrong on our side. Please check the diary in the dashboard.");
+  }
+  runAfterResponse(async () => {
+    try {
+      await invalidateVoiceScheduleCache(organizationId);
+    } catch (err) {
+      console.warn("[VoiceCacheInvalidate] after-response failed:", err instanceof Error ? err.message : err);
+    }
+  });
+  return {
+    success: true,
+    message: `Blocked out ${when}${who}.${inTheWay.length ? ` ${inTheWay.length === 1 ? "The job" : `The ${inTheWay.length} jobs`} already booked then ${inTheWay.length === 1 ? "is" : "are"} still booked.` : ""}`,
+    data: blockData({ outcome: "blocked", ...base, jobs_in_the_way: inTheWay.length, block_id: block.id }),
+  };
+}
+
+/**
+ * SCRUM-599: mark one pending callback request done (the dashboard's own update).
+ * Two calls. The callback must still be waiting — done, cancelled, another org's or a
+ * nonsense id all read the same ("isn't waiting"). Linked to this call so the recap
+ * email lists it.
+ */
+export async function handleOwnerMarkCallbackDone(
+  organizationId: string,
+  args: { callback_id?: string; note?: string; confirmed?: unknown },
+  ctx: OwnerCallContext
+): Promise<ToolResult> {
+  const notWaiting: ToolResult = {
+    success: false,
+    message: "That callback isn't waiting any more — it may already be done. Check the messages again if you're not sure.",
+    data: callbackDoneData({ outcome: "not_found" }),
+  };
+  if (typeof args.callback_id !== "string" || !isValidUUID(args.callback_id)) return notWaiting;
+  const supabase = createAdminClient();
+  const tz = await getOrgTimezone(supabase, organizationId);
+  if (!tz) return errorResult(TROUBLE);
+
+  const { data: cb, error: cbError } = await supabase
+    .from("callback_requests")
+    .select("id, caller_name, reason, created_at")
+    .eq("id", args.callback_id)
+    .eq("organization_id", organizationId)
+    .eq("status", "pending")
+    .maybeSingle();
+  if (cbError) {
+    console.error("[owner-assistant] callback lookup failed:", { organizationId, error: cbError });
+    return errorResult(TROUBLE);
+  }
+  if (!cb) return { ...notWaiting, data: callbackDoneData({ outcome: "not_found", callback_id: args.callback_id }) };
+
+  const caller = sanitizeCustomerText(cb.caller_name, NAME_MAX) ?? "the caller";
+  const reason = sanitizeCustomerText(cb.reason, TEXT_MAX) ?? "no reason given";
+  const received = formatWhen(new Date(cb.created_at), tz);
+  const base = { callback_id: cb.id, caller_name: caller, reason, received };
+
+  const note = sanitizeCustomerText(args.note, CALLBACK_NOTE_MAX);
+  if (args.confirmed !== true) {
+    return {
+      success: false,
+      message:
+        `Read this back and get a clear yes before changing anything: mark ${caller}'s callback (${reason}, received ${received}) as done${note ? `, with the note "${note}"` : ""}.` +
+        " If the owner confirms, call owner_mark_callback_done again with confirmed=true and the same callback_id and note.",
+      data: callbackDoneData({ outcome: "needs_confirmation", ...base, ...(note ? { note } : {}) }),
+    };
+  }
+  if (!(await ownerMutationAllowed(supabase, organizationId))) {
+    return { success: false, message: RATE_LIMITED_MSG, data: callbackDoneData({ outcome: "rate_limited", ...base }) };
+  }
+
+  const now = new Date().toISOString();
+  const completedBy = await orgOwnerUserId(supabase, organizationId);
+  const { data: updated, error: updateError } = await supabase
+    .from("callback_requests")
+    .update({
+      status: "completed",
+      completed_at: now,
+      completed_by: completedBy,
+      completion_notes: note ?? DEFAULT_CALLBACK_NOTE,
+      // The recap email lists the callbacks this call marked done (migration 00173).
+      completed_on_call_id: ctx.callId,
+      updated_at: now,
+    })
+    .eq("id", cb.id)
+    .eq("organization_id", organizationId)
+    .eq("status", "pending")
+    .select("id");
+  if (updateError) {
+    console.error("[owner-assistant] callback update failed:", { organizationId, error: updateError });
+    return errorResult("I couldn't mark that callback done — something went wrong on our side. Please check it in the dashboard.");
+  }
+  if (!Array.isArray(updated) || updated.length === 0) return { ...notWaiting, data: callbackDoneData({ outcome: "not_found", ...base }) };
+  return {
+    success: true,
+    message: `Marked ${caller}'s callback as done.`,
+    data: callbackDoneData({ outcome: "callback_done", ...base }),
   };
 }

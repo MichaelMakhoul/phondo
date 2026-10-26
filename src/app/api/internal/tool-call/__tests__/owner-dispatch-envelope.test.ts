@@ -23,6 +23,10 @@ vi.mock("@/lib/owner-assistant/tool-handlers", async () => ({
   handleOwnerListMessages: vi.fn(async () => ({ success: true, message: "msgs" })),
   handleOwnerRescheduleAppointment: vi.fn(async () => ({ success: true, message: "moved" })),
   handleOwnerCancelAppointment: vi.fn(async () => ({ success: true, message: "cancelled" })),
+  handleOwnerCallCustomer: vi.fn(async () => ({ success: true, message: "calling" })),
+  handleOwnerBookAppointment: vi.fn(async () => ({ success: true, message: "booked" })),
+  handleOwnerBlockTime: vi.fn(async () => ({ success: true, message: "blocked" })),
+  handleOwnerMarkCallbackDone: vi.fn(async () => ({ success: true, message: "done" })),
 }));
 vi.mock("@/lib/callbacks/tool-handler", () => ({ handleScheduleCallback: vi.fn(async () => ({ success: true, message: "cb" })) }));
 vi.mock("@/lib/service-types", () => ({ getActiveServiceTypes: vi.fn(async () => []) }));
@@ -31,10 +35,15 @@ vi.mock("@sentry/nextjs", () => ({ captureMessage: vi.fn(), captureException: vi
 
 import { POST } from "../route";
 import {
+  OWNER_TOOL_NAMES,
   handleOwnerListAppointments,
   handleOwnerListMessages,
   handleOwnerRescheduleAppointment,
   handleOwnerCancelAppointment,
+  handleOwnerCallCustomer,
+  handleOwnerBookAppointment,
+  handleOwnerBlockTime,
+  handleOwnerMarkCallbackDone,
 } from "@/lib/owner-assistant/tool-handlers";
 
 const ORG = "11111111-2222-4333-a444-555555555555";
@@ -42,7 +51,16 @@ const CALL_ID = "0f1e2d3c-4b5a-4c6d-8e9f-0a1b2c3d4e5f";
 const SMUGGLED = "99999999-0000-4000-8000-000000000000";
 const APPT = "44444444-5555-4666-8777-888888888888";
 const SECRET = "owner-dispatch-envelope-secret";
-const ownerHandlers = () => [handleOwnerListAppointments, handleOwnerListMessages, handleOwnerRescheduleAppointment, handleOwnerCancelAppointment];
+const ownerHandlers = () => [
+  handleOwnerListAppointments,
+  handleOwnerListMessages,
+  handleOwnerRescheduleAppointment,
+  handleOwnerCancelAppointment,
+  handleOwnerCallCustomer,
+  handleOwnerBookAppointment,
+  handleOwnerBlockTime,
+  handleOwnerMarkCallbackDone,
+];
 
 function post(payload: Record<string, unknown>) {
   return POST(new Request("http://voice.internal/api/internal/tool-call", {
@@ -73,10 +91,14 @@ describe("owner_* needs a PRODUCTION call: a non-empty string envelope callId", 
     for (const handler of ownerHandlers()) expect(handler).not.toHaveBeenCalled();
   });
 
-  it("refuses every one of the four tools without owner authority (not just the ones the other pins happen to name)", async () => {
-    for (const functionName of ["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment"]) {
-      const res = await post({ ...base, callId: CALL_ID, functionName, arguments: {} });
-      expect(res.status, functionName).toBe(403);
+  it("refuses every owner tool without owner authority, or on a call that isn't a production one (the REAL list, not the ones the other pins happen to name)", async () => {
+    expect(OWNER_TOOL_NAMES).toHaveLength(8);
+    for (const functionName of OWNER_TOOL_NAMES) {
+      const args = { confirmed: true, appointment_id: APPT, callback_id: APPT, customer_name: "Jane Smith", customer_phone: "0412345678", start: "2026-10-20T09:00", end: "2026-10-20T12:00" };
+      const noOwner = await post({ ...base, callId: CALL_ID, functionName, arguments: args });
+      expect(noOwner.status, functionName).toBe(403);
+      const noCall = await post({ ...base, ownerVerified: true, functionName, arguments: args });
+      expect(noCall.status, functionName).toBe(403);
     }
     for (const handler of ownerHandlers()) expect(handler).not.toHaveBeenCalled();
   });
@@ -121,6 +143,26 @@ describe("the model's untyped arguments are plucked as strings only", () => {
       { appointment_id: undefined, new_datetime: undefined, confirmed: true },
       { appointment_id: APPT, new_datetime: undefined, confirmed: true },
     ]);
+  });
+
+  it("SCRUM-599: the book, block and mark-done tools get strings only, and confirmed only for the JSON true", async () => {
+    await post({ ...auth, functionName: "owner_book_appointment", arguments: { customer_name: ["Jane"], customer_phone: 412345678, start: { at: "2026-10-20T09:00" }, service_type_id: 7, notes: ["x"], notify_customer: ["text"], confirmed: "true" } });
+    await post({ ...auth, functionName: "owner_block_time", arguments: { start: 20261020, end: ["2026-10-20T12:00"], reason: { r: 1 }, confirmed: 1 } });
+    await post({ ...auth, functionName: "owner_mark_callback_done", arguments: { callback_id: [APPT], note: 5, confirmed: "yes" } });
+    expect(handleOwnerBookAppointment).toHaveBeenCalledWith(
+      ORG,
+      { customer_name: undefined, customer_phone: undefined, start: undefined, service_type_id: undefined, notes: undefined, confirmed: false, notify_customer: undefined },
+      { callId: CALL_ID }
+    );
+    expect(handleOwnerBlockTime).toHaveBeenCalledWith(ORG, { start: undefined, end: undefined, reason: undefined, confirmed: false }, { callId: CALL_ID });
+    expect(handleOwnerMarkCallbackDone).toHaveBeenCalledWith(ORG, { callback_id: undefined, note: undefined, confirmed: false }, { callId: CALL_ID });
+  });
+
+  it("SCRUM-599: a staff member smuggled into the arguments never reaches the handlers (staff choice isn't in v1)", async () => {
+    await post({ ...auth, functionName: "owner_book_appointment", arguments: { customer_name: "Jane Smith", customer_phone: "0412345678", start: "2026-10-20T09:00", practitioner_id: APPT, confirmed: true } });
+    await post({ ...auth, functionName: "owner_block_time", arguments: { start: "2026-10-20T09:00", end: "2026-10-20T12:00", practitioner_id: APPT, confirmed: true } });
+    expect(vi.mocked(handleOwnerBookAppointment).mock.calls[0][1]).not.toHaveProperty("practitioner_id");
+    expect(vi.mocked(handleOwnerBlockTime).mock.calls[0][1]).not.toHaveProperty("practitioner_id");
   });
 
   it("owner_list_appointments: a non-string range or date arrives as undefined", async () => {

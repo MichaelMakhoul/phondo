@@ -241,7 +241,7 @@ describe("structural — write-function set stays consistent", () => {
   it("every mutating calendar function is covered by the test-mode simulation suite above", () => {
     // If a future write tool is added to CALENDAR_WRITE_FUNCTIONS without a
     // matching zero-fetch test here, this pin fails so the gap is noticed.
-    const simulatedHere = ["book_appointment", "cancel_appointment", "reschedule_appointment", "update_appointment", "update_appointment_attendee", "owner_reschedule_appointment", "owner_cancel_appointment", "owner_call_customer"];
+    const simulatedHere = ["book_appointment", "cancel_appointment", "reschedule_appointment", "update_appointment", "update_appointment_attendee", "owner_reschedule_appointment", "owner_cancel_appointment", "owner_call_customer", "owner_book_appointment", "owner_block_time", "owner_mark_callback_done"];
     assert.deepEqual(
       [...CALENDAR_WRITE_FUNCTIONS].sort(),
       [...simulatedHere].sort(),
@@ -292,6 +292,28 @@ describe("test mode — owner writes are simulated too (SCRUM-587)", () => {
       assert.match(done.message, /no call is placed/);
       assert.equal(fetchCalls, 0);
     }
+  });
+
+  it("SCRUM-599: owner_book_appointment, owner_block_time and owner_mark_callback_done never book, block or mark anything in test mode", async () => {
+    const cases = [
+      ["owner_book_appointment", { customer_name: "Jane Smith", customer_phone: "0412345678", start: "2026-10-29T14:00" }, "booked"],
+      ["owner_block_time", { start: "2026-10-30T13:00", end: "2026-10-30T17:00" }, "blocked"],
+      ["owner_mark_callback_done", { callback_id: "cb-1" }, "callback_done"],
+    ];
+    for (const context of [makeTestContext(), makeTestContext({ ownerMode: true, callId: "call-1" })]) {
+      for (const [fn, args, done] of cases) {
+        const held = await executeToolCall(fn, args, context);
+        assert.equal(held.data.outcome, "needs_confirmation", fn);
+        assert.equal(held.success, false, fn);
+        const stringYes = await executeToolCall(fn, { ...args, confirmed: "true" }, context);
+        assert.equal(stringYes.data.outcome, "needs_confirmation", `${fn}: a string "true" is not a confirmation`);
+        const yes = await executeToolCall(fn, { ...args, confirmed: true }, context);
+        assert.equal(yes.success, true, fn);
+        assert.equal(yes.data.outcome, done, fn);
+        assert.match(yes.message, /Nothing was changed\. \(Simulated — test mode\)/);
+      }
+    }
+    assert.equal(fetchCalls, 0);
   });
 
   it("mirrors PR B: only the JSON boolean true confirms, success follows the outcome, and owner mode changes nothing", async () => {

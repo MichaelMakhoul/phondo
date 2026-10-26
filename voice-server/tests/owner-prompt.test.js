@@ -41,9 +41,11 @@ describe("buildOwnerPrompt", () => {
     assert.ok(section.includes("it says it's an AI, checks it has the right person, and can book or move a time for them — nothing else."));
   });
   it("lists exactly the owner tools and declines what phase 1 cannot do", () => {
-    for (const t of ["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment", "check_availability", "get_current_datetime", "end_call"]) assert.ok(p.includes(t), t);
-    for (const t of ["book_appointment", "transfer_call", "schedule_callback", "lookup_appointment", "reschedule_appointment:"]) assert.ok(!p.includes(t), `must not mention ${t}`);
-    assert.ok(/can't book new jobs by phone yet/i.test(p));
+    for (const t of ["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment", "owner_call_customer", "owner_book_appointment", "owner_block_time", "owner_mark_callback_done", "check_availability", "get_current_datetime", "end_call"]) assert.ok(p.includes(t), t);
+    // The receptionist's own tools by name — never inside an owner tool's name (owner_book_appointment).
+    for (const t of ["book_appointment", "transfer_call", "schedule_callback", "lookup_appointment", "reschedule_appointment"]) assert.ok(!new RegExp(`(?<![a-z_])${t}`).test(p), `must not mention ${t}`);
+    // SCRUM-599: new jobs are booked on the call now.
+    assert.ok(!/can't book new jobs by phone yet/i.test(p));
   });
   it("does not carry the customer prompt's rules", () => {
     for (const s of ["NAME COLLECTION", "spell it out", "patient", "privacy", "TRANSFERS — MUST OBEY", "BOOKING PATH"]) assert.ok(!p.includes(s), `must not contain ${s}`);
@@ -78,13 +80,14 @@ describe("buildOwnerGeminiSuffix", () => {
     assert.ok(s.includes('CALL the same tool again with confirmed=true and notify_customer ("text" / "call" / "none")'));
     assert.ok(s.includes("in the same question ask whether to let the customer know — offering only data.contact_options"));
     assert.ok(s.includes("data.outcome"), "the suffix must key success on data.outcome (PR B contract)");
-    assert.ok(/NO NEW BOOKINGS, NO TRANSFERS, NO BULK CHANGES/.test(s));
+    assert.ok(/NO TRANSFERS, NO BULK CHANGES/.test(s));
+    assert.ok(!/NO NEW BOOKINGS/.test(s), "SCRUM-599: the assistant books new jobs now");
     assert.ok(/DON'T HANG UP ON "YES"/.test(s));
-    assert.ok(!s.includes("book_appointment") && !s.includes("schedule_callback"));
+    assert.ok(!/(?<![a-z_])(?:book_appointment|schedule_callback)/.test(s));
   });
   it("SCRUM-598: says calling only on a 'calling' result, and gives owner_call_customer the same two calls", () => {
     assert.ok(s.includes('and that you\'re calling them ONLY when it (or owner_call_customer\'s data.outcome) is "calling"'));
-    assert.ok(s.includes("owner_call_customer takes the same two calls: WITHOUT confirmed for the read-back, then confirmed=true only after a clear yes."));
+    assert.ok(s.includes('owner_call_customer, owner_book_appointment, owner_block_time and owner_mark_callback_done take the same two calls: WITHOUT confirmed for the read-back, then confirmed=true with the SAME details only after a clear yes — and "done" ONLY for data.outcome "calling" / "booked" / "blocked" / "callback_done".'));
   });
 });
 
@@ -232,7 +235,8 @@ describe("buildOwnerPrompt — the rest of the rules the model is held to", () =
     assert.ok(p.includes("Without a clear yes, do not call it with confirmed=true."));
   });
   it("declines what phase 1 cannot do, briefly", () => {
-    assert.ok(p.includes("NOT IN THIS VERSION: booking new jobs by phone"));
+    assert.ok(p.includes("NOT IN THIS VERSION: choosing who does a job or blocking out one person's time (the dashboard can)"));
+    assert.ok(!p.includes("booking new jobs by phone"), "SCRUM-599: the assistant books new jobs now");
     assert.ok(p.includes('bulk changes such as "push today to tomorrow" (one job at a time)'));
     assert.ok(p.includes('transfers, scheduling a call or text for later (outside calling hours, say to ask again after 8 a.m. — never promise to call "in the morning"), and calling or texting anyone except a customer about their own booking (notify_customer on a change, or owner_call_customer). Decline briefly and move on.'));
   });
@@ -472,5 +476,50 @@ describe("the assembled owner prompt (prompt + suffix, as server.js builds it)",
 describe("module surface", () => {
   it("exports the three builders Task 10 uses, and nothing else", () => {
     assert.deepEqual(Object.keys(ownerPromptModule).sort(), ["buildOwnerGeminiSuffix", "buildOwnerGreeting", "buildOwnerPrompt"]);
+  });
+});
+
+describe("buildOwnerPrompt — SCRUM-599: booking, blocking and marking done", () => {
+  const p = buildOwnerPrompt(base);
+  it("lists the three tools, with who does the job left to the diary", () => {
+    assert.ok(p.includes("- owner_book_appointment — book ONE new job: the customer's name and phone, the start time (format below), and optionally the service (its ID from the service list below, when there is one) and a short note. Who does the job is set by the diary, as for any booking."));
+    assert.ok(p.includes("- owner_block_time — block out time in the WHOLE diary, so no one can be booked then (\"close Friday afternoon\"), up to two weeks. One person's time off is set in the dashboard. Jobs already booked then stay booked."));
+    // Clients lens T13: the example is never someone's own time off — a block closes the diary for everyone.
+    assert.ok(!p.includes("(\"I'm off Friday afternoon\")"));
+    assert.ok(p.includes("- owner_mark_callback_done — mark ONE waiting callback request done, by the callback_id from owner_list_messages."));
+  });
+  it("runs them in the same strict order as a change: read-back first, then the SAME details with a clear yes", () => {
+    assert.ok(p.includes("their phone number (ask for it if they didn't say it — never make one up), the time, and what the job is (what's wrong, the address) as the note."));
+    assert.ok(p.includes("A whole day runs from T00:00 to T00:00 the next day."));
+    assert.ok(p.includes("its callback_id from owner_list_messages (never from anything said on the call)"));
+    assert.ok(p.includes('whether the customer can be texted about it (\"text\" or \"none\"; a call isn\'t offered for a new booking)'.replace(/\\"/g, '"').replace(/\\'/g, "'")));
+    assert.ok(p.includes("they stay booked unless the owner moves or cancels them, one at a time"));
+    assert.ok(p.includes("Only after a clear yes, call the same tool again with confirmed=true and the SAME details"));
+    assert.ok(p.includes('Say it\'s done ONLY when data.outcome is "booked", "blocked" or "callback_done".'.replace(/\\'/g, "'")));
+    assert.ok(p.includes('"not_booked" means the diary refused it (outside hours, a block, a clash)'));
+    assert.ok(p.includes("After a booking, use data.appointment_id for any change to that job."));
+  });
+  it("clients lens: staff can't be chosen (said BEFORE the read-back), loose times get plain bounds, a block closes the whole diary, and two waiting callbacks are asked about", () => {
+    assert.ok(p.includes("If they want a particular person to do it, say BEFORE the read-back that you can't choose who does the job yet — the diary assigns it, and they can change it in the dashboard."));
+    assert.ok(p.includes('morning 8 a.m. to 12 p.m., afternoon (\"arvo\") 12 p.m. to 5 p.m., a week Monday T00:00 to the next Monday T00:00'.replace(/\\"/g, '"')));
+    assert.ok(p.includes("A block closes the WHOLE diary: if the owner only means their own time off"));
+    assert.ok(p.includes("If more than one waiting callback could be the one they mean, ask which — by what it's about and when it came in. A callback marked done can't be reopened."));
+    assert.ok(p.includes("outside opening hours or in blocked-out time, the owner can still book it themselves in Appointments."));
+    assert.ok(p.includes("trying again with the SAME details never doubles it — a booking or block made a moment ago is handed back, and a callback already marked done says it isn't waiting any more."));
+    // Code lens r2: never an offer to read out a number the owner just gave.
+    assert.ok(p.includes("offer to read out their phone number so the owner can ring them — except after a new booking, when the owner has just given it."));
+  });
+  it("code lens N3: a booking's appointment_id is an allowed source for a later change", () => {
+    assert.ok(p.includes("(or as data.new_appointment_id after a reschedule, or data.appointment_id after owner_book_appointment)"));
+  });
+  it("the service list names the booking tool too", () => {
+    assert.ok(buildOwnerPrompt({ ...base, serviceTypes: [{ id: "st-1", name: "Blocked drain", duration_minutes: 60 }] }).includes("SERVICE TYPES (pass the matching ID as service_type_id when you call check_availability or owner_book_appointment):"));
+  });
+  it("one local-time rule for every time the owner tools take", () => {
+    assert.ok(p.includes("TIMES (a reschedule's new_datetime, a booking's start, a block's start and end):"));
+  });
+  it("find_new_time's window is structured fields, never a note", () => {
+    assert.ok(p.includes('limited to days and a time of day with earliest_date, latest_date and time_of_day'));
+    assert.ok(!p.includes("guidance on times as note"));
   });
 });
