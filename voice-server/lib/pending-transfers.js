@@ -8,6 +8,8 @@
 const { completeCallRecord, notifyCallCompleted } = require("./call-logger");
 const { analyzeCallTranscript } = require("../services/post-call-analysis");
 const { maybeEmitUnhappyCall } = require("./unhappy-call");
+const { getSupabase } = require("./supabase");
+const { bookedNamesForAnalysis } = require("./booked-names");
 
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET;
@@ -85,8 +87,11 @@ async function finishTransferredCall(savedState, outcome) {
   // Run post-call analysis (never on an owner call — same rule as cleanupSession)
   let analysis = null;
   if (!isOwnerCall && transcript && durationSeconds > 5) {
+    // SCRUM-594 (phone test F10): the names on the appointments this call made, as
+    // in server.js cleanupSession. Never throws.
+    const bookedNames = await bookedNamesForAnalysis(getSupabase, savedState.callRecordId, savedState.organizationId, "PendingTransfer");
     try {
-      analysis = await analyzeCallTranscript(transcript, { language: savedState.language });
+      analysis = await analyzeCallTranscript(transcript, { language: savedState.language, bookedNames });
     } catch (err) {
       console.error("[PendingTransfer] Post-call analysis failed:", err);
     }
@@ -124,6 +129,11 @@ async function finishTransferredCall(savedState, outcome) {
           recordingDisclosurePlayed: false,
           recordingDisclosureFailed: false,
           transferAttempt,
+          // SCRUM-594: the fast path's latency summary, attached when the
+          // call's stream closed for the dial (server.js cleanupSession).
+          fastPath: savedState.fastPath || null,
+          // SCRUM-594 gate C7: and which pipeline served it (a demo-line customer call).
+          pipeline: savedState.pipeline || null,
           // SCRUM-587: written BEFORE notifyCallCompleted (below) — PR B reads
           // call_type / owner_auth from the row.
           callType: isOwnerCall ? "owner" : null,

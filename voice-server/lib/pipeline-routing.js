@@ -10,6 +10,8 @@
  *   "+61400000000:openai-realtime,+61400000001:conversationrelay,+61400000002:grok-realtime"
  */
 
+const { gatewayProblem, gatewayModelProblem, gatewayRefusal } = require("./anthropic-gateway");
+
 /** Digits-only, so "+61400000000" / "61400000000" / formatted all compare equal. */
 function normNumber(s) {
   return String(s || "").replace(/\D/g, "");
@@ -59,4 +61,117 @@ function resolveOwnerPipeline(ownerRaw = process.env.OWNER_PIPELINE, globalPipel
   return globalPipeline;
 }
 
-module.exports = { resolveTestPipeline, normNumber, KNOWN_TEST_PIPELINES, resolveOwnerPipeline, OWNER_PIPELINES };
+/**
+ * SCRUM-594: the values DEMO_LINE_PIPELINE accepts. "classic-fast" is the fast
+ * classic variant (Flux STT, Claude, streaming Aura TTS); "classic" and
+ * "gemini-live" pin the demo line to either existing pipeline.
+ */
+const DEMO_LINE_PIPELINES = new Set(["classic-fast", "classic", "gemini-live"]);
+
+/** Unrecognised DEMO_LINE_PIPELINE values already reported: one warning per value, not one per call. */
+const warnedDemoLinePipelines = new Set();
+
+/**
+ * SCRUM-594 (R12c): why "classic-fast" can't run now, or null when it can. It
+ * needs Claude's key for its gateway (ANTHROPIC_API_KEY, or OPENROUTER_API_KEY
+ * with ANTHROPIC_GATEWAY=openrouter: lib/anthropic-gateway.js), a model that
+ * gateway takes, no standing refusal (no credit, a spent cap, a bad key: phone
+ * test F10) and Deepgram's key (DEEPGRAM_API_KEY, for Flux and Aura). An empty
+ * value counts as missing.
+ * @param {Record<string, string|undefined>} [env] - defaults to process.env, read now
+ * @param {string} [model] - the fast path's Claude model (server.js FAST_LLM_MODEL, same default)
+ * @returns {string | null}
+ */
+function fastPathProblem(env = process.env, model = env.FAST_LLM_MODEL || "claude-haiku-5-5") {
+  return gatewayProblem(env) ?? gatewayModelProblem(model, env) ?? gatewayRefusal() ?? (env.DEEPGRAM_API_KEY ? null : "DEEPGRAM_API_KEY not set");
+}
+
+/**
+ * Whether "classic-fast" can run now (see fastPathProblem).
+ * @param {Record<string, string|undefined>} [env]
+ * @param {string} [model]
+ * @returns {boolean}
+ */
+function fastPathKeysPresent(env = process.env, model) {
+  return fastPathProblem(env, model) === null;
+}
+
+/** The missing-key fallback is logged once per process, not once per call. */
+let fastPathKeysWarned = false;
+
+/**
+ * SCRUM-594: DEMO_LINE_PIPELINE, validated. Read at CALL time (the default
+ * reads the environment on every call), so tests can vary it, and setting the
+ * Fly secret (which restarts the machine) needs no code change.
+ * @param {string|null} [raw] - defaults to process.env.DEMO_LINE_PIPELINE
+ * @returns {"classic-fast"|"classic"|"gemini-live"|null} null when unset, blank or unrecognised: the demo line follows VOICE_PIPELINE
+ */
+function readDemoLinePipeline(raw = process.env.DEMO_LINE_PIPELINE) {
+  const value = String(raw ?? "").trim();
+  if (!value) return null;
+  if (DEMO_LINE_PIPELINES.has(value)) return /** @type {"classic-fast"|"classic"|"gemini-live"} */ (value);
+  if (!warnedDemoLinePipelines.has(value)) {
+    warnedDemoLinePipelines.add(value);
+    console.warn(`[PipelineRouting] DEMO_LINE_PIPELINE "${value.slice(0, 40)}" not recognised — ignoring (expected one of: ${[...DEMO_LINE_PIPELINES].join(", ")})`);
+  }
+  return null;
+}
+
+/**
+ * SCRUM-594: the pipeline for one inbound customer call. Only the published
+ * demo line can be switched (DEMO_LINE_PIPELINE), and only for an English
+ * assistant (Flux STT is English-only). Every other call follows the global
+ * pipeline exactly as before. Owner calls are routed by resolveOwnerPipeline()
+ * and never reach this; one that does gets the global, never the switch.
+ *
+ * @param {{ calledNumber?: string|null, ownerMode?: boolean, language?: string|null, globalPipeline?: string, demoLinePipeline?: string|null, isDemoLine?: (calledNumber: string|null|undefined) => boolean, hasFastPathKeys?: () => boolean }} [opts]
+ *   calledNumber - the business line the caller dialled;
+ *   ownerMode - a PIN-verified owner session;
+ *   language - the assistant's language (missing means "en", the server default);
+ *   globalPipeline - VOICE_PIPELINE (default: the environment's, else "classic"); any value but "gemini-live" runs classic;
+ *   demoLinePipeline - DEMO_LINE_PIPELINE (default: the environment's, read at call time);
+ *   isDemoLine - whether a number is the published demo line (server.js passes lib/demo-line's isDemoLineNumber; default: never);
+ *   hasFastPathKeys - whether "classic-fast" has its keys, asked only when the call would run it (default: fastPathKeysPresent() on the environment, read at call time).
+ *     Without them the call takes the global pipeline (R12c): the fast variant would apologise on every turn. Logged once per process; never reported to Sentry here.
+ * @returns {"gemini-live"|"classic"|"classic-fast"}
+ */
+function resolveCallPipeline({
+  calledNumber = null,
+  ownerMode = false,
+  language = "en",
+  globalPipeline = process.env.VOICE_PIPELINE || "classic",
+  demoLinePipeline = process.env.DEMO_LINE_PIPELINE,
+  isDemoLine = () => false,
+  hasFastPathKeys = () => fastPathKeysPresent(),
+} = {}) {
+  const global = globalPipeline === "gemini-live" ? "gemini-live" : "classic";
+  if (ownerMode || !isDemoLine(calledNumber)) return global;
+  const override = readDemoLinePipeline(demoLinePipeline);
+  if (!override) return global;
+  const lang = language || "en";
+  if (lang !== "en") {
+    console.log(`[PipelineRouting] DEMO_LINE_PIPELINE=${override} ignored — the assistant's language is "${lang}" and the switch is English-only. The demo line uses ${global}.`);
+    return global;
+  }
+  if (override === "classic-fast" && !hasFastPathKeys()) {
+    if (!fastPathKeysWarned) {
+      fastPathKeysWarned = true;
+      console.warn(`[PipelineRouting] classic-fast can't run (${fastPathProblem() ?? "its keys are missing"}) — using ${global}`);
+    }
+    return global;
+  }
+  return override;
+}
+
+module.exports = {
+  resolveTestPipeline,
+  normNumber,
+  KNOWN_TEST_PIPELINES,
+  resolveOwnerPipeline,
+  OWNER_PIPELINES,
+  resolveCallPipeline,
+  readDemoLinePipeline,
+  DEMO_LINE_PIPELINES,
+  fastPathKeysPresent,
+  fastPathProblem,
+};

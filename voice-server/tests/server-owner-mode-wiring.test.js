@@ -34,7 +34,9 @@ describe("SCRUM-587: owner session wiring", () => {
     assert.match(src, /if \(!session\.ownerMode && !clinikoOwnsAvailability && \(session\.calendarEnabled \|\| session\.serviceTypes\?\.length > 0\)\)/);
   });
   it("owner calls pick their pipeline via OWNER_PIPELINE", () => {
-    assert.match(src, /const effectivePipeline = session\.ownerMode \? resolveOwnerPipeline\(\) : VOICE_PIPELINE;/);
+    // SCRUM-594: customer calls now go through resolveCallPipeline (the demo-line
+    // switch, VOICE_PIPELINE otherwise); the owner branch is unchanged.
+    assert.match(src, /const effectivePipeline = session\.ownerMode\s*\?\s*resolveOwnerPipeline\(\)\s*:\s*resolveCallPipeline\(\{[^}]*globalPipeline: VOICE_PIPELINE,/);
     assert.ok((src.match(/effectivePipeline === "gemini-live"/g) || []).length >= 2, "both pipeline-selection checks must use effectivePipeline");
   });
   it("Gemini: owner tools, owner greeting, no disclosure, owner suffix", () => {
@@ -61,7 +63,7 @@ describe("SCRUM-587: owner session wiring", () => {
   });
   it("classic: owner tools, owner greeting, no disclosure, runner before the cancel gate", () => {
     assert.match(src, /function buildLLMOptions\(session, \{ includeTransfer = false \} = \{\}\) \{\n  if \(session\.ownerMode\) return \{ tools: buildOwnerTools\(\) \};/);
-    const loopIdx = src.indexOf('const fnArgs = parseToolArgs(toolCall, "ToolCall");');
+    const loopIdx = src.indexOf('let fnArgs = parseToolArgs(toolCall, "ToolCall");');
     const runnerIdx = src.indexOf("runOwnerToolCall(session, { name: fnName, args: fnArgs }, { executeToolCall, scheduleCache })", loopIdx);
     const cancelIdx = src.indexOf('fnName === "cancel_appointment" && !session.confirmCancel(', loopIdx);
     assert.ok(loopIdx > 0 && runnerIdx > loopIdx && runnerIdx < cancelIdx, `order: loop=${loopIdx} runner=${runnerIdx} cancel=${cancelIdx}`);
@@ -101,8 +103,10 @@ describe("SCRUM-587: owner session — controller-override pins", () => {
   });
 
   it("resolveOwnerPipeline runs once per call (it warns on every call when misconfigured), in the start handler", () => {
-    assert.equal((src.match(/resolveOwnerPipeline\(/g) || []).length, 1);
+    // SCRUM-596: and once per browser owner session (/ws/test): two sites in all.
+    assert.equal((src.match(/resolveOwnerPipeline\(/g) || []).length, 2);
     assert.ok(startHandler.includes("resolveOwnerPipeline()"));
+    assert.match(src, /const sessionPipeline = session\.ownerMode \? resolveOwnerPipeline\(\) : VOICE_PIPELINE;/);
     // The start handler never consults the global directly any more.
     assert.doesNotMatch(startHandler, /VOICE_PIPELINE === "gemini-live"/);
     assert.match(startHandler, /if \(effectivePipeline === "gemini-live" && !process\.env\.GEMINI_API_KEY\) \{/);
@@ -197,6 +201,8 @@ const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancel
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("../lib/owner-turn-stamps");
 const { forwardingFallbackEligible } = require("../lib/transfer-eligibility");
 const { maskPhone } = require("../lib/mask-phone");
+const { resolveCallPipeline } = require("../lib/pipeline-routing");
+const { checkEndCallGuard } = require("../lib/end-call-guard");
 const toolExecutor = require("../services/tool-executor");
 
 const { buildLanguageLockDirective } = runSlice({
@@ -440,6 +446,12 @@ describe("SCRUM-587: pipeline selection, run for real", () => {
       scope: {
         session: makeSession({ owner }),
         resolveOwnerPipeline: () => { resolved += 1; return ownerPipeline; },
+        // SCRUM-594: customer calls go through the real resolver; a number that
+        // isn't the demo line follows VOICE_PIPELINE exactly as before.
+        resolveCallPipeline,
+        fastPathKeysPresent: () => assert.fail("SCRUM-594: a number that isn't the demo line never asks about the fast path's keys"),
+        calledNumber: "+61255550000",
+        isDemoLineNumber: () => false,
         VOICE_PIPELINE: voicePipeline,
         process: { env: geminiKey ? { GEMINI_API_KEY: geminiKey } : {} },
         console: recordingConsole(lines),
@@ -787,7 +799,9 @@ function makeClassicStt(session) {
     to: "// Recording disclosure + greeting — pre-synthesize disclosure while STT connects",
     scope: {
       session,
+      effectivePipeline: "classic", // SCRUM-594: the classic block's first statement reads it
       openDeepgramStream: (key, cbs) => { callbacks = cbs; return { readyState: 1 }; },
+      startFastPath: () => assert.fail("SCRUM-594: a classic call never starts the fast path"),
       DEEPGRAM_API_KEY: "dg",
       logTranscript: () => {},
       handleUserSpeech: async () => {},
@@ -812,6 +826,7 @@ function classicGreeting(session) {
       getRecordingDisclosureText: () => "This call is recorded.",
       synthesizeSpeech: (...a) => { calls.push(["synthesizeSpeech", a[1]]); return Promise.resolve(null); },
       DEEPGRAM_API_KEY: "dg",
+      FAST_DEEPGRAM_HOST: "api.au.deepgram.com", // SCRUM-594: read on the fast path only
       getGreeting: () => "Thanks for calling Copperline Plumbing!",
       buildOwnerGreeting,
       console: recordingConsole([]),
@@ -849,7 +864,7 @@ function makeClassic(o = {}) {
       return { type: "tool_calls", toolCalls, message: { role: "assistant", content: null, tool_calls: toolCalls } };
     },
     startHoldAudio: () => ({ stop: () => {} }),
-    sendClear: () => {},
+    sendClear: () => true, // classic always clears
     // Real TTS takes far longer than a millisecond; 2 ms keeps a read-back's audio stamp after its arm.
     sendTTS: async (s, ws, text) => { calls.push(["sendTTS", text]); await sleep(2); if (o.ttsFails) throw new Error("tts down"); return 100; },
     executeToolCall: o.executeToolCall || (async (...a) => { calls.push(["executeToolCall", ...a]); return { message: "customer tool result" }; }),
@@ -872,6 +887,18 @@ function makeClassic(o = {}) {
     RESCHEDULE_SUCCESS_SIGNAL: /moved/,
     applyRescheduleToLedger: () => ({ moved: false }),
     saveForTransfer: (...a) => calls.push(["saveForTransfer", ...a]),
+    // SCRUM-594: the classic end_call guard and hang-up (run for real in
+    // server-classic-end-call-wiring.test.js).
+    checkEndCallGuard,
+    END_CALL_PLAYBACK_CAP_MS: 50,
+    END_CALL_TAIL_MS: 5,
+    WebSocket: { OPEN: 1 },
+    fastFlush: () => assert.fail("SCRUM-594: a classic turn never flushes an Aura stream"),
+    beginFastTurn: () => assert.fail("SCRUM-594: a classic turn is never a fast turn"),
+    NOT_A_REPLY: Object.freeze({ reply: false }), // SCRUM-594 gate H1: fillers and apologies (REST ignores it)
+    noteFastTurnFailure: () => assert.fail("SCRUM-594: a classic turn's failure is not a fast turn's"),
+    fastAudioBusy: () => assert.fail("SCRUM-594: a classic turn never waits for the fast path's audio"),
+    waitForFastTurnStart: () => assert.fail("SCRUM-594: a classic turn never waits for the fast path's audio"),
     console: recordingConsole(lines),
   };
   const fns = runSlice({
@@ -1063,6 +1090,7 @@ describe("SCRUM-587: classic owner turns get the owner tool cap, and never hear 
 
 // ─── Post-call (cleanupSession), run for real ───────────────────────────────
 
+const SUPABASE = { client: "supabase" };
 function makeCleanup(session, o = {}) {
   const calls = [];
   const lines = [];
@@ -1073,7 +1101,10 @@ function makeCleanup(session, o = {}) {
     Sentry: fakeSentry(calls),
     detectPostCallPhantoms: () => { calls.push(["detectPostCallPhantoms"]); return o.phantoms || []; },
     summarizePhantoms: () => ({ bugTag: "hallucinated_cancellation", reason: "hallucinated-cancellation" }),
-    analyzeCallTranscript: async () => { calls.push(["analyzeCallTranscript"]); return o.analysis || null; },
+    analyzeCallTranscript: async (...args) => { calls.push(["analyzeCallTranscript", ...args]); return o.analysis || null; },
+    // SCRUM-594 (F10): the names on the call's appointments, from the client getSupabase returns.
+    getSupabase: () => SUPABASE,
+    bookedNamesForAnalysis: async (...args) => { calls.push(["bookedNamesForAnalysis", ...args]); return o.bookedNames || []; },
     buildToolOutcomeDigest: () => "",
     DEBUG_TRANSCRIPTS: false,
     maybeEmitUnhappyCall: () => calls.push(["maybeEmitUnhappyCall"]),
@@ -1096,6 +1127,10 @@ function makeCleanup(session, o = {}) {
     maskPhone,
     buildOwnerCallSummary,
     settleOwnerToolRuns: o.settleOwnerToolRuns || settleOwnerToolRuns,
+    isDemoLineNumber: () => false, // SCRUM-594: metadata.pipeline is for demo-line calls only
+    closeFastPath: () => assert.fail("SCRUM-594: a classic call has no fast path to close"),
+    summarizeFastCall: () => assert.fail("SCRUM-594: a classic call has no fast-path summary"),
+    getTransfer: () => assert.fail("SCRUM-594: no fast-path summary to hand to a transfer"),
     console: recordingConsole(lines),
   };
   const { cleanupSession } = runSlice({ from: "async function cleanupSession() {", to: 'twilioWs.on("message", async (raw) => {', scope, names: ["cleanupSession"] });
@@ -1161,6 +1196,38 @@ describe("SCRUM-587: post-call (cleanupSession), run for real", () => {
       assert.ok(!body.includes("callType"), "a customer webhook body never carries callType");
       assert.equal(body.includes("ownerAuth"), ownerAuth !== null, String(ownerAuth));
     }
+  });
+});
+
+describe("SCRUM-594 (phone test F10): the call-end analysis knows the names on this call's appointments", () => {
+  it("a customer call: looked up for this call in its org, and given to the analysis", async () => {
+    const s = endedCall(makeSession({ owner: false }));
+    const { cleanupSession, calls } = makeCleanup(s, { analysis: { summary: "Booked.", callerName: "Michael Dunn" }, bookedNames: ["Michael Dunn"] });
+    await cleanupSession();
+    const [, getClient, callId, organizationId, where] = calls.find((c) => c[0] === "bookedNamesForAnalysis");
+    assert.equal(getClient(), SUPABASE);
+    assert.deepEqual([callId, organizationId, where], ["call-1", "org-1", "PostCall"]);
+    const [, transcript, options] = calls.find((c) => c[0] === "analyzeCallTranscript");
+    assert.ok(transcript.includes("Bob Lee"));
+    assert.deepEqual(options.bookedNames, ["Michael Dunn"]);
+    assert.ok("toolDigest" in options, "the SCRUM-559 digest still goes with it");
+    assert.equal(calls.find((c) => c[0] === "completeCallRecord")[2].callerName, "Michael Dunn");
+  });
+
+  it("an owner call is never analysed, so nothing is looked up", async () => {
+    const s = endedCall(makeSession({ owner: true }));
+    const { cleanupSession, calls } = makeCleanup(s);
+    await cleanupSession();
+    assert.ok(!calls.some((c) => c[0] === "bookedNamesForAnalysis"));
+  });
+
+  it("a call too short to analyse isn't looked up either", async () => {
+    const s = endedCall(makeSession({ owner: false }));
+    s.startedAt = Date.now() - 2_000;
+    const { cleanupSession, calls } = makeCleanup(s);
+    await cleanupSession();
+    assert.ok(!calls.some((c) => c[0] === "bookedNamesForAnalysis"));
+    assert.ok(!calls.some((c) => c[0] === "analyzeCallTranscript"));
   });
 });
 

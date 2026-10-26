@@ -95,6 +95,8 @@ function makeDeps(overrides = {}) {
       overrides.buildTwoSidedTranscript || (() => "User: real caller words\nAI: hello"),
     analyzeCallTranscript:
       overrides.analyzeCallTranscript || (async () => ({ summary: "s", sentiment: "neutral" })),
+    // SCRUM-594 (F10): the names on this call's appointments.
+    bookedNamesForAnalysis: overrides.bookedNamesForAnalysis || (async () => []),
     judgeContentLoss:
       overrides.judgeContentLoss ||
       (async (prior, replacement) => {
@@ -222,6 +224,21 @@ describe("handleRetranscribe (SCRUM-550)", () => {
     assert.equal(captured.applyReanalysis, null);
     assert.equal(sentry.events[0].level, "warning");
     assert.equal(sentry.events[0].reason, "retranscribe-failed");
+  });
+
+  it("SCRUM-594 (F5): skips (no page, no write, no download) a fast-path call that switched language — the live transcript stays", async () => {
+    const { deps, captured, sentry } = makeDeps({ row: { ...DEFAULT_ROW, metadata: { ...(DEFAULT_ROW.metadata || {}), fastPath: { stt: "flux", tts: "rest-language", languages: ["en", "es"] } } } });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.equal(res.reason, "language-switched");
+    assert.equal(res.retranscribed, false);
+    assert.equal(captured.applyReanalysis, null);
+    assert.equal(sentry.events.length, 0);
+  });
+
+  it("SCRUM-594 (F5): a fast-path call that stayed in its language is re-transcribed as before", async () => {
+    const { deps } = makeDeps({ row: { ...DEFAULT_ROW, metadata: { ...(DEFAULT_ROW.metadata || {}), fastPath: { stt: "flux", tts: "stream" } } } });
+    const res = await handleRetranscribe({ callId: "c1", deps });
+    assert.notEqual(res.reason, "language-switched");
   });
 
   it("skips (no page, no write) an unsupported assistant language — keeps Gemini's transcript AND analysis", async () => {
@@ -645,4 +662,52 @@ describe("handleRetranscribe (SCRUM-550)", () => {
       assert.ok(captured.applyReanalysis, "the re-analysis must be applied for a non-owner call");
     });
   }
+});
+
+describe("SCRUM-594 (phone test F10): the re-analysis knows the names on this call's appointments", () => {
+  function run(overrides = {}) {
+    let options = null;
+    const { deps, captured } = makeDeps({
+      analyzeCallTranscript: async (_transcript, opts) => {
+        options = opts;
+        return { summary: "s", callerName: "Michael Dunn" };
+      },
+      ...overrides,
+    });
+    return handleRetranscribe({ callId: "c1", deps }).then((res) => ({ res, options, captured, deps }));
+  }
+
+  it("looks them up for this call in its org, with the handler's client, and gives them to the analysis", async () => {
+    let lookup = null;
+    const { res, options, captured, deps } = await run({
+      bookedNamesForAnalysis: async (getClient, callId, organizationId, where) => {
+        lookup = { client: getClient(), callId, organizationId, where };
+        return ["Michael Dunn"];
+      },
+    });
+    assert.equal(res.retranscribed, true);
+    assert.equal(lookup.client, deps.getSupabase(), "the same client the handler uses");
+    assert.deepEqual({ ...lookup, client: undefined }, { client: undefined, callId: "c1", organizationId: "o1", where: "Retranscribe" });
+    assert.deepEqual(options, { language: "en", bookedNames: ["Michael Dunn"] });
+    assert.equal(captured.applyReanalysis.fields.analysis.callerName, "Michael Dunn");
+  });
+
+  it("a call with no live appointments (or a failed lookup, which returns none) is re-analysed with no names", async () => {
+    const { res, options } = await run();
+    assert.equal(res.retranscribed, true);
+    assert.deepEqual(options, { language: "en", bookedNames: [] });
+  });
+
+  it("not looked up when the call is skipped before the analysis (here: already re-transcribed)", async () => {
+    let looked = false;
+    const { res } = await run({
+      row: { ...DEFAULT_ROW, transcript_source: "deepgram" },
+      bookedNamesForAnalysis: async () => {
+        looked = true;
+        return [];
+      },
+    });
+    assert.equal(res.reason, "already-retranscribed");
+    assert.equal(looked, false);
+  });
 });

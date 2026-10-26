@@ -53,7 +53,7 @@ function resolveVoiceId(voiceId) {
 // ---------------------------------------------------------------------------
 const VOICE_MAP = {
   // Australian
-  "XB0fDUnXU5powFXDhCwa": "aura-2-asteria-en",  // Charlotte
+  "XB0fDUnXU5powFXDhCwa": "aura-2-theia-en",    // Charlotte — Deepgram's Australian voice (SCRUM-594 F5 A/B)
   "ZQe5CZNOzWyzPSCn5a3c": "aura-2-arcas-en",    // James
   "IKne3meq5aSn9XLyUdCD": "aura-2-orion-en",    // Liam
   // American

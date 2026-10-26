@@ -6,6 +6,7 @@ import {
   trackTestCallStarted,
   trackTestCallCompleted,
   trackTestCallMicGateBypassed,
+  type VoiceTestSource,
 } from "@/lib/analytics";
 
 export interface TranscriptMessage {
@@ -20,7 +21,7 @@ interface UseVoiceTestOptions {
   assistantId: string;
   tokenUrl?: string;
   tokenBody?: Record<string, unknown>;
-  trackingSource?: "dashboard" | "onboarding";
+  trackingSource?: VoiceTestSource;
 }
 
 export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource = "dashboard" }: UseVoiceTestOptions) {

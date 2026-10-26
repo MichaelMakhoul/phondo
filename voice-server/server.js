@@ -18,6 +18,7 @@ const { CallSession } = require("./call-session");
 const { openDeepgramStream, transcribeRecording } = require("./services/deepgram-stt");
 const { getChatResponse, streamChatResponse, LLM_PROVIDER, DEFAULT_MODEL } = require("./services/openai-llm");
 const { synthesizeSpeech, chunkAudioForTwilio } = require("./services/deepgram-tts");
+const { boostAura } = require("./lib/aura-gain");
 const { loadCallContext, loadTestCallContext, loadScheduleSnapshot } = require("./lib/call-context");
 const { buildSystemPrompt, getGreeting, buildLiveScheduleSection } = require("./lib/prompt-builder");
 const scheduleCache = require("./lib/schedule-cache");
@@ -25,14 +26,32 @@ const { bookingKey, normalizeDatetime } = require("./lib/booking-key");
 const { applyRescheduleToLedger, RESCHEDULE_SUCCESS_SIGNAL } = require("./lib/reschedule-ledger"); // SCRUM-563
 const { classifyRebookAttempt, DUPLICATE_REBOOK_MESSAGE, CORRECTION_ERROR_MESSAGE, CANCEL_NUDGE } = require("./lib/rebook-correction"); // SCRUM-557
 const { createCallRecord, completeCallRecord, notifyCallCompleted, applyReanalysis } = require("./lib/call-logger");
-const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall } = require("./services/tool-executor");
+const { calendarToolDefinitions, listServiceTypesToolDefinition, transferToolDefinition, callbackToolDefinition, endCallToolDefinition, executeToolCall, applyCallerIdPhoneFallback } = require("./services/tool-executor");
 const { createGeminiSession, GEMINI_MODEL } = require("./services/gemini-live");
 const { createOpenAIRealtimeSession, createGrokRealtimeSession, resolveOpenAIRealtimeModel } = require("./services/openai-realtime"); // SCRUM-378 eval spike (OpenAI + Grok share the adapter)
 const { createSessionWithFailover, isFailoverEnabled } = require("./services/gemini-failover"); // SCRUM-535
-const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override; SCRUM-587 OWNER_PIPELINE
+const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline, resolveCallPipeline, fastPathKeysPresent } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override; SCRUM-587 OWNER_PIPELINE; SCRUM-594 DEMO_LINE_PIPELINE
+const { describeGateway: describeAnthropicGateway } = require("./lib/anthropic-gateway"); // SCRUM-594: ANTHROPIC_GATEWAY
+const { checkEndCallGuard } = require("./lib/end-call-guard"); // SCRUM-594: the SCRUM-373 end_call guard for the classic pipeline
+const { checkBookingGuards, fastCancelGate, checkCallerDone, withBookedName, noteNameCorrection, forgetCancelledBooking, noteBookingGuardCap, CANCEL_KEPT_NUDGE } = require("./lib/booking-guards"); // SCRUM-594 PHASE 2: the fast path's booking guards
+// SCRUM-594: the fast classic pipeline (DEMO_LINE_PIPELINE=classic-fast, spec 4.8):
+// Flux STT and its turn engine, the Aura stream and the player that carries it
+// to Twilio, speculative drafts, and Claude with clause chunking. These modules
+// never capture to Sentry; server.js does.
+const { openFluxStream, fluxConfigFromEnv } = require("./services/flux-stt");
+const { openAuraStream } = require("./services/aura-stream");
+const { createAuraRouter } = require("./services/aura-router"); // SCRUM-594 (phone test F9): a stream per voice
+const { DEFAULT_HOST } = require("./services/deepgram-ws-common");
+const { createFastPlayer } = require("./lib/fast-player");
+const { createFastTurnEngine, endsWithQuestion, isBackchannel, isLikelyEcho } = require("./lib/fast-turns");
+const { FLUX_MULTI_MODEL, FAST_LANGUAGES, fastLanguagesEnabled, unspeakableText, planLanguageSwitch, recordLanguageSwitch, textLanguage, sentenceVoice, beginReplyLanguage, UNSPEAKABLE_APOLOGY, LANGUAGE_UNHEARD_NOTE } = require("./lib/fast-languages"); // SCRUM-594 (F5, F9)
+const { createNoTurnWatchdog } = require("./lib/no-turn-watchdog");
+const { startSpeculativeReply } = require("./lib/speculative-reply");
+const { streamClaudeResponse } = require("./services/claude-chat");
 const { handleConversationRelayConnection, buildConversationRelayTwiml } = require("./services/conversationrelay"); // SCRUM-378 eval spike (ConversationRelay + Claude)
 const { validateToolResponse } = require("./services/turn-validator");
 const { detectPhantomAction, detectPostCallPhantoms, summarizePhantoms, netLiveOutcome, buildToolOutcomeDigest } = require("./lib/action-claim-detector"); // SCRUM-381 live + SCRUM-383 post-call + SCRUM-559 cancel-aware state checks
+const { bookedNamesForAnalysis } = require("./lib/booked-names"); // SCRUM-594 (phone test F10): the call log's name comes from the booking
 // SCRUM-166 outbound calling service (cherry-picked to main for smoke testing)
 const {
   makeOutboundCall,
@@ -148,6 +167,7 @@ const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require
 const { buildOwnerTools } = require("./lib/owner-tools");
 const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, OWNER_MAX_TOOL_CALLS } = require("./lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("./lib/owner-turn-stamps");
+const { OWNER_WEB_MAX_SESSION_MS, OWNER_WEB_RECORD_METADATA, OWNER_WEB_PROBLEM_MESSAGE, isOwnerWebToken, ownerWebCallSid, buildOwnerWebPrompt, createOwnerTokenLedger, createOwnerWebSessions, finishOwnerWebSession } = require("./lib/owner-web-session"); // SCRUM-596: the owner assistant in the dashboard
 
 // Mirror of API-layer E164_REGEX. Defense-in-depth at the dialer so a bad
 // value introduced via direct SQL or a future bug can't be sent to Twilio.
@@ -229,6 +249,11 @@ const ERROR_MESSAGES = {
     repeatRequest: "I apologize, I'm having trouble processing that. Could you repeat what you said?",
     troubleRepeat: "I'm sorry, I'm having a little trouble right now. Could you repeat that?",
     transferFailed: (name) => `I'm sorry, ${name} wasn't available right now. Would you like me to take a message, or is there something else I can help you with?`,
+    // SCRUM-594: spoken when the model ends a classic call without saying goodbye itself
+    goodbye: "Thanks for calling — goodbye.",
+    // SCRUM-594 gate (fast path): the caller's words were lost with Flux (M4a, M4b), or no answer came to a question (M5)
+    sayAgain: "Sorry, could you say that again?",
+    didntCatch: "Sorry, I didn't catch that.",
   },
   es: {
     notConfigured: "Lo sentimos, este número no está configurado actualmente. Por favor intente más tarde.",
@@ -236,6 +261,46 @@ const ERROR_MESSAGES = {
     repeatRequest: "Disculpe, tuve problemas procesando eso. ¿Podría repetirlo?",
     troubleRepeat: "Lo siento, estoy teniendo un pequeño problema. ¿Podría repetir eso?",
     transferFailed: (name) => `Lo siento, ${name} no está disponible en este momento. ¿Le gustaría dejar un mensaje, o hay algo más en lo que pueda ayudarle?`,
+    goodbye: "Gracias por llamar. ¡Adiós!",
+    sayAgain: "Perdón, ¿podría repetirlo?",
+    didntCatch: "Perdón, no le entendí.",
+  },
+  // SCRUM-594 (F5): the lines a fast-path call can hear once it has switched language
+  // (lib/fast-languages.js); any other key falls back to English.
+  fr: {
+    repeatRequest: "Excusez-moi, je n'ai pas pu traiter cela. Pourriez-vous répéter ?",
+    troubleRepeat: "Désolée, j'ai un petit souci. Pourriez-vous répéter ?",
+    goodbye: "Merci de votre appel. Au revoir !",
+    sayAgain: "Pardon, pourriez-vous répéter ?",
+    didntCatch: "Pardon, je n'ai pas compris.",
+  },
+  de: {
+    repeatRequest: "Entschuldigung, das konnte ich nicht verarbeiten. Könnten Sie das wiederholen?",
+    troubleRepeat: "Entschuldigung, ich habe gerade ein kleines Problem. Könnten Sie das wiederholen?",
+    goodbye: "Danke für Ihren Anruf. Auf Wiederhören!",
+    sayAgain: "Entschuldigung, könnten Sie das noch einmal sagen?",
+    didntCatch: "Entschuldigung, das habe ich nicht verstanden.",
+  },
+  it: {
+    repeatRequest: "Mi scusi, non sono riuscita a elaborarlo. Può ripetere?",
+    troubleRepeat: "Mi scusi, ho un piccolo problema. Può ripetere?",
+    goodbye: "Grazie per la chiamata. Arrivederci!",
+    sayAgain: "Scusi, può ripetere?",
+    didntCatch: "Scusi, non ho capito.",
+  },
+  nl: {
+    repeatRequest: "Sorry, dat kon ik niet verwerken. Kunt u het herhalen?",
+    troubleRepeat: "Sorry, ik heb even een klein probleem. Kunt u dat herhalen?",
+    goodbye: "Bedankt voor het bellen. Tot ziens!",
+    sayAgain: "Sorry, kunt u dat herhalen?",
+    didntCatch: "Sorry, dat verstond ik niet.",
+  },
+  ja: {
+    repeatRequest: "申し訳ございません、うまく処理できませんでした。もう一度おっしゃっていただけますか？",
+    troubleRepeat: "申し訳ございません、少し問題が発生しています。もう一度おっしゃっていただけますか？",
+    goodbye: "お電話ありがとうございました。失礼いたします。",
+    sayAgain: "すみません、もう一度おっしゃっていただけますか？",
+    didntCatch: "すみません、聞き取れませんでした。",
   },
 };
 
@@ -1245,6 +1310,7 @@ app.post("/internal/retranscribe", async (req, res) => {
         transcribeRecording,
         buildTwoSidedTranscript,
         analyzeCallTranscript,
+        bookedNamesForAnalysis, // SCRUM-594 (phone test F10)
         judgeContentLoss: judgeTranscriptContentLoss,
         applyReanalysis,
         Sentry,
@@ -1543,6 +1609,17 @@ wss.on("connection", (twilioWs) => {
     session = null;
     sessions.delete(s.streamSid);
 
+    // SCRUM-594 (spec 4.8.10): the fast path's sockets, timers, draft and turn
+    // go first: a Flux handle still CONNECTING would otherwise leak (our pings
+    // keep it alive). Then its latency summary (spec 4.8.9: [FastCall], and
+    // calls.metadata.fastPath below).
+    if (s.fastState) closeFastPath(s);
+    // A reconnected leg after a failed transfer carries the first leg's summary.
+    const fastPathSummary = s.fastStats ? summarizeFastCall(s) : s.carriedFastPath;
+    // SCRUM-594: which pipeline served a demo-line customer call (the DEMO_LINE_PIPELINE
+    // comparison); gate C7: a reconnected leg carries the first leg's. Null on every other call.
+    const pipelineServed = (!s.ownerMode && isDemoLineNumber(s.orgPhoneNumber) ? s.effectivePipeline : null) || s.carriedPipeline || null;
+
     // Unsubscribe from schedule cache events
     if (s._cacheUnsub) {
       s._cacheUnsub();
@@ -1553,6 +1630,13 @@ wss.on("connection", (twilioWs) => {
     // the /twiml/transfer-status callback or TTL cleanup will handle it.
     if (s.pendingTransfer) {
       console.log(`[Cleanup] Transfer pending for callSid=${s.callSid} — deferring post-call processing`);
+      // SCRUM-594: whoever writes this call's record later (finishTransferredCall,
+      // or the cleanup of a leg reconnected after a failed dial) writes the summary.
+      if (fastPathSummary || pipelineServed) {
+        const saved = getTransfer(s.callSid);
+        if (saved && fastPathSummary) saved.fastPath = fastPathSummary;
+        if (saved && pipelineServed) saved.pipeline = pipelineServed; // gate C7
+      }
       s.destroy();
       return;
     }
@@ -1599,10 +1683,15 @@ wss.on("connection", (twilioWs) => {
     let analysis = null;
     // SCRUM-587: no OpenAI analysis on owner calls — the summary is built from the tool audit below.
     if (!s.ownerMode && transcript && durationSeconds > 5) {
+      // SCRUM-594 (phone test F10): the names on the appointments this call made, so
+      // a misheard spelled surname doesn't become the call log's name. Never throws;
+      // a failed lookup leaves them out (lib/booked-names.js says how loudly).
+      const bookedNames = await bookedNamesForAnalysis(getSupabase, s.callRecordId, s.organizationId, "PostCall");
       try {
         analysis = await analyzeCallTranscript(transcript, {
           language: s.language,
           toolDigest: buildToolOutcomeDigest(s.toolCallAudit || []), // SCRUM-559: analysis sees tool ground truth
+          bookedNames,
         });
         if (analysis) {
           // SCRUM-339: caller name AND the free-text call reason are PII —
@@ -1722,6 +1811,12 @@ wss.on("connection", (twilioWs) => {
             callerState: s.callerState || null,
             consentReason: s.consentReason || null,
             pipelineFailover: s.pipelineFailover || null,
+            // SCRUM-594: which pipeline served a demo-line customer call (the
+            // DEMO_LINE_PIPELINE comparison). Null on every other call, so they
+            // write no new metadata (tests/call-logger-metadata.test.js).
+            pipeline: pipelineServed,
+            // SCRUM-594: the fast path's latency summary; null on every other call.
+            fastPath: fastPathSummary,
             sentiment: analysis?.sentiment || null,
             piiRedacted,
             cleanedTranscript: analysis?.cleanedTranscript ?? null,
@@ -2299,7 +2394,24 @@ wss.on("connection", (twilioWs) => {
           // ── Pipeline selection ───────────────────────────────────────────
           // SCRUM-587: owner calls may run a different pipeline (OWNER_PIPELINE),
           // resolved once per call; the key check follows the EFFECTIVE pipeline.
-          const effectivePipeline = session.ownerMode ? resolveOwnerPipeline() : VOICE_PIPELINE;
+          // SCRUM-594: a customer call to the published demo line may be moved by
+          // DEMO_LINE_PIPELINE (read on every call); every other customer call
+          // follows VOICE_PIPELINE as before. Owner calls never reach the switch.
+          // classic-fast that can't run (a missing key for Claude's gateway or for
+          // Deepgram, a model the gateway won't take, or Claude refusing requests:
+          // fastPathProblem, read when the resolver asks) takes VOICE_PIPELINE (R12c).
+          const effectivePipeline = session.ownerMode
+            ? resolveOwnerPipeline()
+            : resolveCallPipeline({
+                calledNumber,
+                ownerMode: session.ownerMode,
+                language: session.language,
+                globalPipeline: VOICE_PIPELINE,
+                demoLinePipeline: process.env.DEMO_LINE_PIPELINE,
+                isDemoLine: isDemoLineNumber,
+                hasFastPathKeys: () => fastPathKeysPresent(process.env, FAST_LLM_MODEL),
+              });
+          session.effectivePipeline = effectivePipeline;
           if (effectivePipeline === "gemini-live" && !process.env.GEMINI_API_KEY) {
             console.error("[GeminiLive] pipeline=gemini-live but GEMINI_API_KEY not set — falling back to classic pipeline");
           }
@@ -3251,54 +3363,72 @@ wss.on("connection", (twilioWs) => {
           }
 
           // ── Classic pipeline (Deepgram STT + OpenAI LLM + Deepgram TTS) ──
-          session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
-            language: session.language,
-            onTranscript: ({ transcript, isFinal }) => {
-              if (!isFinal) return;
-              // Echo suppression: drop STT transcripts that arrive while AI is speaking.
-              // Allow through: substantial speech (>2 words) or known interrupt phrases.
-              const INTERRUPT_RE = /^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse me|hello|hey)\b/i;
-              if (session.isSpeaking && transcript.trim().split(/\s+/).length <= 2 && !INTERRUPT_RE.test(transcript.trim())) {
-                logTranscript("[STT] Dropped (echo suppression while AI speaking)", transcript);
-                return;
-              }
-              logTranscript("[STT] Final", transcript);
-              // SCRUM-587: the owner spoke (confirmation-gate clock; once per utterance).
-              if (session.ownerMode) noteOwnerSpeech(session, transcript);
-              session.bufferTranscript(transcript, (combined, inputType) => {
-                logTranscript("[STT] Buffered", combined);
-                session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text, inputType));
-              });
-            },
-            onUtteranceEnd: () => {
-              session.flushBuffer();
-            },
-            onError: (err) => {
-              console.error("[STT] Error:", err);
-              if (session) {
-                session.callFailed = true;
-                session.endedReason = "stt-error";
-              }
-              sendTTS(session, twilioWs, getErrorMsg(session.language, "technicalDifficulty"))
-                .catch((ttsErr) => {
-                  console.error("[STT] Failed to send error message to caller:", ttsErr);
-                })
-                .finally(() => {
-                  // Disconnect after delivering the error message
-                  setTimeout(() => twilioWs.close(), 2000);
+          // SCRUM-594: fastPath marks the demo line's fast variant
+          // (DEMO_LINE_PIPELINE=classic-fast) before any STT opens. A Gemini
+          // selection that fell back for a missing key lands here too, and is
+          // recorded as the classic call it is.
+          session.fastPath = !session.ownerMode && effectivePipeline === "classic-fast";
+          if (!session.fastPath) session.effectivePipeline = "classic";
+          // SCRUM-594 (phone test F3/F5, PHASE 2): short turns, one question at a time,
+          // a booking made in this call changed with what was booked, the whole call
+          // in context, and the booking guards.
+          if (session.fastPath) applyFastConversationSettings(session);
+          // Nova-3 with today's callbacks: the classic STT, and the fast path's
+          // fallback whenever Flux cannot serve the call (spec 4.8.1).
+          const openClassicStt = () => {
+            session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
+              language: session.language,
+              onTranscript: ({ transcript, isFinal }) => {
+                if (!isFinal) return;
+                // Echo suppression: drop STT transcripts that arrive while AI is speaking.
+                // Allow through: substantial speech (>2 words) or known interrupt phrases.
+                const INTERRUPT_RE = /^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse me|hello|hey)\b/i;
+                if (session.isSpeaking && transcript.trim().split(/\s+/).length <= 2 && !INTERRUPT_RE.test(transcript.trim())) {
+                  logTranscript("[STT] Dropped (echo suppression while AI speaking)", transcript);
+                  return;
+                }
+                logTranscript("[STT] Final", transcript);
+                // SCRUM-587: the owner spoke (confirmation-gate clock; once per utterance).
+                if (session.ownerMode) noteOwnerSpeech(session, transcript);
+                session.bufferTranscript(transcript, (combined, inputType) => {
+                  logTranscript("[STT] Buffered", combined);
+                  session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text, inputType));
                 });
-            },
-            onClose: (code) => {
-              if (code !== 1000 && code !== 1005 && session && !session.callFailed) {
-                console.error(`[STT] Connection lost during active call (callSid=${session.callSid})`);
-                session.callFailed = true;
-                session.endedReason = "stt-connection-lost";
-                sendTTS(session, twilioWs, getErrorMsg(session.language, "troubleRepeat"))
-                  .catch((ttsErr) => console.error("[STT] Failed to send reconnect message:", ttsErr))
-                  .finally(() => setTimeout(() => twilioWs.close(), 3000));
-              }
-            },
-          }, { industry: session.organization?.industry });
+              },
+              onUtteranceEnd: () => {
+                session.flushBuffer();
+              },
+              onError: (err) => {
+                console.error("[STT] Error:", err);
+                if (session) {
+                  session.callFailed = true;
+                  session.endedReason = "stt-error";
+                }
+                sendTTS(session, twilioWs, getErrorMsg(session.language, "technicalDifficulty"))
+                  .catch((ttsErr) => {
+                    console.error("[STT] Failed to send error message to caller:", ttsErr);
+                  })
+                  .finally(() => {
+                    // Disconnect after delivering the error message
+                    setTimeout(() => twilioWs.close(), 2000);
+                  });
+              },
+              onClose: (code) => {
+                if (code !== 1000 && code !== 1005 && session && !session.callFailed) {
+                  console.error(`[STT] Connection lost during active call (callSid=${session.callSid})`);
+                  session.callFailed = true;
+                  session.endedReason = "stt-connection-lost";
+                  sendTTS(session, twilioWs, getErrorMsg(session.language, "troubleRepeat"))
+                    .catch((ttsErr) => console.error("[STT] Failed to send reconnect message:", ttsErr))
+                    .finally(() => setTimeout(() => twilioWs.close(), 3000));
+                }
+              },
+            }, { industry: session.organization?.industry });
+          };
+          // SCRUM-594: the fast path starts Flux (and its turn engine), the Aura
+          // stream and the player instead; every other call opens Nova as before.
+          if (session.fastPath) startFastPath(session, twilioWs, openClassicStt);
+          else openClassicStt();
 
           // Recording disclosure + greeting — pre-synthesize disclosure while STT connects
           // SCRUM-587: no spoken disclosure on owner calls (as on the Gemini path).
@@ -3326,6 +3456,8 @@ wss.on("connection", (twilioWs) => {
             );
             disclosureAudioPromise = synthesizeSpeech(DEEPGRAM_API_KEY, disclosureText, {
               voice: session.deepgramVoice,
+              // SCRUM-594: the fast path pre-synthesises on the AU host (spec 4.8.1)
+              ...(session.fastPath ? { host: FAST_DEEPGRAM_HOST } : {}),
             }).catch((err) => {
               console.error("[Recording] Disclosure pre-synthesis failed:", err);
               return null;
@@ -3338,6 +3470,7 @@ wss.on("connection", (twilioWs) => {
             : getGreeting(context.assistant, context.organization.name, { isAfterHours, afterHoursConfig });
           const greetingAudioPromise = synthesizeSpeech(DEEPGRAM_API_KEY, stripMarkdown(greeting), {
             voice: session.deepgramVoice,
+            ...(session.fastPath ? { host: FAST_DEEPGRAM_HOST } : {}),
           }).catch((err) => {
             console.error("[TTS] Greeting pre-synthesis failed:", err);
             return null;
@@ -3350,11 +3483,17 @@ wss.on("connection", (twilioWs) => {
               const t0 = Date.now();
               const chunks = chunkAudioForTwilio(disclosureAudio);
               session.isSpeaking = true;
+              // SCRUM-594 (R12d′): nothing on the fast path may cut the disclosure off.
+              if (session.fastPath) beginFastDisclosure(session);
               for (const chunk of chunks) {
                 if (twilioWs.readyState !== WebSocket.OPEN) break;
                 twilioWs.send(JSON.stringify({ event: "media", streamSid: session.streamSid, media: { payload: chunk } }));
               }
               twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
+              if (session.fastPath) {
+                noteFastRestSpeech(session, disclosureText, disclosureAudio.length / 8);
+                armFastDisclosureEnd(session, twilioWs, disclosureAudio.length / 8);
+              }
               console.log(`[TTS] Disclosure (pre-synth, ${Date.now() - t0}ms send) ${disclosureAudio.length} bytes`);
               session.recordingDisclosurePlayed = true;
               session.addMessage("assistant", disclosureText);
@@ -3363,10 +3502,21 @@ wss.on("connection", (twilioWs) => {
               // In two-party consent jurisdictions, skipping disclosure is illegal
               console.warn("[Recording] Disclosure pre-synthesis failed — falling back to synchronous TTS");
               try {
-                await sendTTS(session, twilioWs, disclosureText);
+                if (session.fastPath) {
+                  // SCRUM-594 (R12d′): over REST on the fast path too. It is legally
+                  // required, and REST knows its frames went out (and before the
+                  // pre-synthesised greeting's); nothing may cut it off.
+                  beginFastDisclosure(session);
+                  const disclosureMs = await sendRestTTS(session, twilioWs, disclosureText, undefined, { verbatim: true });
+                  if (twilioWs.readyState !== WebSocket.OPEN) throw new Error("the Twilio stream closed before the disclosure was sent");
+                  armFastDisclosureEnd(session, twilioWs, disclosureMs);
+                } else {
+                  await sendTTS(session, twilioWs, disclosureText);
+                }
                 session.recordingDisclosurePlayed = true;
                 session.addMessage("assistant", disclosureText);
               } catch (fallbackErr) {
+                if (session.fastPath) endFastDisclosure(session);
                 console.error("[Recording] CRITICAL: Disclosure fallback TTS also failed — cannot play legally required disclosure:", fallbackErr);
                 session.recordingDisclosureFailed = true;
               }
@@ -3383,6 +3533,8 @@ wss.on("connection", (twilioWs) => {
               twilioWs.send(JSON.stringify({ event: "media", streamSid: session.streamSid, media: { payload: chunk } }));
             }
             twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: "tts-done" } }));
+            // SCRUM-594 (R12d′): the echo filter hears the greeting too.
+            if (session.fastPath) noteFastRestSpeech(session, greeting, greetingAudio.length / 8);
             // Safety timeout: reset isSpeaking even if mark event is lost
             setTimeout(() => { if (session) session.isSpeaking = false; }, 20000);
             console.log(`[TTS] Greeting (pre-synth, ${Date.now() - t0}ms send) ${greetingAudio.length} bytes`);
@@ -3391,6 +3543,7 @@ wss.on("connection", (twilioWs) => {
             // Fallback: synthesize greeting normally if pre-synth failed
             try {
               await sendTTS(session, twilioWs, greeting);
+              if (session.fastPath) fastFlush(session); // SCRUM-594: release the greeting's last words (spec 4.8.4)
               session.addMessage("assistant", greeting);
             } catch (err) {
               console.error("[TTS] Greeting fallback also failed:", err);
@@ -3417,6 +3570,8 @@ wss.on("connection", (twilioWs) => {
           const audio = Buffer.from(msg.media.payload, "base64");
           if (session.deepgramWs.readyState === WebSocket.OPEN) {
             session.deepgramWs.send(audio);
+            // SCRUM-594 gate M4b: speech Flux reports no turns for (fast path only).
+            if (session.fastPath === true) noteFastInboundAudio(session, audio);
           } else if (!session._sttDropWarned) {
             console.warn(`[STT] Dropping audio — Deepgram WebSocket not open (state=${session.deepgramWs.readyState}, callSid=${session.callSid})`);
             session._sttDropWarned = true;
@@ -3428,6 +3583,11 @@ wss.on("connection", (twilioWs) => {
           // TTS playback finished for a marked chunk
           if (session && msg.mark && msg.mark.name === "tts-done") {
             session.isSpeaking = false;
+            // SCRUM-594 (R12d′): on the fast path, isSpeaking holds while other audio still plays.
+            if (session.fastState) onFastRestMark(session);
+          } else if (session?.fastState && typeof msg.mark?.name === "string" && msg.mark.name.startsWith("fast-")) {
+            // SCRUM-594 (spec 4.8.6): the fast player's marks (and the disclosure's); isSpeaking follows what still plays.
+            onFastMark(session, msg.mark.name);
           }
           break;
         }
@@ -3472,6 +3632,135 @@ wss.on("connection", (twilioWs) => {
     });
   });
 });
+
+// SCRUM-594: classic end_call hang-up timing (hangUpAfterEndCall). The turn's
+// speech gets at most this long to play, then a short tail lets the last audio
+// leave Twilio's buffer before the stream closes (which ends the call).
+const END_CALL_PLAYBACK_CAP_MS = 8000;
+const END_CALL_TAIL_MS = 500;
+
+// SCRUM-594: the fast classic pipeline (spec 4.8). Out here, beside the
+// end_call timings, so the tests that run server.js text inject their own.
+// Flux, the Aura stream and the fast path's greeting pre-synthesis use
+// Deepgram's Sydney host (~25 ms away vs ~335 ms for api.deepgram.com); the
+// existing Nova and REST paths stay where they are.
+const FAST_DEEPGRAM_HOST = process.env.FAST_DEEPGRAM_HOST || DEFAULT_HOST;
+// The fast path's LLM: always Claude (services/claude-chat.js), whatever LLM_PROVIDER says.
+const FAST_LLM_MODEL = process.env.FAST_LLM_MODEL || "claude-haiku-5-5";
+// A live fast LLM call's limit. Passing a signal turns off claude-chat's own
+// 15 s timeout, so the turn's signal carries this one.
+const FAST_LLM_TIMEOUT_MS = 15_000;
+// Flux must be open by then, or the call falls back to Nova.
+const FLUX_OPEN_TIMEOUT_MS = 3000;
+// What sendTTS returns for text on the Aura stream (estimated ms per character):
+// the audio streams in later, so callers that wait on a duration get an estimate.
+const FAST_TTS_MS_PER_CHAR = 70;
+// The end_call hang-up waits at most this long for the Flushed that ends the goodbye's audio.
+const FAST_FLUSHED_WAIT_MS = 3000;
+// ... then for the player to go idle: its byte estimate of playback plus this.
+const FAST_IDLE_CAP_MS = 2000;
+// Aura silent this long ends the utterance even with no Flushed (a flush the budget refused).
+const FAST_AUDIO_QUIET_MS = 500;
+// A fast turn that starts while the AI is still speaking waits this long at most for it to finish (R12b″) ...
+const FAST_TURN_START_WAIT_MS = 10_000;
+// ... checking this often.
+const FAST_TURN_START_POLL_MS = 20;
+// A playback mark (the player's, a REST tts-done, the disclosure's) this overdue
+// past the audio's estimated end is taken as lost: that audio counts as played.
+const FAST_LOST_MARK_MS = 5000;
+// A flush whose Flushed is this overdue, with no Aura audio either, means a stuck
+// stream: REST for the rest of the call.
+const FAST_FLUSH_WATCHDOG_MS = 3000;
+// Flux answers audio with an Update about every 240 ms: this long without a single
+// frame while audio goes out means a stuck stream, and Nova takes over ...
+const FLUX_SILENCE_MS = 5000;
+// ... checked this often.
+const FLUX_WATCHDOG_TICK_MS = 1000;
+// The mark after the recording disclosure's audio: until it is back, nothing cuts the disclosure.
+const FAST_DISCLOSURE_MARK = "fast-disclosure";
+// Gate M3: the Aura stream must open within this long (as Flux must), or the call speaks over REST.
+const AURA_OPEN_TIMEOUT_MS = 3000;
+// Phone test F9 (silent-failure review): another language's voice must open within this, or its
+// sentences go to the assistant's voice. Shorter than FAST_FLUSH_WATCHDOG_MS, which watches the
+// flush queued behind it: equal, the healthy base stream was blamed and the call went to REST.
+// The probes opened every voice in 70-220 ms.
+const AURA_VOICE_OPEN_TIMEOUT_MS = 1500;
+// Gate C4: R14″'s estimate of the audio Aura still owes ahead of a question, at a slow speech rate:
+// it errs late (an answer must clearly start after the question did), never early.
+const FAST_QUESTION_MS_PER_CHAR = 95;
+// Gate H2 (round 2, N3): a sentence counts as voiced by a failed Aura stream once this much audio
+// a character was received. Near Aura's real rate (about 66) but above it, so in doubt the last
+// sentence is said again over REST rather than lost; it may repeat a sentence that did play.
+const FAST_RESPEAK_MS_PER_CHAR = 75;
+// Gate M5 (ii): this long without the caller starting a turn after the AI's question, it asks again (once).
+const FAST_REPROMPT_MS = 6000;
+// Phone test F3/F5: how the fast path's Claude speaks. The owner's first call had replies of
+// 12-15 s repeating the same offer, and a reschedule of a same-call booking that asked the
+// caller for the name again (Flux misheard "Sorry?" as "Deville": refused as a mismatch).
+const FAST_VOICE_ADDENDUM = [
+  "VOICE STYLE (this is a phone call):",
+  "- Speak in short turns: at most two short sentences (about 25 words), then stop and let the caller answer.",
+  "- Ask one question at a time.",
+  "- Never repeat an offer or question you already made in your last reply; if the caller didn't answer it, rephrase briefly or move on.",
+  "- Don't ask for anything the caller already told you, and don't offer what they already asked for.",
+  "- Ask \"anything else?\" once, when their request is done, not after every answer.",
+  "- Say goodbye and end the call only after the caller says goodbye or that they're done.",
+  // Phone test F6: the shared POST-CONFIRMATION CLOSE (written for Gemini) says goodbye and end_call on the
+  // read-back's yes; this line holds that hang-up, so callers heard "Have a good day" then "anything else?".
+  "- POST-CONFIRMATION CLOSE ON THIS LINE (this replaces the one above, and any line above that says goodbye once they confirm): a yes to your booking read-back, even \"yes, thanks\" or \"perfect, thanks\", means the details are right, not that the caller is done. Say no goodbye and don't call end_call: ask if there's anything else, then wait for their answer. If they also said goodbye or that's all, say a short goodbye and call end_call.",
+  "NAMES:",
+  "- Before you book, spell the caller's last name back to them letter by letter (for example \"That's S-M-I-T-H?\") and wait for a yes. Speech recognition often mishears surnames.",
+  "BOOKINGS MADE ON THIS CALL:",
+  "- If you booked an appointment earlier in this call, use the exact name and time you booked when calling reschedule_appointment or cancel_appointment (pass the full name on the booking as name); do not ask the caller to repeat them.",
+  "- If the caller wants a different time for an appointment you booked on this call, move it with reschedule_appointment; book a second one only if they want two.",
+  "- When they ask to move it to a day (\"how about Tuesday?\"), offer the times free that day and let them pick one before you move it.",
+  "- When the caller asks to cancel, call cancel_appointment straight away, without checking their name again: it tells you when to read the booking back to them for a yes.",
+  "TIMES:",
+  "- Offer the earliest free time in the LIVE SCHEDULE: today first, if it still has times. Never give a reason a day is unavailable that the schedule doesn't show.",
+  // Phone test F9: the example was "Today at 11, or tomorrow at 9:30?" — copied at 1:53 AM as "Want 2 PM, or … 9 AM
+  // tomorrow?", with the times said first in a sentence. This is the shape the model reaches for anyway, each time once.
+  "- Say each time once: name the two earliest in one sentence, then ask which (\"The earliest is today at 11, or 11:30. Which suits you?\"), not in a sentence first and then again in the question.",
+].join("\n");
+// Phone test F5: asked for Arabic, the model followed the shared prompt's LANGUAGE rule (written
+// for Gemini, which speaks it), said yes, and sent Arabic text to an English voice. The fast path
+// speaks what Flux Multilingual hears AND Aura-2 says (lib/fast-languages.js), nothing else.
+// Phone test F9: no set_language. Each sentence is said in its own language's voice and the
+// line follows the replies, so the model only has to answer in the right language.
+const FAST_LANGUAGE_RULES = [
+  "LANGUAGES ON THIS LINE (this replaces the LANGUAGE rule above):",
+  "- This line speaks English, Spanish, French, German, Italian, Dutch and Japanese, nothing else.",
+  "- Answer in the language the caller speaks, or the one they ask for, and keep to it until they change language. Nothing needs switching: the caller hears each sentence in a voice for its own language.",
+  "- If the caller only asks, in English, whether you speak one of them, answer in English (\"Yes, I can. Would you like to continue in Spanish?\"), then speak the one they choose.",
+  "- In another language, say everything in it, including any line this prompt gives you to say and what the tools tell you (translate them); keep names, numbers, dates, times and confirmation codes exactly as they are. Never mix two languages in one reply.",
+  "- That includes the short line before you check or book something and the spelling read-back: in Spanish \"Un momento, lo compruebo.\" or \"Se lo reservo ahora.\", in Japanese \"確認いたします。\"; never say \"Let me book that for you.\" or \"Is that right?\" to them in English.",
+  "- For any other language (for example Arabic, Mandarin, Cantonese, Vietnamese, Hindi or Greek), say in English, in one short sentence, that this line can't speak it yet, and offer to have someone call them back. Never write words in a language this line can't speak.",
+].join("\n");
+/** FAST_LANGUAGES=off: the English-only rules (Flux English, the assistant's voice only). */
+const FAST_ENGLISH_ONLY_RULES = [
+  "LANGUAGE ON THIS LINE (this replaces the LANGUAGE rule above):",
+  "- This line speaks English only. If the caller asks for another language, say so in English, in one short sentence, and offer to have someone call them back. Never write words in another language.",
+].join("\n");
+/** SCRUM-594 PHASE 2 (B1): the fast path's context window — the whole call (a 10-minute call is about 100 messages). */
+const FAST_MAX_MESSAGES = 201;
+/**
+ * SCRUM-594: the fast path's conversation settings, applied when a call starts
+ * on it: the voice-style prompt, the whole call in the model's context (B1),
+ * and the booking guards (lib/booking-guards.js, B2–B4). One function, so the
+ * simulated-call harness (scripts/sim-calls) gives its calls exactly these.
+ * @param {CallSession} session
+ */
+function applyFastConversationSettings(session) {
+  session.fastLanguages = fastLanguagesEnabled(); // F5: the kill switch FAST_LANGUAGES=off
+  const languageRules = session.fastLanguages ? FAST_LANGUAGE_RULES : FAST_ENGLISH_ONLY_RULES;
+  session.setSystemPrompt(`${session.messages[0]?.content || ""}\n${FAST_VOICE_ADDENDUM}\n${languageRules}`);
+  session.maxMessages = FAST_MAX_MESSAGES;
+  session.bookingGuards = true;
+  session.fastLanguage = "en";
+  session.baseDeepgramVoice = session.deepgramVoice || null; // the voice to come back to from another language
+}
+// Gate B: speculative drafts (each an LLM call) per Flux turn, and per call. Past either, turns are answered live.
+const FAST_DRAFTS_PER_TURN = 2;
+const FAST_DRAFTS_PER_CALL = 60;
 
 /**
  * Build LLM options with tools based on session capabilities.
@@ -3644,6 +3933,66 @@ const FILLER_MESSAGES = {
 const NO_FILLER_MAX_LEN = 12;
 const NO_FILLER_RE = /^(yeah?|yes|no|ok(ay)?|sure|thanks?( you)?|thank you|bye|goodbye|that'?s all|good|likewise)\s*[.!?]?$/i;
 
+/**
+ * SCRUM-594 (F5): the canned fillers for this call's language. On the fast path that is the
+ * language the caller is speaking (fastTalkLanguage), and none for a language without canned
+ * fillers — a French call never hears "One moment." in a French voice. Every other call: as before.
+ * @param {any} session
+ * @returns {Record<string, string>|null}
+ */
+function fillerMessagesFor(session) {
+  if (typeof session.fastLanguage === "string") return FILLER_MESSAGES[fastTalkLanguage(session)] || null;
+  return FILLER_MESSAGES[session.language] || FILLER_MESSAGES.en;
+}
+
+/**
+ * SCRUM-594 (phone test F9): the language the caller is speaking on the fast path: theirs this
+ * turn when their words say so clearly (beginReplyLanguage), else the line's.
+ * @param {any} session
+ * @returns {string}
+ */
+function fastTalkLanguage(session) {
+  return session.fastTurnLanguage || session.fastLanguage || "en";
+}
+
+/**
+ * SCRUM-594 (F5): the language the caller is hearing — the fast path's (switched) language,
+ * else the assistant's — for the canned lines (getErrorMsg).
+ * @param {any} session
+ * @returns {string}
+ */
+function callLanguage(session) {
+  return typeof session?.fastLanguage === "string" ? session.fastLanguage : session?.language;
+}
+
+/**
+ * SCRUM-594 (phone test F9): the line follows the model. A reply clearly in another of the
+ * line's languages (textLanguage, strict) moves the line there: Flux's hints, the fillers,
+ * and the voice of the sentences whose own words don't say their language. The caller's
+ * words never move it: the rules that read them (F5, F9) kept misreading them. Never to a
+ * language the call gave up on (revertFastLanguageToEnglish); when the hearing can't follow
+ * (Nova, or Flux not open), the model is told to keep to English.
+ * @param {any} session
+ * @param {string} reply - the model's reply this turn
+ * @returns {boolean} whether the line moved
+ */
+function followReplyLanguage(session, reply) {
+  if (!session.fastLanguages || typeof session.fastLanguage !== "string") return false;
+  const code = textLanguage(reply, { strict: true });
+  if (!code || code === session.fastLanguage || session.fastBlockedLanguages?.includes(code)) return false;
+  const plan = planLanguageSwitch(session, code);
+  if (!plan.changed) return false;
+  if (!switchFastLanguageStreams(session, plan)) {
+    // Told once: a language given up on before had its own note (revertFastLanguageToEnglish).
+    if (!session.fastBlockedLanguages?.length) session.addMessage("system", LANGUAGE_UNHEARD_NOTE);
+    session.fastBlockedLanguages = [...(session.fastBlockedLanguages || []), code];
+    return false;
+  }
+  recordLanguageSwitch(session, plan);
+  console.log(`[FastPath] The reply was in ${FAST_LANGUAGES[code].name}: the line follows it (callSid=${session.callSid})`);
+  return true;
+}
+
 function getToolFiller(lang, toolNames) {
   const msgs = FILLER_MESSAGES[lang] || FILLER_MESSAGES.en;
   const names = Array.isArray(toolNames) ? toolNames : [toolNames];
@@ -3653,26 +4002,95 @@ function getToolFiller(lang, toolNames) {
 }
 
 async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush) {
-  if (!session) return;
+  // SCRUM-594: no turn on a closing or closed stream. After an end_call
+  // hang-up (ws sets CLOSING inside close()), a late buffered final must not
+  // start an LLM round nobody will hear.
+  if (!session || twilioWs.readyState !== WebSocket.OPEN) return;
   session.isProcessing = true;
 
-  // Barge-in: if assistant is speaking, clear Twilio's audio buffer
-  if (session.isSpeaking) {
-    sendClear(session, twilioWs);
-    session.isSpeaking = false;
+  // Barge-in: if assistant is speaking, clear Twilio's audio buffer. (On the
+  // fast path with Nova after a fallback, this is still the only barge-in; a
+  // Flux fast turn waits for the AI's audio instead, below.) SCRUM-594: when
+  // nothing was cleared (the recording disclosure plays on), it is still speaking.
+  // After a fallback, audio Aura still owes counts too (phone test F6, gate review):
+  // the hold loop's stop used to cut it at the reply's first words, and fast turns
+  // no longer run the hold loop.
+  if (session.fastPath !== true && (session.isSpeaking || (session.fastPath === "degraded-stt" && fastAudioBusy(session)))) {
+    if (sendClear(session, twilioWs)) session.isSpeaking = false;
   }
 
-  // Play hold audio while AI processes
-  const hold = startHoldAudio(session, twilioWs, "twilio");
+  // Play hold audio while AI processes. SCRUM-594: holdPlaying lets an end_call
+  // hang-up stop hold audio that is still looping — and only then, because
+  // every stop() sends a Twilio clear, which would cut speech already queued.
+  // Never on the fast path (phone test F6): its replies start about a second
+  // after the caller stops, so the loop was only ever a second of brown noise,
+  // heard as wind, before every reply, and its stop sent a Twilio clear and an
+  // Aura Clear at every turn's first words.
+  /** @type {{ stop: () => void } | null} */
+  const holdAudio = session.fastPath ? null : startHoldAudio(session, twilioWs, "twilio");
+  let holdPlaying = holdAudio !== null;
+  const hold = {
+    stop: () => {
+      if (session.fastPath && !holdPlaying) return;
+      holdPlaying = false;
+      holdAudio?.stop();
+    },
+  };
+  // SCRUM-594 (spec 4.8.7): the fast path's turn: the draft it adopts, and the
+  // abort a barge-in calls (session.currentTurn).
+  /** @type {import("./call-session").FastTurn|null} */
+  let fastTurn = null;
 
   try {
+    // Decided BEFORE the user message is added: isAdoptable compares the
+    // messages array the draft started from, length included.
+    fastTurn = session.fastPath ? beginFastTurn(session, transcript) : null;
     session.addMessage("user", transcript);
+
+    if (fastTurn && session.fastPath === true) {
+      // SCRUM-594 (R12b″): a fast turn never cuts the AI off at its start. It waits
+      // (at most FAST_TURN_START_WAIT_MS) for the AI's audio to finish: a caller
+      // who really talks over it barges in (the turn engine). The wait is part of
+      // the turn, so that barge-in aborts it: no reply to these words alone, which
+      // stay in the conversation for the turn that follows.
+      if (fastAudioBusy(session)) {
+        const waitStarted = Date.now();
+        await waitForFastTurnStart(session, fastTurn);
+        fastTurn.record.waitedMs += Date.now() - waitStarted; // gate C5
+        if (fastTurn.ctl.signal.aborted) throw fastAbortError(fastTurn.abortReason || "abort");
+        if (twilioWs.readyState !== WebSocket.OPEN) return;
+      }
+    }
+
+    // SCRUM-594 (phone test F9): the caller's language this turn, for the fillers and for the
+    // reply's sentences whose own words don't say theirs. Nothing switches on it.
+    if (session.fastLanguages) beginReplyLanguage(session, transcript);
 
     const llmOptions = buildLLMOptions(session, { includeTransfer: true });
     let reply = null;
 
     // Track whether a filler has been sent this turn — only ONE filler per turn
     let fillerSentThisTurn = false;
+
+    // SCRUM-594: an allowed end_call (or an owner tool result carrying
+    // __endCall) ends the turn and then the call; the model is not asked again.
+    let endCall = false;
+    // When the audio sent to TTS this turn will have finished playing. Twilio
+    // plays what we queue in order and in real time (sendTTS returns each
+    // send's length), so audio that has already played is not waited for
+    // again. The hang-up waits until then before closing the stream.
+    let playbackEndsAt = 0;
+    /**
+     * @param {string} text
+     * @param {{ reply?: boolean }} [kind] - NOT_A_REPLY for a filler or an apology: not the turn's latency (gate H1)
+     */
+    const speak = async (text, kind) => {
+      // SCRUM-594: a fast turn's REST audio (after an Aura fallback) is not sent once a barge-in has ended the turn.
+      const ms = await sendTTS(session, twilioWs, text, fastTurn ? () => Boolean(fastTurn?.over) : undefined, kind);
+      playbackEndsAt = Math.max(Date.now(), playbackEndsAt) + ms;
+    };
+    /** @type {Promise<void>[]} each tool round's TTS chain — the hang-up waits until all of it is sent */
+    const turnTtsChains = [];
 
     // SCRUM-587 (SF5): an owner's normal list → availability → reschedule is
     // three tool rounds on its own, so owner turns get the owner tool cap. The
@@ -3685,6 +4103,8 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
       const t0 = Date.now();
 
       const sentenceQueue = [];
+      // SCRUM-594: a barge-in during the last round's tools ends the turn here (never mid-tool).
+      if (fastTurn) startFastRound(fastTurn, sentenceQueue);
       let ttsChain = Promise.resolve();
       let holdStopped = false;
 
@@ -3694,41 +4114,60 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
       const trimmedTranscript = transcript.trim();
       const skipFiller = fillerSentThisTurn
         || NO_FILLER_RE.test(trimmedTranscript)
-        || trimmedTranscript.length <= NO_FILLER_MAX_LEN;
+        || trimmedTranscript.length <= NO_FILLER_MAX_LEN
+        || !fillerMessagesFor(session); // SCRUM-594 (F5): no canned fillers in this language
       const fillerTimer = skipFiller ? null : setTimeout(() => {
-        if (!holdStopped && !fillerSentThisTurn) {
+        // SCRUM-594: never after a barge-in (or the end) of the fast turn.
+        if (!holdStopped && !fillerSentThisTurn && !fastTurn?.over) {
           fillerSentThisTurn = true;
           hold.stop();
           holdStopped = true;
-          const msgs = FILLER_MESSAGES[session.language] || FILLER_MESSAGES.en;
+          const msgs = /** @type {Record<string, string>} */ (fillerMessagesFor(session));
           console.log(`[Filler] "${msgs.waiting}"`);
-          ttsChain = ttsChain.then(async () => { await sendTTS(session, twilioWs, msgs.waiting); }).catch((err) => {
+          ttsChain = ttsChain.then(async () => {
+            if (fastTurn?.over) return; // SCRUM-594: not after a barge-in
+            await speak(msgs.waiting, NOT_A_REPLY);
+            if (session.fastPath) fastFlush(session); // SCRUM-594: a flush point (spec 4.8.4)
+          }).catch((err) => {
             console.error("[Filler] TTS error:", err.message);
           });
         }
       }, 1500);
 
-      const result = await streamChatResponse(LLM_API_KEY, session.messages, {
-        ...llmOptions,
-        onSentence: (sentence) => {
-          if (fillerTimer) clearTimeout(fillerTimer);
-          sentenceQueue.push(sentence);
-          // Stop hold audio before first TTS sentence
-          if (!holdStopped) {
-            hold.stop();
-            holdStopped = true;
-          }
-          // Chain TTS calls so they play in order
-          ttsChain = ttsChain.then(async () => {
-            await sendTTS(session, twilioWs, sentence);
-            // SCRUM-587: a reply sentence reached the caller — this turn produced speech.
-            if (session.ownerMode) noteAssistantSpeech(session);
-          }).catch((err) => {
-            session.isSpeaking = false;
-            console.error("[StreamTTS] Error sending sentence:", err.message);
-          });
-        },
-      });
+      /** @param {string} sentence */
+      const onSentence = (sentence) => {
+        if (fastTurn) {
+          // SCRUM-594: nothing more is said once a barge-in has ended the turn.
+          if (fastTurn.over) return;
+          noteFastLlmOutput(fastTurn);
+        }
+        if (fillerTimer) clearTimeout(fillerTimer);
+        sentenceQueue.push(sentence);
+        // Stop hold audio before first TTS sentence
+        if (!holdStopped) {
+          hold.stop();
+          holdStopped = true;
+        }
+        // Chain TTS calls so they play in order
+        ttsChain = ttsChain.then(async () => {
+          if (fastTurn?.over) return;
+          await speak(sentence);
+          // SCRUM-587: a reply sentence reached the caller — this turn produced speech.
+          if (session.ownerMode) noteAssistantSpeech(session);
+        }).catch((err) => {
+          session.isSpeaking = false;
+          console.error("[StreamTTS] Error sending sentence:", err.message);
+        });
+      };
+      // SCRUM-594 (spec 4.8.7): the fast path asks Claude (clause chunking, the
+      // turn's signal), or adopts the turn's draft in round 0.
+      const result = fastTurn
+        ? await fastLlmResponse(session, fastTurn, i, llmOptions, onSentence)
+        : await streamChatResponse(LLM_API_KEY, session.messages, { ...llmOptions, onSentence });
+      if (fastTurn) {
+        noteFastLlmOutput(fastTurn); // a tool call with no words before it
+        if (session.fastStats) session.fastStats.llmErrorStreak = 0; // gate H1: Claude answered
+      }
 
       if (fillerTimer) clearTimeout(fillerTimer);
 
@@ -3736,6 +4175,8 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
         reply = result.content;
         // Wait for all queued TTS to finish playing
         await ttsChain;
+        if (session.fastPath) fastFlush(session); // SCRUM-594: a flush point, the end of the reply (spec 4.8.4)
+        if (session.fastLanguages) followReplyLanguage(session, reply); // SCRUM-594 (phone test F9): the line follows the model
         // SCRUM-587: the reply has been spoken — one assistant turn on the owner
         // confirmation gate's clock (an error apology or the loop-exhausted
         // fallback is not a read-back, so neither path below counts one).
@@ -3756,27 +4197,52 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
 
         // Add the assistant's tool call message to conversation
         session.messages.push(result.message);
+        // SCRUM-594: this response's words are in that message now: an abort
+        // from here on has nothing new to record. And on the fast path, what it
+        // said before the tool call (clause mode speaks it) is the turn's
+        // filler: a canned one after it would say the same thing twice.
+        if (fastTurn) {
+          fastTurn.chunks = [];
+          if (sentenceQueue.length > 0) fillerSentThisTurn = true;
+        }
 
-        // Play ONE tool-specific filler — only if no filler was sent yet this turn
-        if (!fillerSentThisTurn) {
+        // Play ONE tool-specific filler — only if no filler was sent yet this turn.
+        // SCRUM-594: never in a batch that calls end_call: that response carries
+        // the model's goodbye, and a filler ("One moment.", "Let me book that
+        // for you.") would follow it. If the guard blocks the end_call, the next
+        // round's waiting filler still covers the gap (fillerSentThisTurn stays false).
+        const toolNames = toolCalls.map(tc => tc.function.name);
+        // SCRUM-594 (F5): nor in a language without canned fillers.
+        if (!fillerSentThisTurn && !toolNames.includes("end_call") && fillerMessagesFor(session)) {
           fillerSentThisTurn = true;
           if (!holdStopped) {
             hold.stop();
             holdStopped = true;
           }
-          const toolNames = toolCalls.map(tc => tc.function.name);
-          const toolFiller = getToolFiller(session.language || "en", toolNames);
+          const toolFiller = getToolFiller(typeof session.fastLanguage === "string" ? fastTalkLanguage(session) : session.language || "en", toolNames);
           console.log(`[Filler] "${toolFiller}" (tools: ${toolNames.join(", ")})`);
-          // (async wrapper discards sendTTS's duration return — ttsChain is Promise<void>)
-          ttsChain = ttsChain.then(async () => { await sendTTS(session, twilioWs, toolFiller); }).catch((err) => {
+          ttsChain = ttsChain.then(async () => {
+            if (fastTurn?.over) return; // SCRUM-594: not after a barge-in
+            await speak(toolFiller, NOT_A_REPLY);
+          }).catch((err) => {
             console.error("[Filler] TTS error:", err.message);
           });
         }
+        // SCRUM-594: a flush point (spec 4.8.4): this round's words and its filler
+        // go out while the tools run.
+        if (session.fastPath) ttsChain = ttsChain.then(() => { fastFlush(session); });
+        turnTtsChains.push(ttsChain);
+
+        // SCRUM-594: the nudge for an end_call blocked in this batch. A second
+        // end_call in the same batch gets it too: asking the guard again would
+        // count a nudge the model has not read yet, and let the call end.
+        /** @type {string|null} */
+        let blockedEndCallMessage = null;
 
         // Execute each tool call and add results
         for (const toolCall of toolCalls) {
           const fnName = toolCall.function.name;
-          const fnArgs = parseToolArgs(toolCall, "ToolCall");
+          let fnArgs = parseToolArgs(toolCall, "ToolCall");
 
           // SCRUM-587: owner tools bypass the customer guards (see the Gemini
           // site). Parsed args (a bad JSON string arrives as {}); the runner's
@@ -3789,12 +4255,71 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               tool_call_id: toolCall.id,
               content: ownerRet.data !== undefined ? JSON.stringify({ message: ownerRet.message, data: ownerRet.data }) : ownerRet.message,
             });
+            // SCRUM-594: an owner's end_call hangs up like a customer's (the
+            // customer booking guard below does not apply to owner calls).
+            if (ownerRet.__endCall === true) endCall = true;
             continue;
           }
 
+          // SCRUM-594: SCRUM-373's end_call booking guard, as on the Gemini path
+          // (lib/end-call-guard.js). A blocked end_call gets the nudge as its
+          // result and the model is asked again; an allowed one runs below.
+          if (fnName === "end_call") {
+            let verdict = blockedEndCallMessage !== null
+              ? { allow: false, message: blockedEndCallMessage }
+              : checkEndCallGuard(session, fnArgs?.reason);
+            // SCRUM-594 PHASE 2 (B5): on the fast path the call also waits for the
+            // caller's goodbye — the simulated calls hung up on "that's all correct, thanks".
+            if (verdict.allow && session.bookingGuards) {
+              const done = checkCallerDone(session);
+              if (done && done.allow === false) {
+                console.warn(`[BookingGuard] Holding end_call (caller not done, ${done.count}/${done.cap}). callSid=${session.callSid}`);
+                verdict = done;
+              } else if (done && done.allow === true) {
+                noteBookingGuardCap(session, "end_call", "the caller never said goodbye");
+              }
+            }
+            if (!verdict.allow) {
+              blockedEndCallMessage = verdict.message;
+              session.messages.push({ role: "tool", tool_call_id: toolCall.id, content: verdict.message });
+              continue;
+            }
+          }
+
+          // SCRUM-594 PHASE 2 (B4/B6), the fast path: the CancelGate reads the
+          // model's OWN arguments (so a cancel with no identifier is always held);
+          // then a reschedule or cancel of a booking THIS call made carries the
+          // name it was booked under — the handler would otherwise ask the caller
+          // for it (phone test F1: "Sorry?" was heard as "Deville", the move was
+          // refused) — and a cancel's phone defaults to caller ID (the handler
+          // needs one to find the booking; the caller was asked for the number
+          // they were calling from).
+          const modelArgs = fnArgs;
+          if ((fnName === "cancel_appointment" || fnName === "reschedule_appointment") && session.bookingGuards) {
+            const named = withBookedName(fnArgs, session.confirmedBookings, normalizeDatetime);
+            if (named !== fnArgs) console.log(`[BookingGuard] ${fnName}: passing the name this call booked under. callSid=${session.callSid}`);
+            fnArgs = named;
+          }
+          if (fnName === "cancel_appointment" && session.bookingGuards) {
+            fnArgs = applyCallerIdPhoneFallback(fnName, fnArgs, session.callerPhone, { cancel: true });
+          }
+
           // SCRUM-372: cancel-confirmation gate (classic pipeline — mirrors Gemini path)
-          if (fnName === "cancel_appointment" && !session.confirmCancel(fnArgs || {}, Date.now())) {
-            console.warn(`[CancelGate] Holding cancel_appointment pending confirmation (classic). callSid=${session.callSid}`);
+          /** @type {{ proceed: boolean, via: string|null, reason: string|null, dropped: number }} */
+          const cancelGate = fnName !== "cancel_appointment"
+            ? { proceed: true, via: null, reason: null, dropped: 0 }
+            : session.bookingGuards
+              ? fastCancelGate(session, modelArgs || {}, Date.now())
+              : { proceed: session.confirmCancel(fnArgs || {}, Date.now()), via: null, reason: null, dropped: 0 };
+          if (cancelGate.dropped > 0) {
+            console.log(`[CancelGate] The caller declined — dropped ${cancelGate.dropped} held or confirmed cancel(s) (fast path). callSid=${session.callSid}`);
+          }
+          if (cancelGate.proceed && cancelGate.via) {
+            console.log(`[CancelGate] Proceeding (fast path, via=${cancelGate.via}). callSid=${session.callSid}`);
+          }
+          if (!cancelGate.proceed) {
+            const why = cancelGate.reason ? `fast path, reason=${cancelGate.reason}` : "classic";
+            console.warn(`[CancelGate] Holding cancel_appointment pending confirmation (${why}). callSid=${session.callSid}`);
             session.toolCallAudit.push({ name: "cancel_appointment_held", successful: false, at: Date.now() });
             session.messages.push({
               role: "tool",
@@ -3802,6 +4327,22 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
               content: "DO NOT CANCEL YET. Before cancelling, confirm with the caller: read back which appointment would be cancelled (its date and time) and ask them — in their language — to clearly confirm (yes/no). ONLY if they clearly say yes, call cancel_appointment again with the same details. If they say no or you are unsure, do NOT cancel.",
             });
             continue;
+          }
+
+          // SCRUM-594 PHASE 2 (B2/B3): the fast path's booking guards — a second
+          // booking while this call holds one is redirected to a move (once), and
+          // nothing is booked until the surname was spelled back and confirmed.
+          if (fnName === "book_appointment" && session.bookingGuards) {
+            const guard = checkBookingGuards(session, fnArgs || {}, bookingKey);
+            if (guard && guard.hold === true) {
+              const count = guard.count ? ` ${guard.count}/${guard.cap}` : "";
+              console.warn(`[BookingGuard] Holding book_appointment (${guard.kind}${count}, reason=${guard.reason}). callSid=${session.callSid}`);
+              // A redirect to a move is not an unfinished booking: this call's booking stands.
+              session.toolCallAudit.push({ name: guard.kind === "second-booking" ? "book_appointment_redirected" : "book_appointment_held", successful: false, at: Date.now() });
+              session.messages.push({ role: "tool", tool_call_id: toolCall.id, content: guard.message });
+              continue;
+            }
+            if (guard && guard.hold === false) noteBookingGuardCap(session, "spelling", `the surname spelling was never confirmed (reason=${guard.reason})`);
           }
 
           // SCRUM-257: rebook intercept (classic pipeline — mirrors Gemini path)
@@ -3892,6 +4433,9 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           // classic booking while post-call phantom detection stays blind.
           if (session.toolCallAudit) {
             let auditSuccessful = !(typeof toolResult === "object" && (toolResult?.error || toolResult?.success === false));
+            // SCRUM-594 PHASE 2 (gate re-review): on the fast path a cancel counts only
+            // when the handler said so — a transport failure carries no success flag.
+            if (session.bookingGuards && fnName === "cancel_appointment" && toolResult?.success !== true) auditSuccessful = false;
             if (auditSuccessful && fnName === "book_appointment") {
               const hasSuccessSignal = /\b(confirmation code|i've booked|you'?re all set|booked your|appointment (?:is|has been) (?:booked|confirmed))\b/i.test(resultMessage);
               if (!hasSuccessSignal) auditSuccessful = false;
@@ -3907,12 +4451,21 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             } else if (fnName === "cancel_appointment") {
               auditEntry.dt = normalizeDatetime(fnArgs?.datetime || fnArgs?.date) || undefined;
               auditEntry.codeArg = String(fnArgs?.confirmation_code || "").trim() || undefined;
+            } else if (fnName === "lookup_appointment" && session.bookingGuards && toolResult?.success === true && /^I found (?:your appointment|\d+ upcoming appointments)\b/.test(resultMessage)) {
+              auditEntry.found = true; // SCRUM-594 (F4): the caller has a booking — see hasUnfinishedBooking
             }
             session.toolCallAudit.push(auditEntry);
           }
 
-          // SCRUM-257: track confirmed bookings (classic pipeline)
-          if (fnName === "book_appointment" && (resultMessage.includes("confirmed") || resultMessage.includes("booked") || resultMessage.includes("confirmation"))) {
+          // SCRUM-257: track confirmed bookings (classic pipeline). SCRUM-594 PHASE 2:
+          // on the fast path only a booking the handler confirmed (success === true)
+          // — "That practitioner is already booked at this time" is a failure (B3,
+          // B6 and the end_call nudge read this ledger)…
+          const bookedWords = resultMessage.includes("confirmed") || resultMessage.includes("booked") || resultMessage.includes("confirmation");
+          // (gate review 3) and a success that booked nothing — Cliniko's "Before I
+          // check availability, what type of appointment…?" — is not a booking either.
+          const bookedOk = session.bookingGuards ? toolResult?.success === true && bookedWords : bookedWords;
+          if (fnName === "book_appointment" && bookedOk) {
             if (!session.confirmedBookings) session.confirmedBookings = new Map();
             const bookKey = bookingKey(fnArgs);
             const codeMatch = resultMessage.match(/\b(\d{6})\b/);
@@ -3926,13 +4479,25 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           }
           // SCRUM-557 (review): authoritative success flag, same reasoning as the
           // Gemini site — the text heuristic nudged on failed cancels.
-          const cancelOk =
-            typeof toolResult === "object" && toolResult !== null && typeof toolResult.success === "boolean"
+          const cancelOk = session.bookingGuards
+            ? toolResult?.success === true // the fast path: never a transport failure's missing flag (gate re-review)
+            : typeof toolResult === "object" && toolResult !== null && typeof toolResult.success === "boolean"
               ? toolResult.success
               : !resultMessage.toLowerCase().includes("error") && !resultMessage.toLowerCase().includes("not found");
           if (fnName === "cancel_appointment" && cancelOk) {
-            if (session.confirmedBookings) session.confirmedBookings.clear();
-            resultMessage += CANCEL_NUDGE; // SCRUM-557: nothing is booked now — say so in the tool result
+            // SCRUM-594 PHASE 2 (B4): the next cancel needs its own confirmation
+            // (on the fast path, another booking's held cancel stands).
+            session.clearCancelConfirmation(session.bookingGuards ? modelArgs || {} : undefined);
+            if (session.bookingGuards) {
+              // SCRUM-594 PHASE 2: the fast path forgets only the cancelled booking
+              // (B3 and B6 read the rest), and says when another one still stands.
+              const { remaining, clearedAll } = forgetCancelledBooking(session.confirmedBookings, fnArgs, normalizeDatetime);
+              if (clearedAll) console.log(`[BookingGuard] A cancel no booking of this call could be matched to — forgot them all. callSid=${session.callSid}`);
+              resultMessage += remaining > 0 ? CANCEL_KEPT_NUDGE : CANCEL_NUDGE;
+            } else {
+              if (session.confirmedBookings) session.confirmedBookings.clear();
+              resultMessage += CANCEL_NUDGE; // SCRUM-557: nothing is booked now — say so in the tool result
+            }
           }
 
           // SCRUM-563: move this call's ledger entry on a successful reschedule
@@ -3968,7 +4533,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
 
           // Apply optimistic cache delta for write operations
           if (session.scheduleSnapshot) {
-            if (fnName === "book_appointment" && (resultMessage.includes("confirmed") || resultMessage.includes("booked") || resultMessage.includes("confirmation"))) {
+            if (fnName === "book_appointment" && bookedOk) {
               scheduleCache.applyDelta(session.organizationId, "book", {
                 appointment: {
                   id: "pending-" + Date.now(),
@@ -3985,6 +4550,12 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             }
           }
 
+          // SCRUM-594 PHASE 2 (B6): a name fixed with update_appointment is the name
+          // this call's booking now carries — the ledger follows it.
+          if (fnName === "update_appointment" && session.bookingGuards && toolResult?.success === true) {
+            noteNameCorrection(session.confirmedBookings, fnArgs, normalizeDatetime);
+          }
+
           // Track transfer attempt on session for call metadata
           if (toolResult.transferAttempt) {
             session.transferAttempt = toolResult.transferAttempt;
@@ -3994,6 +4565,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           if (toolResult.action === "transfer" && toolResult.transferTo) {
             hold.stop();
             await sendTTS(session, twilioWs, resultMessage);
+            if (session.fastPath) fastFlush(session); // SCRUM-594: a flush point (spec 4.8.4)
             session.addMessage("assistant", resultMessage);
 
             // Save session for potential reconnection on no-answer
@@ -4047,6 +4619,28 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             tool_call_id: toolCall.id,
             content: resultMessage,
           });
+          // SCRUM-594: the executor's end_call sentinel. Classic used to ignore
+          // it, so the model kept talking and the line stayed open. The rest of
+          // the batch still runs; the call ends after it.
+          if (toolResult.__endCall === true) endCall = true;
+        }
+
+        if (endCall) {
+          // SCRUM-594: no further LLM call. The caller last hears this
+          // response's own words; when it said nothing, a short goodbye.
+          if (fastTurn) fastTurn.ending = true; // a barge-in leaves the goodbye alone
+          if (holdPlaying) hold.stop();
+          await Promise.all(turnTtsChains); // every earlier round's audio goes out first
+          reply = sentenceQueue.join(" ");
+          if (!reply) {
+            reply = getErrorMsg(callLanguage(session), "goodbye");
+            try {
+              await speak(reply);
+            } catch (err) {
+              console.error(`[EndCall] Goodbye TTS failed — hanging up without it (callSid=${session.callSid}):`, err.message);
+            }
+          }
+          break;
         }
 
         // Continue loop — LLM will process tool results
@@ -4056,15 +4650,23 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
 
     if (!reply) {
       hold.stop();
-      reply = getErrorMsg(session.language, "repeatRequest");
+      reply = getErrorMsg(callLanguage(session), "repeatRequest");
       console.warn(`[Pipeline] Tool call loop exhausted after ${maxToolIterations} iterations (callSid=${session.callSid})`);
       // SCRUM-587 (SF5): an owner never hears "could you repeat that?" — after
       // a change it invites a duplicate request — but the last tool's own words.
       if (session.ownerMode) reply = ownerToolLoopReply(session, lastOwnerTool);
-      await sendTTS(session, twilioWs, reply);
+      await sendTTS(session, twilioWs, reply, undefined, NOT_A_REPLY);
+      if (session.fastPath) fastFlush(session); // SCRUM-594: a flush point (spec 4.8.4)
     }
 
     session.addMessage("assistant", reply);
+
+    // SCRUM-594: recorded above BEFORE the close — cleanup reads the transcript
+    // as soon as the socket closes.
+    if (endCall) {
+      await hangUpAfterEndCall(session, twilioWs, playbackEndsAt);
+      return;
+    }
 
     // Detect what input the AI is expecting next and adapt buffering
     const nextInputType = detectExpectedInput(reply);
@@ -4073,23 +4675,87 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
       console.log(`[InputDetect] Next expected: ${nextInputType}`);
     }
   } catch (err) {
+    // SCRUM-594 (spec 4.8.7): a barge-in ended the fast turn. No apology, the
+    // caller's words stay, and so does what the AI had already said.
+    if (fastTurn?.ctl.signal.aborted) {
+      if (holdPlaying) hold.stop();
+      recordAbortedFastTurn(session, fastTurn);
+      return;
+    }
     hold.stop();
     const errorSource = err.message?.includes("OpenAI") ? "llm"
       : err.message?.includes("Deepgram TTS") ? "tts"
       : "unknown";
     console.error(`[Pipeline] ${errorSource} error (callSid=${session.callSid}):`, err);
+    // SCRUM-594 (gate H1): a fast turn that fails (Claude: a bad key or model, overload,
+    // timeouts) pages, instead of every turn quietly apologising.
+    if (fastTurn && errorSource !== "tts") noteFastTurnFailure(session, err);
     // Remove the user message that never got a reply
     if (session.messages.length > 0 && session.messages[session.messages.length - 1].role === "user") {
       session.messages.pop();
     }
     try {
-      await sendTTS(session, twilioWs, getErrorMsg(session.language, "troubleRepeat"));
+      await sendTTS(session, twilioWs, getErrorMsg(callLanguage(session), "troubleRepeat"), undefined, NOT_A_REPLY);
+      if (session.fastPath) fastFlush(session); // SCRUM-594: a flush point (spec 4.8.4)
     } catch (ttsErr) {
       console.error("[Pipeline] Failed to send error message to caller:", ttsErr);
     }
   } finally {
+    if (fastTurn) endFastTurn(session, fastTurn);
     session.isProcessing = false;
     session.drainPending((text) => handleUserSpeech(session, twilioWs, text));
+  }
+}
+
+/**
+ * SCRUM-594: end a classic call after an allowed end_call, once the turn's
+ * speech has played. Twilio plays the media we push in real time, and closing
+ * the media stream ends the call (<Connect><Stream>), so closing at once would
+ * cut the goodbye off.
+ *
+ * The playback wait is `session.awaitPlaybackEnd()` when the session sets it,
+ * otherwise until `playbackEndsAt`. The fast path sets the hook because its
+ * streaming player needs its own flush/mark sequence to know its audio is out.
+ * Either way the wait is capped at END_CALL_PLAYBACK_CAP_MS, then
+ * END_CALL_TAIL_MS more before the close. Never throws.
+ *
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs - the Twilio media-stream socket
+ * @param {number} playbackEndsAt - when (Date.now() ms) the audio sent to TTS this turn finishes playing
+ * @returns {Promise<void>}
+ */
+async function hangUpAfterEndCall(session, twilioWs, playbackEndsAt) {
+  // Stamped before the wait: a caller who hangs up over the goodbye still
+  // ended a call the AI was ending (cleanup reads this when the socket closes).
+  session.endedReason = "end_call_tool";
+  const startedAt = Date.now();
+  let played = false;
+  if (typeof session.awaitPlaybackEnd === "function") {
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let capTimer;
+    try {
+      await Promise.race([
+        session.awaitPlaybackEnd(),
+        new Promise((resolve) => { capTimer = setTimeout(resolve, END_CALL_PLAYBACK_CAP_MS); }),
+      ]);
+      played = true;
+    } catch (err) {
+      console.warn(`[EndCall] Playback signal failed — waiting out the estimate instead (callSid=${session.callSid}): ${err?.message || err}`);
+    } finally {
+      clearTimeout(capTimer);
+    }
+  }
+  const remainingMs = played ? 0 : Math.min(playbackEndsAt, startedAt + END_CALL_PLAYBACK_CAP_MS) - Date.now();
+  if (remainingMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingMs));
+  await new Promise((resolve) => setTimeout(resolve, END_CALL_TAIL_MS));
+  // Whatever the caller said over the goodbye is not answered: handleUserSpeech's
+  // finally would otherwise dispatch it (drainPending) as the call closes.
+  session._pendingTranscript = null;
+  console.log(`[EndCall] Hanging up after end_call — waited ${Date.now() - startedAt}ms for playback (callSid=${session.callSid})`);
+  try {
+    if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1000, "end_call");
+  } catch (err) {
+    console.warn(`[EndCall] Error closing the Twilio stream (callSid=${session.callSid}):`, err);
   }
 }
 
@@ -4111,13 +4777,66 @@ function stripMarkdown(text) {
   return clean || text.trim(); // fallback to original if stripping removed everything
 }
 
-async function sendTTS(session, twilioWs, text) {
+/**
+ * @param {any} session
+ * @param {WebSocket} twilioWs
+ * @param {string} text
+ * @param {() => boolean} [isStale] - SCRUM-594: the fast turn checks this after
+ *   REST synthesis, before any frame goes out (a barge-in during synthesis)
+ * @param {{ reply?: boolean }} [kind] - SCRUM-594 gate H1: NOT_A_REPLY (a filler, an apology) is not the turn's latency
+ * @returns {Promise<number>} the audio's playback ms (an estimate on the Aura stream)
+ */
+async function sendTTS(session, twilioWs, text, isStale, kind) {
+  // SCRUM-594 (spec 4.8.3): the fast path speaks on its Aura stream while that
+  // is open; REST otherwise, as on every other call.
+  if (session?.fastTts?.isOpen()) return speakFast(session, text, kind);
+  // Gate H2: what a failed Aura stream never voiced is said first.
+  if (session?.fastState?.respeak) await session.fastState.respeak;
+  return sendRestTTS(session, twilioWs, text, isStale);
+}
+
+/** SCRUM-594 gate H1: a filler or an apology, not the reply: kept out of the turn's latency. */
+const NOT_A_REPLY = Object.freeze({ reply: false });
+
+/**
+ * REST TTS: synthesize the whole text, then send its frames and a "tts-done" mark.
+ * @param {any} session
+ * @param {WebSocket} twilioWs
+ * @param {string} text
+ * @param {() => boolean} [isStale] - true after synthesis: nothing is sent (SCRUM-594)
+ * @returns {Promise<number>} the audio's playback ms (0 when nothing was sent because it went stale)
+ */
+async function sendRestTTS(session, twilioWs, text, isStale, options = {}) {
   const t0 = Date.now();
-  const cleanText = stripMarkdown(text);
-  const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, cleanText, {
-    voice: session?.deepgramVoice,
-  });
+  // SCRUM-594 (F5): the speech guard — but a legal disclosure is spoken verbatim (security review).
+  // Phone test F9: each sentence in its own language's voice (fastSpeech).
+  const speech = options.verbatim ? { text, voice: session?.deepgramVoice || null } : fastSpeech(session, text);
+  const cleanText = stripMarkdown(speech.text);
+  if (!cleanText) return 0; // SCRUM-594 (F5): a second unspeakable sentence in the same turn says nothing
+  // SCRUM-594 (phone test F4): only the words sent to TTS (harmless for classic too).
+  const voice = speech.voice || undefined; // the voice THIS request used
+  let audioBuffer;
+  let spokenText = cleanText;
+  try {
+    audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, spellLettersForTts(cleanText), { voice });
+  } catch (err) {
+    // Gate review (F5): a language's voice the service refuses (a 4xx: not a timeout, 408, 429
+    // or 5xx) would leave every later sentence in that language silent. That voice is given
+    // up on for the call (noteFastVoiceFailed), and this sentence is said again, through the
+    // speech guard, in the assistant's own voice.
+    const status = Number(/Deepgram TTS error (\d{3})/.exec(String(err?.message || ""))?.[1]);
+    const refused = status >= 400 && status < 500 && status !== 408 && status !== 429;
+    if (!session?.fastState || !session.baseDeepgramVoice || !voice || voice === session.baseDeepgramVoice || !refused) throw err;
+    noteFastVoiceFailed(session, voice, "aura-rest", `REST TTS refused the voice ${voice}`, err);
+    // What this request was saying, through the guard again (the apology stays the apology).
+    const again = options.verbatim ? { text: cleanText, voice: session.baseDeepgramVoice } : fastSpeech(session, cleanText);
+    spokenText = stripMarkdown(again.text);
+    if (!spokenText) return 0;
+    audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, spellLettersForTts(spokenText), { voice: again.voice || undefined });
+  }
   console.log(`[TTS] (${Date.now() - t0}ms) ${audioBuffer.length} bytes`);
+  // SCRUM-594: the fast turn this was for was barged in on while it synthesised.
+  if (isStale?.()) return 0;
 
   const chunks = chunkAudioForTwilio(audioBuffer);
   session.isSpeaking = true;
@@ -4145,6 +4864,9 @@ async function sendTTS(session, twilioWs, text) {
         mark: { name: "tts-done" },
       })
     );
+    // SCRUM-594 (R12d′): REST audio on the fast path (after an Aura fallback):
+    // the echo filter hears its words, and isSpeaking holds until its mark is back.
+    if (session?.fastState) noteFastRestSpeech(session, spokenText, audioBuffer.length / 8);
   }
 
   // Playback duration in ms (8kHz mulaw = 8 bytes/ms). Chunks are pushed
@@ -4156,17 +4878,43 @@ async function sendTTS(session, twilioWs, text) {
 }
 
 /**
+ * SCRUM-594 (phone test F4): Aura drops letters of a hyphenated spelling ("M-A-K-H-O-U-L"
+ * was voiced "m a k h o"); with commas it says every one. Only the text sent to TTS is
+ * rewritten: a run of 2 or more single letters joined by hyphens becomes the letters
+ * joined by ", ". Words with longer parts ("co-op", "re-book"), digits ("9-5",
+ * "0414-141-883") and mixed runs are left alone.
+ * @param {string} text
+ * @returns {string}
+ */
+function spellLettersForTts(text) {
+  return text.replace(/\b[A-Za-z](?:-[A-Za-z])+\b/g, (run) => run.split("-").join(", "));
+}
+
+/**
  * Send clear event to flush Twilio's audio buffer (barge-in).
+ * @param {any} session
+ * @param {WebSocket} twilioWs
+ * @returns {boolean} whether anything was cleared: classic always is (on an open stream); the fast path keeps the recording disclosure
  */
 function sendClear(session, twilioWs) {
-  if (twilioWs.readyState !== WebSocket.OPEN) return;
-  twilioWs.send(
-    JSON.stringify({
-      event: "clear",
-      streamSid: session.streamSid,
-    })
-  );
+  if (twilioWs.readyState !== WebSocket.OPEN) return false;
+  if (session.fastPlayer) {
+    // SCRUM-594 (spec 4.8.5): the fast path stops its player (which sends the
+    // Twilio clear) and the Aura stream too; never the recording disclosure (R12d′).
+    if (!stopFastAudio(session)) {
+      console.log("[FastPath] Kept the recording disclosure playing (no clear)");
+      return false;
+    }
+  } else {
+    twilioWs.send(
+      JSON.stringify({
+        event: "clear",
+        streamSid: session.streamSid,
+      })
+    );
+  }
   console.log("[Barge-in] Cleared Twilio audio buffer");
+  return true;
 }
 
 /**
@@ -4231,6 +4979,1725 @@ function startHoldAudio(session, ws, mode) {
       }
     },
   };
+}
+
+// ── Fast classic pipeline (SCRUM-594, spec 4.8) ──────────────────────────────
+// The demo line's DEMO_LINE_PIPELINE=classic-fast variant of the classic
+// handler. Flux and its turn engine hear the caller (instead of Nova and the
+// debounce buffer), and the Aura WebSocket stream speaks through a player that
+// tracks Twilio's marks (instead of a REST request per sentence). Every part
+// degrades to today's component on failure: Flux to Nova, the stream to REST.
+// The clients report failures through callbacks; this section logs them and
+// captures them with a `service` tag (never a reason tag).
+
+/**
+ * Write one message to the Twilio media stream. A stream that is no longer
+ * open drops it (the caller is gone), so this never throws for that.
+ * @param {WebSocket} twilioWs
+ * @param {object} message
+ */
+function sendTwilioJson(twilioWs, message) {
+  if (twilioWs.readyState === WebSocket.OPEN) twilioWs.send(JSON.stringify(message));
+}
+
+/**
+ * Report a fast-path failure to Sentry, tagged with the service that failed.
+ * The caller logs its own line. No caller words: `what` is ours.
+ * @param {CallSession} session
+ * @param {string} service - "flux-stt" | "aura-stream" | "fast-turns"
+ * @param {string} what
+ * @param {unknown} err
+ */
+function captureFastFailure(session, service, what, err, level) {
+  const error = err instanceof Error ? err : new Error(String(err));
+  Sentry.withScope((scope) => {
+    scope.setTag("service", service);
+    if (level) scope.setLevel(level);
+    scope.setExtras({ callSid: session.callSid, organizationId: session.organizationId, what });
+    Sentry.captureException(error);
+  });
+}
+
+/**
+ * SCRUM-594 gate H1: a fast turn failed (an apology instead of a reply). Each one is
+ * counted ([FastCall] llm_errors, calls.metadata.fastPath) and reported: the first of
+ * a run at warning level, the second in a row and on at error level, which pages.
+ * @param {CallSession} session
+ * @param {unknown} err
+ */
+function noteFastTurnFailure(session, err) {
+  const stats = session.fastStats || (session.fastStats = newFastCallStats());
+  stats.llmErrors += 1;
+  stats.llmErrorStreak += 1;
+  const level = stats.llmErrorStreak >= 2 ? "error" : "warning";
+  captureFastFailure(session, "claude-chat", `fast turn failed (${stats.llmErrorStreak} in a row)`, err, level);
+}
+
+/** @returns {import("./call-session").FastPathState} */
+function newFastPathState() {
+  return {
+    speakingText: "",
+    unmarked: false,
+    unflushed: false,
+    pendingFlushSeq: null,
+    flushedSeq: -1,
+    flushWaiters: [],
+    quietWaiters: [],
+    quietTimer: null,
+    fluxOpenTimer: null,
+    ttsFellBack: false,
+    flushRefusalLogged: false,
+    flushRefused: false,
+    flushSentAt: 0,
+    flushWatchdog: null,
+    lastAudioAt: 0,
+    markSeq: 0,
+    presumedIdle: false,
+    lostMarkLogged: false,
+    restMarks: 0,
+    restPlaybackEndsAt: 0,
+    restTimer: null,
+    disclosureActive: false,
+    disclosureTimer: null,
+    fluxWatchdog: null,
+    auraSentChars: 0,
+    auraReceivedMs: 0,
+    questionAudioStartAt: null,
+    bargeInDeclined: null,
+    twilioWs: null,
+    auraSegments: [],
+    auraHeardSinceFlushedMs: 0,
+    respeak: null,
+    clearCount: 0,
+    auraOpenTimer: null,
+    noTurnWatchdog: null,
+    fluxFallBack: null,
+    repromptTimer: null,
+    repromptedQuestion: null,
+    repromptAwaitingAudio: null,
+    noTurnMode: "log",
+    noTurnLogged: false,
+    notReplyOwed: false,
+    notReplyFlushSeq: null,
+    closed: false,
+  };
+}
+
+/** @returns {import("./call-session").FastCallStats} */
+function newFastCallStats() {
+  return {
+    turns: 0, specAdopted: 0, specDiscarded: 0, eotToAudioMs: [], eager: null, pending: null, current: null,
+    llmErrors: 0, llmErrorStreak: 0, draftsInCall: 0, draftTurnIndex: null, draftsForTurn: 0, draftCapLogged: false,
+  };
+}
+
+/**
+ * Spec 4.8.1: start the fast path's STT and TTS at the top of the classic
+ * block, instead of Nova. The Aura stream and its player open beside Flux, and
+ * each half degrades on its own: the STT to Nova with today's callbacks
+ * (`openClassicStt`), the TTS to REST.
+ *
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ * @param {() => void} openClassicStt - opens Nova-3 with today's callbacks into session.deepgramWs
+ */
+function startFastPath(session, twilioWs, openClassicStt) {
+  session.fastState = newFastPathState();
+  session.fastState.twilioWs = twilioWs;
+  session.fastStats = newFastCallStats();
+  // The end_call hang-up waits on this instead of its sendTTS estimate.
+  session.awaitPlaybackEnd = () => awaitFastPlaybackEnd(session);
+  console.log(`[FastPath] Flux STT and the Aura stream on ${FAST_DEEPGRAM_HOST} (callSid=${session.callSid})`);
+  try {
+    openFastTts(session, twilioWs);
+  } catch (err) {
+    fallBackToRestTts(session, "setup failed", err);
+  }
+  try {
+    openFastStt(session, twilioWs, openClassicStt);
+  } catch (err) {
+    fallBackToNova(session, twilioWs, openClassicStt, "setup failed", err);
+  }
+}
+
+/**
+ * The Aura streams (spec 4.2; phone test F9: one per voice, services/aura-router.js)
+ * and the player that carries their audio to Twilio (spec 4.3). Warnings are logged
+ * only: CLEARED_TIMEOUT is the client's own backstop doing its job, EXCESSIVE_FLUSH a
+ * refused flush, VOICE_CLOSED an idle voice's stream that opens again for its next sentence (all tolerated).
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ */
+function openFastTts(session, twilioWs) {
+  session.fastPlayer = createFastPlayer({ sendJson: (message) => sendTwilioJson(twilioWs, message), streamSid: session.streamSid });
+  session.fastTts = createAuraRouter(DEEPGRAM_API_KEY, {
+    voice: session.deepgramVoice || undefined,
+    host: FAST_DEEPGRAM_HOST,
+    openStream: openAuraStream,
+    openTimeoutMs: AURA_VOICE_OPEN_TIMEOUT_MS,
+    quietMs: FAST_AUDIO_QUIET_MS,
+    handoverWaitMs: FAST_FLUSHED_WAIT_MS,
+    // Each voice's audio is boosted for that voice (phone test F9).
+    onAudio: (audio, voice) => onFastAudio(session, audio, voice),
+    onFlushed: (seq) => onFastFlushed(session, seq),
+    onWarning: (warning) => {
+      console.warn(`[FastPath] Aura warning ${warning.code || "-"} (${warning.voice}): ${String(warning.message).slice(0, 120)} (callSid=${session.callSid})`);
+    },
+    onError: (err) => fallBackToRestTts(session, "stream error", err),
+    onClose: (code, reason, info) => {
+      if (info.initiatedByUs) return;
+      fallBackToRestTts(session, `stream closed (${code})`, new Error(`Aura stream closed unexpectedly: ${code} ${String(reason).slice(0, 80)}`));
+    },
+    onVoiceFailed: (voice, err) => noteFastVoiceFailed(session, voice, "aura-stream", `Aura voice ${voice} did not open`, err),
+    // Security review: what waited for that voice goes through the speech guard again (kana → the apology).
+    rerouteText: (text) => fastSpeech(session, text).text,
+  });
+  // Gate M3: a stream that never opens (no error, no close) must not go unnoticed.
+  const state = session.fastState;
+  const tts = session.fastTts;
+  if (!state || !tts) return;
+  state.auraOpenTimer = setTimeout(() => {
+    state.auraOpenTimer = null;
+    if (!state.closed && session.fastTts === tts && !tts.isOpen()) {
+      fallBackToRestTts(session, `no open within ${AURA_OPEN_TIMEOUT_MS} ms`, new Error(`Aura stream did not open within ${AURA_OPEN_TIMEOUT_MS} ms`));
+    }
+  }, AURA_OPEN_TIMEOUT_MS);
+  tts.ready.then(
+    () => {
+      if (state.auraOpenTimer) clearTimeout(state.auraOpenTimer);
+      state.auraOpenTimer = null;
+      if (!state.closed && session.fastTts === tts) console.log(`[FastPath] Aura connected (callSid=${session.callSid})`);
+    },
+    () => {}, // a stream that fails to open reports through onError/onClose
+  );
+}
+
+/**
+ * Spec 4.8.3: the Aura stream failed. The rest of the call speaks over REST
+ * (sendTTS's classic path): one log line and one capture, however many errors
+ * and closes follow. The hang-up goes back to its sendTTS estimate.
+ * @param {CallSession} session
+ * @param {string} reason - for the log, never caller words
+ * @param {unknown} err
+ */
+function fallBackToRestTts(session, reason, err) {
+  const state = session.fastState;
+  if (!state || state.closed || state.ttsFellBack) return;
+  state.ttsFellBack = true;
+  const tts = session.fastTts;
+  if (tts) state.voicesUsed = tts.voicesUsed(); // for the [FastCall] line
+  session.fastTts = null;
+  session.awaitPlaybackEnd = null;
+  if (state.auraOpenTimer) clearTimeout(state.auraOpenTimer);
+  state.auraOpenTimer = null;
+  // Gate H2: what the stream was given and never voiced is said again over REST.
+  const unvoiced = fastUnvoicedText(state);
+  state.auraSegments = [];
+  state.auraHeardSinceFlushedMs = 0;
+  state.notReplyOwed = false;
+  state.notReplyFlushSeq = null;
+  // Nothing more will come from it.
+  state.unflushed = false;
+  state.flushRefused = false;
+  state.pendingFlushSeq = null;
+  if (state.flushWatchdog) clearTimeout(state.flushWatchdog);
+  state.flushWatchdog = null;
+  for (const waiter of [...state.flushWaiters]) waiter.done();
+  if (tts) {
+    try {
+      tts.close();
+    } catch (closeErr) {
+      console.warn(`[FastPath] Closing the failed Aura stream threw (callSid=${session.callSid}): ${closeErr.message}`);
+    }
+  }
+  console.warn(`[FastPath] Aura stream unavailable — falling back to REST TTS (${reason}, callSid=${session.callSid})`);
+  captureFastFailure(session, "aura-stream", `Aura stream unavailable: ${reason}`, err);
+  if (unvoiced) respeakFastUnvoiced(session, unvoiced);
+}
+
+/**
+ * SCRUM-594 (phone test F5): the line moves to another language. Flux Multilingual's
+ * hints follow it (a Configure, no reconnect). Phone test F9: the voices stay on their
+ * streams (services/aura-router.js) — the line's voice is only the one for sentences
+ * whose words don't say their language — and the new language's stream opens now,
+ * before its first sentence. Until F9 the rest of the call spoke over REST: every
+ * reply 4-4.5 s late.
+ * @param {CallSession} session
+ * @param {{ from?: string, to?: string, voice?: string, hints?: string[] }} sw - planLanguageSwitch's result
+ * @returns {boolean} false when the hearing can't follow: the line stays where it is
+ */
+function switchFastLanguageStreams(session, sw) {
+  const stt = session.deepgramWs;
+  const hearing = session.fastPath === true && Boolean(stt) && typeof stt.configure === "function";
+  if (sw.to !== "en") {
+    // Gate review: no switch the hearing can't follow — the model would speak Spanish to a
+    // recogniser still listening for English.
+    if (!hearing) {
+      console.warn(`[FastPath] Language ${sw.to} not switched: ${session.fastPath === "degraded-stt" ? "Nova (the Flux fallback) only hears English" : "no Flux stream"} (callSid=${session.callSid})`);
+      return false;
+    }
+    if (!stt.configure({ language_hints: sw.hints })) {
+      console.warn(`[FastPath] Language ${sw.to} not switched: Flux is not open (callSid=${session.callSid})`);
+      return false;
+    }
+  } else if (hearing) {
+    stt.configure({ language_hints: sw.hints }); // back to English: best effort (Nova hears English anyway)
+  }
+  session.deepgramVoice = sw.voice;
+  if (sw.voice) session.fastTts?.prepare(sw.voice);
+  console.log(`[FastPath] Language ${sw.from} → ${sw.to}, voice ${sw.voice} (callSid=${session.callSid})`);
+  return true;
+}
+
+/**
+ * Gate review: the call can't go on in its language — Flux refused the hints, Flux fell
+ * back to Nova (English only), or the language's voice failed. Back to English (the hints
+ * when Flux still hears, the assistant's own voice), and the model is told what to say.
+ * @param {CallSession} session
+ * @param {string} why - for the log, never caller words
+ * @returns {boolean} whether the call was in another language
+ */
+function revertFastLanguageToEnglish(session, why) {
+  if (typeof session.fastLanguage !== "string" || session.fastLanguage === "en") return false;
+  const plan = planLanguageSwitch(session, "en");
+  if (!plan.changed) return false;
+  // Phone test F9: the line never follows the model back into it (followReplyLanguage).
+  session.fastBlockedLanguages = [...(session.fastBlockedLanguages || []), plan.from];
+  const stt = session.deepgramWs;
+  if (session.fastPath === true && stt && typeof stt.configure === "function") stt.configure({ language_hints: plan.hints });
+  session.deepgramVoice = plan.voice || session.deepgramVoice;
+  recordLanguageSwitch(session, plan);
+  console.warn(`[FastPath] Back to English: ${why} (callSid=${session.callSid})`);
+  session.addMessage("system", LANGUAGE_STOPPED_NOTE);
+  return true;
+}
+
+/** The model's note when the call can't go on in the caller's language. */
+const LANGUAGE_STOPPED_NOTE = "The line can only continue in English now: the caller's language stopped working. Tell the caller, in English, that you can only continue in English, and offer to have someone call them back.";
+
+/**
+ * Gate H2: the text a failed Aura stream was given and, as far as its audio tells, never
+ * voiced: the segments since its last Flushed, less those the audio received since then
+ * covers (FAST_RESPEAK_MS_PER_CHAR, a slow rate: in doubt a sentence is said again).
+ * @param {import("./call-session").FastPathState} state
+ * @returns {string}
+ */
+function fastUnvoicedText(state) {
+  let heardMs = state.auraHeardSinceFlushedMs;
+  const owed = [];
+  for (const segment of state.auraSegments) {
+    const ms = segment.text.length * FAST_RESPEAK_MS_PER_CHAR;
+    if (owed.length === 0 && heardMs >= ms) {
+      heardMs -= ms;
+      continue;
+    }
+    owed.push(segment.text);
+  }
+  return owed.join(" ").trim();
+}
+
+/**
+ * Gate H2: say over REST what the Aura stream never voiced, ahead of anything else the
+ * call says over REST (sendTTS waits for it). A barge-in while it synthesises stops it.
+ * When it cannot be said (the stream is closing, or REST fails too), the next turn is
+ * told the caller did not hear it.
+ * @param {CallSession} session
+ * @param {string} text
+ */
+function respeakFastUnvoiced(session, text) {
+  const state = session.fastState;
+  if (!state) return;
+  const ws = state.twilioWs;
+  const note = () => session.addMessage("system", "The caller did not hear your last reply; repeat the key point briefly.");
+  if (!ws || ws.readyState !== WebSocket.OPEN || state.closed) {
+    note();
+    return;
+  }
+  const clears = state.clearCount;
+  console.log(`[FastPath] Saying again over REST the ${text.length} characters the Aura stream never voiced (callSid=${session.callSid})`);
+  state.respeak = sendRestTTS(session, /** @type {any} */ (ws), text, () => state.closed || state.clearCount !== clears)
+    .then(
+      () => {},
+      (err) => {
+        console.error(`[FastPath] Saying the unvoiced reply again failed (callSid=${session.callSid}): ${err?.message || err}`);
+        note();
+      },
+    )
+    .finally(() => {
+      state.respeak = null;
+    });
+}
+
+/**
+ * Flux with the turn engine on its events (spec 4.1, 4.6, 4.8.1): a fresh
+ * engine for this connection, reset again when it opens. Flux must open within
+ * FLUX_OPEN_TIMEOUT_MS; an error, or a close we did not ask for, before or
+ * after that, hands the call to Nova.
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ * @param {() => void} openClassicStt
+ */
+function openFastStt(session, twilioWs, openClassicStt) {
+  const state = /** @type {import("./call-session").FastPathState} */ (session.fastState);
+  const config = fluxConfigFromEnv();
+  const engine = createFastTurnEngine({
+    getState: () => fastTurnState(session),
+    actions: fastTurnActions(session, twilioWs),
+    // FLUX_EAGER_EOT_THRESHOLD=off asks Flux for no EagerEndOfTurn: no drafts.
+    speculationEnabled: config.eagerEotThreshold !== null,
+  });
+  session.fastTurns = engine;
+  let opened = false;
+  /** @type {(reason: string, err: unknown, options?: { callerSpoke?: boolean, captureLevel?: string }) => void} */
+  const fallBack = (reason, err, options) => fallBackToNova(session, twilioWs, openClassicStt, reason, err, options);
+  state.fluxFallBack = fallBack;
+  state.noTurnWatchdog = createNoTurnWatchdog();
+  state.noTurnMode = noTurnWatchdogMode();
+  session.deepgramWs = openFluxStream(DEEPGRAM_API_KEY, {
+    onOpen: () => {
+      opened = true;
+      if (state.fluxOpenTimer) clearTimeout(state.fluxOpenTimer);
+      state.fluxOpenTimer = null;
+      engine.reset(); // turn indexes start again at 0 on a new connection
+      startFluxWatchdog(session, fallBack);
+      console.log(`[FastPath] Flux connected (callSid=${session.callSid})`);
+    },
+    // R14″: when each event arrived (the engine reads the turn's start from it).
+    onTurnInfo: (evt) => {
+      state.noTurnWatchdog?.onTurn(); // gate M4b: Flux hears the caller
+      if (evt?.event === "StartOfTurn") cancelFastReprompt(session); // gate M5 (ii)
+      engine.onTurnInfo({ ...evt, receivedAt: Date.now() });
+    },
+    onError: (err) => fallBack(opened ? "error" : "error before open", err),
+    onClose: (code, reason, info) => {
+      if (info.initiatedByUs) return;
+      fallBack(opened ? `closed mid-call (${code})` : `closed before open (${code})`, new Error(`Flux closed unexpectedly: ${code} ${String(reason).slice(0, 80)}`));
+    },
+    onWarning: (warning) => {
+      console.warn(`[FastPath] Flux ${warning.type} ${warning.code || "-"}: ${String(warning.message).slice(0, 120)} (callSid=${session.callSid})`);
+      // Gate review: the only Configure the fast path sends is a language switch's hints.
+      if (warning.type === "ConfigureFailure" && revertFastLanguageToEnglish(session, "Flux refused the language hints")) {
+        captureFastFailure(session, "flux-stt", "Flux refused the language hints", new Error(`Flux ConfigureFailure ${warning.code || ""}`.trim()));
+      }
+    },
+  }, {
+    host: FAST_DEEPGRAM_HOST,
+    industry: session.organization?.industry,
+    ...config,
+    // SCRUM-594 (F5): with languages on, Flux Multilingual hinted to English (as accurate as the
+    // English model when locked to one language); the line's moves move the hints (no reconnect).
+    ...(session.fastLanguages ? { model: FLUX_MULTI_MODEL, languageHints: ["en"] } : {}),
+  });
+  state.fluxOpenTimer = setTimeout(() => {
+    state.fluxOpenTimer = null;
+    if (!opened) fallBack(`no open within ${FLUX_OPEN_TIMEOUT_MS} ms`, new Error(`Flux did not open within ${FLUX_OPEN_TIMEOUT_MS} ms`));
+  }, FLUX_OPEN_TIMEOUT_MS);
+}
+
+/**
+ * Spec 4.8.1: Flux cannot serve the call. Open Nova with today's callbacks
+ * and mark the call degraded: the Aura stream stays, and turns now come
+ * through Nova and the debounce buffer. Once per call, and never after
+ * cleanup or once the Twilio stream is going away.
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ * @param {() => void} openClassicStt
+ * @param {string} reason - for the log, never caller words
+ * @param {unknown} err
+ * @param {{ callerSpoke?: boolean, captureLevel?: string }} [options] - callerSpoke: the caller was
+ *   talking (gate M4b): ask them to say it again; captureLevel: the capture's Sentry level (default error)
+ */
+function fallBackToNova(session, twilioWs, openClassicStt, reason, err, options) {
+  const state = session.fastState;
+  if (session.fastPath !== true || !state || state.closed || twilioWs.readyState !== WebSocket.OPEN) return;
+  // Gate M4a: the turn Flux had open (the caller mid-sentence) is not lost with it, unless
+  // the engine would have dropped it (gate N4): a backchannel while the AI is busy, or the
+  // AI's own words coming back while it speaks.
+  const open = session.fastTurns?.openTurn() ?? null;
+  const aiSpeaking = fastPlayerPlaying(session) || session.isSpeaking;
+  const openIsNoTurn = Boolean(open?.transcript) && (
+    ((aiSpeaking || session.isProcessing) && isBackchannel(open?.transcript))
+    || (aiSpeaking && isLikelyEcho(open?.transcript, state.speakingText))
+  );
+  cancelFastReprompt(session); // gate N1: no re-prompt on the Nova path
+  session.fastPath = "degraded-stt";
+  revertFastLanguageToEnglish(session, "Flux fell back to Nova, which hears English only"); // gate review (F5)
+  state.fluxFallBack = null;
+  state.noTurnWatchdog = null;
+  if (state.fluxOpenTimer) clearTimeout(state.fluxOpenTimer);
+  state.fluxOpenTimer = null;
+  if (state.fluxWatchdog) clearInterval(state.fluxWatchdog);
+  state.fluxWatchdog = null;
+  const flux = session.deepgramWs;
+  session.deepgramWs = null;
+  session.fastTurns = null;
+  dropFastDraft(session, "stt-fallback"); // Nova turns never adopt one
+  if (flux) {
+    try {
+      flux.close();
+    } catch (closeErr) {
+      console.warn(`[FastPath] Closing Flux threw (callSid=${session.callSid}): ${closeErr.message}`);
+    }
+  }
+  console.warn(`[FastPath] Flux unavailable — falling back to Nova (${reason}, callSid=${session.callSid})`);
+  captureFastFailure(session, "flux-stt", `Flux unavailable: ${reason}`, err, options?.captureLevel);
+  openClassicStt();
+  if (open?.transcript && openIsNoTurn) {
+    logTranscript("[STT] Dropped (a backchannel or echo Flux left open)", open.transcript);
+  } else if (open?.transcript) {
+    console.log(`[FastPath] Answering the turn Flux left open (callSid=${session.callSid})`);
+    commitFastTurn(session, twilioWs, open.transcript, open.turnIndex, "stt-fallback");
+  } else if ((open || options?.callerSpoke) && !session.isProcessing && !fastAudioBusy(session)) {
+    // The caller was talking and none of it reached us: ask, rather than leave them in silence.
+    const again = getErrorMsg(callLanguage(session), "sayAgain");
+    console.log(`[FastPath] Asking the caller to say it again after the Flux fallback (callSid=${session.callSid})`);
+    session.addMessage("assistant", again);
+    sendTTS(session, twilioWs, again, undefined, NOT_A_REPLY).then(
+      () => { if (session.fastPath) fastFlush(session); },
+      (ttsErr) => console.error(`[FastPath] Asking the caller to say it again failed (callSid=${session.callSid}): ${ttsErr?.message || ttsErr}`),
+    );
+  }
+}
+
+/**
+ * What the turn engine reads on every Flux event (spec 4.6). aiSpeaking is the
+ * player OR session.isSpeaking, which covers the REST greeting and disclosure;
+ * processing never counts a draft. aiRemainingMs (R14′) is the player's audio
+ * still to play; REST audio is not in the player, so while it plays that is
+ * unknown (null).
+ * @param {CallSession} session
+ * @returns {import("./lib/fast-turns").FastTurnState}
+ */
+function fastTurnState(session) {
+  return {
+    aiSpeaking: fastPlayerPlaying(session) || session.isSpeaking,
+    processing: session.isProcessing,
+    expectedInputType: session._expectedInputType,
+    aiSpeakingText: session.fastState?.speakingText ?? "",
+    aiRemainingMs: fastRestPlaying(session) ? null : (session.fastPlayer?.remainingMs(Date.now()) ?? null),
+    questionAudioStartAt: session.fastState?.questionAudioStartAt ?? null,
+  };
+}
+
+/**
+ * The turn engine's actions (spec 4.6). Each one catches its own errors: one
+ * thrown back into the engine would reach Flux's onError, and that hands the
+ * call to Nova for nothing.
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ * @returns {import("./lib/fast-turns").FastTurnActions}
+ */
+function fastTurnActions(session, twilioWs) {
+  /**
+   * @param {string} name
+   * @param {(...args: any[]) => any} action
+   * @returns {(...args: any[]) => any} what the action returned (undefined when it threw)
+   */
+  const guarded = (name, action) => (...args) => {
+    try {
+      return action(...args);
+    } catch (err) {
+      console.error(`[FastTurn] ${name} failed (callSid=${session.callSid}): ${err?.message || err}`);
+      captureFastFailure(session, "fast-turns", `turn action ${name} failed`, err);
+    }
+  };
+  return {
+    speculate: guarded("speculate", (transcript, turnIndex) => startFastDraft(session, transcript, turnIndex)),
+    cancelSpeculation: guarded("cancelSpeculation", (reason) => dropFastDraft(session, reason)),
+    commit: guarded("commit", (transcript, turnIndex, trigger) => commitFastTurn(session, twilioWs, transcript, turnIndex, trigger)),
+    bargeIn: guarded("bargeIn", () => fastBargeIn(session)),
+    dropEcho: guarded("dropEcho", (transcript, reason) => logTranscript(FAST_DROP_LABELS[reason], transcript)),
+    bufferStructured: guarded("bufferStructured", (transcript) => bufferFastTurn(session, twilioWs, transcript)),
+  };
+}
+
+/** What the turn engine's dropEcho(transcript, reason) logs, by reason (no caller words: logTranscript). */
+const FAST_DROP_LABELS = {
+  "echo-like": "[STT] Dropped (echo-like: the AI's own words coming back)",
+  backchannel: "[STT] Dropped (backchannel while the AI is busy)",
+};
+
+/**
+ * Spec 4.5: start a draft reply on Flux's EagerEndOfTurn, replacing any the
+ * session still holds. The draft reads the conversation and never writes it,
+ * and never runs a tool; it is asked with the turn's own tools and model, so
+ * the turn can adopt its result.
+ * @param {CallSession} session
+ * @param {string} transcript
+ * @param {number} turnIndex
+ */
+function startFastDraft(session, transcript, turnIndex) {
+  dropFastDraft(session, "replaced");
+  // Gate B: each draft is an LLM call. A turn that keeps resuming, or a call that runs
+  // long, stops drafting: its turns are answered live, as without speculation.
+  const stats = session.fastStats || (session.fastStats = newFastCallStats());
+  if (stats.draftTurnIndex !== turnIndex) {
+    stats.draftTurnIndex = turnIndex;
+    stats.draftsForTurn = 0;
+  }
+  if (stats.draftsForTurn >= FAST_DRAFTS_PER_TURN || stats.draftsInCall >= FAST_DRAFTS_PER_CALL) {
+    if (!stats.draftCapLogged) {
+      stats.draftCapLogged = true;
+      console.log(`[FastTurn] Draft cap reached (${stats.draftsForTurn} for this turn, ${stats.draftsInCall} in the call) — answering live (callSid=${session.callSid})`);
+    }
+    return;
+  }
+  stats.draftsForTurn += 1;
+  stats.draftsInCall += 1;
+  session.speculation = startSpeculativeReply({
+    llm: streamClaudeResponse,
+    messages: session.messages,
+    transcript,
+    llmOptions: { ...buildLLMOptions(session, { includeTransfer: true }), model: FAST_LLM_MODEL },
+    turnKey: turnIndex,
+  });
+  if (session.fastStats) session.fastStats.eager = { turnIndex, at: Date.now() };
+}
+
+/**
+ * Abort the session's draft, if it holds one (spec 4.5: resumed, a new turn,
+ * echo, structured input, a commit for other words, barge-in, cleanup).
+ * @param {CallSession} session
+ * @param {string} reason
+ */
+function dropFastDraft(session, reason) {
+  const draft = session.speculation;
+  if (!draft) return;
+  session.speculation = null;
+  draft.abort(reason);
+  if (session.fastStats) session.fastStats.specDiscarded += 1;
+}
+
+/**
+ * A turn's latency record, stamped as it goes ([FastTurn]).
+ * @param {string} trigger
+ * @param {number|null} eagerAt
+ * @returns {import("./call-session").FastTurnRecord}
+ */
+function newFastTurnRecord(trigger, eagerAt) {
+  return { eotAt: Date.now(), trigger, eagerAt, drafted: eagerAt !== null, spec: "none", llmAt: null, speakAt: null, audioAt: null, queued: false, waitedMs: 0, logged: false };
+}
+
+/**
+ * A Flux turn is over: answer it, or queue it behind the turn in flight
+ * (CallSession.queueOrProcess). A draft for other words, or another turn, can
+ * never be adopted: it is aborted now. One for these words waits for the turn,
+ * which makes the final call (isAdoptable, before the user message is added).
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ * @param {string} transcript
+ * @param {number} turnIndex
+ * @param {string|null} trigger
+ */
+function commitFastTurn(session, twilioWs, transcript, turnIndex, trigger) {
+  cancelFastReprompt(session);
+  if (session.fastState) session.fastState.repromptedQuestion = null;
+  const stats = session.fastStats;
+  const eager = stats?.eager && stats.eager.turnIndex === turnIndex ? stats.eager : null;
+  if (stats) {
+    stats.pending = newFastTurnRecord(trigger || "model", eager ? eager.at : null);
+    // Gate C5: committed behind a turn in flight, it waits in the queue (its waited= says how long).
+    stats.pending.queued = session.isProcessing;
+  }
+  const draft = session.speculation;
+  if (draft && (draft.turnKey !== turnIndex || draft.transcript !== transcript)) dropFastDraft(session, "other words");
+  logTranscript("[STT] Final", transcript);
+  session.queueOrProcess(transcript, (text) => handleUserSpeech(session, twilioWs, text, "general"));
+}
+
+/**
+ * A final while structured input is expected (a phone number, a spelled name):
+ * through the classic debounce buffer, which merges what Flux splits into turns.
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ * @param {string} transcript
+ */
+function bufferFastTurn(session, twilioWs, transcript) {
+  cancelFastReprompt(session);
+  // The turn's clock starts at the caller's last piece, so the debounce counts.
+  if (session.fastStats) session.fastStats.pending = newFastTurnRecord("buffered", null);
+  logTranscript("[STT] Final", transcript);
+  session.bufferTranscript(transcript, (combined, inputType) => {
+    logTranscript("[STT] Buffered", combined);
+    // Gate C5 (phone test F8 review): flushed behind a turn in flight, it waits in the queue too
+    // (its waited= runs from the caller's last piece, the debounce included).
+    if (session.fastStats?.pending) session.fastStats.pending.queued = session.isProcessing;
+    session.queueOrProcess(combined, (text) => handleUserSpeech(session, twilioWs, text, inputType));
+  }, { wholeTurn: true }); // Flux's model ended this turn; a Nova final can stop mid-sentence
+}
+
+/**
+ * Spec 4.8.8: the caller talks over the AI. Its audio stops (the player and
+ * Aura), the turn in flight is aborted (never mid-tool: the turn checks before
+ * its next LLM round) and so is any draft, adopted or not. A turn that is
+ * ending the call keeps its goodbye: what the caller says over it would not be
+ * answered anyway (the hang-up drops it).
+ * @param {CallSession} session
+ * @returns {boolean} false when declined (the disclosure plays, or the call is ending): the turn may barge in later
+ */
+function fastBargeIn(session) {
+  const turn = session.currentTurn;
+  const state = session.fastState;
+  // Declined (false): the turn engine leaves the turn free to barge in later, e.g. over
+  // the greeting once the disclosure has played. Each reason is logged once in a row:
+  // a caller talking over the disclosure asks on every Update.
+  const decline = (/** @type {string} */ reason) => {
+    if (state && state.bargeInDeclined !== reason) {
+      state.bargeInDeclined = reason;
+      console.log(`[Barge-in] (fast) ignored — ${reason} (callSid=${session.callSid})`);
+    }
+    return false;
+  };
+  if (state?.disclosureActive) return decline("the recording disclosure is playing");
+  if (turn?.ending) return decline("the AI is ending the call");
+  if (state) state.bargeInDeclined = null;
+  stopFastAudio(session);
+  turn?.abort("barge-in");
+  dropFastDraft(session, "barge-in");
+  console.log(`[Barge-in] (fast) Stopped the AI's audio${turn ? " and its reply" : ""} (callSid=${session.callSid})`);
+  return true;
+}
+
+/**
+ * Spec 4.8.7: open the fast path's turn in handleUserSpeech, BEFORE the user
+ * message is added: a draft is adopted only if it answers this very
+ * conversation (the same messages array, at the same length) and these very
+ * words (isAdoptable). Any other draft is aborted. The turn is exposed as
+ * session.currentTurn so a barge-in can abort it.
+ * @param {CallSession} session
+ * @param {string} transcript - what the turn answers
+ * @returns {import("./call-session").FastTurn}
+ */
+function beginFastTurn(session, transcript) {
+  const stats = session.fastStats || (session.fastStats = newFastCallStats());
+  // The turn before ended without audio (aborted, an error, REST): its line now.
+  if (stats.current && !stats.current.logged) logFastTurn(session, stats.current);
+  // A Nova turn (after a fallback) or a drained queue has no Flux commit: its clock starts here.
+  const record = stats.pending || newFastTurnRecord("buffered", null);
+  stats.pending = null;
+  if (record.queued) record.waitedMs += Math.max(0, Date.now() - record.eotAt);
+  stats.current = record;
+  stats.turns += 1;
+  /** @type {import("./lib/speculative-reply").SpeculativeReply|null} */
+  let draft = session.speculation;
+  session.speculation = null;
+  if (draft && draft.isAdoptable(session.messages, transcript)) {
+    record.spec = "adopted";
+    stats.specAdopted += 1;
+  } else {
+    if (draft) {
+      draft.abort("not adoptable");
+      stats.specDiscarded += 1;
+    }
+    if (record.drafted) record.spec = "discarded";
+    draft = null;
+  }
+  const ctl = new AbortController();
+  /** @type {import("./call-session").FastTurn} */
+  const turn = {
+    ctl,
+    draft,
+    record,
+    chunks: [],
+    ending: false,
+    over: false,
+    abortReason: null,
+    abort(reason = "abort") {
+      turn.over = true;
+      if (!ctl.signal.aborted) {
+        turn.abortReason = reason;
+        ctl.abort(fastAbortError(reason));
+      }
+      turn.draft?.abort(reason); // an adopted draft streams on its own signal
+    },
+  };
+  session.currentTurn = turn;
+  return turn;
+}
+
+/**
+ * An AbortError naming why the turn was stopped.
+ * @param {string} [reason]
+ * @returns {Error}
+ */
+function fastAbortError(reason) {
+  return Object.assign(new Error(`fast turn aborted: ${reason || "abort"}`), { name: "AbortError" });
+}
+
+/**
+ * Spec 4.8.7: the top of each round of the fast turn's tool loop. A barge-in
+ * that came while the last round's tools ran ends the turn here, never during
+ * a tool, and the round's chunks start afresh.
+ * @param {import("./call-session").FastTurn} turn
+ * @param {string[]} chunks - the round's sentence queue
+ */
+function startFastRound(turn, chunks) {
+  if (turn.ctl.signal.aborted) throw fastAbortError("barge-in");
+  turn.chunks = chunks;
+}
+
+/**
+ * Spec 4.8.7: the fast path's LLM response for one round: in round 0 the
+ * adopted draft (its buffered chunks replay through onSentence at once), else
+ * a live Claude call with clause chunking on the turn's signal. A signal
+ * replaces claude-chat's own 15 s timeout, so the turn's carries one too.
+ * @param {CallSession} session
+ * @param {import("./call-session").FastTurn} turn
+ * @param {number} round
+ * @param {Record<string, any>} llmOptions
+ * @param {(sentence: string) => void} onSentence
+ * @returns {Promise<any>} { type: "content" } or { type: "tool_calls" }; rejects with an AbortError when the turn was aborted
+ */
+async function fastLlmResponse(session, turn, round, llmOptions, onSentence) {
+  const result = round === 0 && turn.draft
+    ? await turn.draft.adopt(onSentence)
+    : await streamClaudeResponse(session.messages, {
+      ...llmOptions,
+      onSentence,
+      chunking: "clause",
+      signal: AbortSignal.any([turn.ctl.signal, AbortSignal.timeout(FAST_LLM_TIMEOUT_MS)]),
+      model: FAST_LLM_MODEL,
+    });
+  if (result.type === "aborted") throw fastAbortError("draft aborted");
+  return result;
+}
+
+/**
+ * The LLM's first output for the fast turn (eot_to_llm): its first text, or a
+ * tool call that came with none.
+ * @param {import("./call-session").FastTurn} turn
+ */
+function noteFastLlmOutput(turn) {
+  if (turn.record.llmAt === null) turn.record.llmAt = Date.now();
+}
+
+/**
+ * Spec 4.8.7: a barge-in ended the turn. No apology, and the caller's words
+ * stay. What the LLM response in flight had already sent to TTS is recorded,
+ * plus "…", so the next turn knows what the caller heard. A response that had
+ * said nothing records nothing (its round's tool_use / tool_result messages
+ * are already in the conversation).
+ * @param {CallSession} session
+ * @param {import("./call-session").FastTurn} turn
+ */
+function recordAbortedFastTurn(session, turn) {
+  const heard = turn.chunks.join(" ").trim();
+  if (heard) session.addMessage("assistant", `${heard}…`);
+  console.log(`[FastTurn] Reply stopped (${turn.abortReason || "abort"}) — ${heard ? "kept what was said" : "nothing was said yet"} (callSid=${session.callSid})`);
+}
+
+/**
+ * The fast turn is over (finally): no more fillers or chunks from it, and the
+ * session's abort handle is cleared.
+ * @param {CallSession} session
+ * @param {import("./call-session").FastTurn} turn
+ */
+function endFastTurn(session, turn) {
+  turn.over = true;
+  if (session.currentTurn === turn) session.currentTurn = null;
+}
+
+/**
+ * Spec 4.8.9: one committed turn's latency line, once. No words: ids, times
+ * and enums only. eot_to_llm runs to the reply's first text, eot_to_audio to
+ * its first audio handed to the player, eager_lead from the EagerEndOfTurn
+ * whose draft the turn could adopt to the EndOfTurn.
+ * @param {CallSession} session
+ * @param {import("./call-session").FastTurnRecord} record
+ */
+function logFastTurn(session, record) {
+  if (record.logged) return;
+  record.logged = true;
+  /** @type {(from: number|null, to: number|null) => string} */
+  const span = (from, to) => (from === null || to === null ? "-" : String(Math.max(0, Math.round(to - from))));
+  // Gate C5: a turn that waited (in the queue, or for the AI's audio) measured that wait, not
+  // the pipeline: logged, but no p50/p90 sample.
+  if (record.audioAt !== null && record.waitedMs === 0 && session.fastStats) session.fastStats.eotToAudioMs.push(Math.max(0, record.audioAt - record.eotAt));
+  console.log(`[FastTurn] callSid=${session.callSid} trigger=${record.trigger} spec=${record.spec} eot_to_llm=${span(record.eotAt, record.llmAt)} eot_to_audio=${span(record.eotAt, record.audioAt)} eager_lead=${span(record.eagerAt, record.eotAt)} waited=${Math.round(record.waitedMs)}`);
+}
+
+/**
+ * Spec 4.8.9: the call's [FastCall] line at cleanup, and the same summary for
+ * calls.metadata.fastPath.
+ * @param {CallSession} session
+ * @returns {{ turns: number, eotToAudioP50: number|null, eotToAudioP90: number|null, specAdopted: number, specDiscarded: number, llmErrors: number, stt: "flux"|"nova-fallback", tts: "stream"|"rest-fallback", languages?: string[], voices?: string[] }}
+ */
+function summarizeFastCall(session) {
+  const stats = session.fastStats || newFastCallStats();
+  if (stats.current && !stats.current.logged) logFastTurn(session, stats.current);
+  const samples = [...stats.eotToAudioMs].sort((a, b) => a - b);
+  /** @type {(p: number) => number|null} the nearest-rank percentile */
+  const percentile = (p) => (samples.length === 0 ? null : Math.round(samples[Math.ceil((p / 100) * samples.length) - 1]));
+  const voices = session.fastTts?.voicesUsed() || session.fastState?.voicesUsed || [];
+  // Phone test F9: listed when any voice besides the assistant's own spoke.
+  const otherVoices = voices.some((voice) => voice !== (session.baseDeepgramVoice || session.deepgramVoice));
+  const summary = {
+    turns: stats.turns,
+    eotToAudioP50: percentile(50),
+    eotToAudioP90: percentile(90),
+    specAdopted: stats.specAdopted,
+    specDiscarded: stats.specDiscarded,
+    llmErrors: stats.llmErrors,
+    stt: /** @type {"flux"|"nova-fallback"} */ (session.fastPath === "degraded-stt" ? "nova-fallback" : "flux"),
+    tts: /** @type {"stream"|"rest-fallback"} */ (session.fastState?.ttsFellBack ? "rest-fallback" : "stream"),
+    // SCRUM-594 (F5): the languages a call used besides English (retranscribe leaves such calls alone).
+    ...(Array.isArray(session.languagesUsed) && session.languagesUsed.length > 1 ? { languages: [...session.languagesUsed] } : {}),
+    ...(otherVoices ? { voices } : {}),
+  };
+  console.log(`[FastCall] callSid=${session.callSid} turns=${summary.turns} eot_to_audio_p50=${summary.eotToAudioP50 ?? "-"} p90=${summary.eotToAudioP90 ?? "-"} spec_adopted=${summary.specAdopted} spec_discarded=${summary.specDiscarded} llm_errors=${summary.llmErrors} stt=${summary.stt} tts=${summary.tts}${otherVoices ? ` voices=${voices.join(",")}` : ""}`);
+  return summary;
+}
+
+/**
+ * SCRUM-594 (phone test F5): a fast-path voice is never handed letters it can't
+ * say (the F5 Arabic reply came out as letters). The first such sentence in a
+ * caller turn becomes the apology, and the model is told; later ones in the same
+ * turn say nothing. Phone test F9: and each sentence is said in its own language's
+ * voice (sentenceVoice). Calls off the fast path (no fastLanguage) are untouched.
+ * @param {any} session
+ * @param {string} text
+ * @returns {{ text: string, voice: string|null }} what to speak ("" for nothing), and in which voice (null: the assistant's own)
+ */
+function fastSpeech(session, text) {
+  if (typeof session?.fastLanguage !== "string") return { text, voice: session?.deepgramVoice || null };
+  const { language, voice } = sentenceVoice(session, text);
+  // The assistant's own voice reads Latin script only, Japanese text included when Japanese's voice failed.
+  if (!unspeakableText(text, voice === (session.baseDeepgramVoice || null) ? "en" : language)) return { text, voice };
+  const turn = (session.fullTranscriptMessages || []).filter((/** @type {{ role: string }} */ m) => m.role === "user").length;
+  if (session.unspeakableTurn === turn) return { text: "", voice };
+  session.unspeakableTurn = turn;
+  console.warn(`[FastPath] Replaced a reply this voice can't speak (language ${language}, callSid=${session.callSid})`);
+  session.addMessage("system", "The caller did not hear your last reply: it was in a language or script this line can't speak, so they heard an apology instead. Answer in a language this line speaks.");
+  return { text: UNSPEAKABLE_APOLOGY, voice: session.baseDeepgramVoice || null };
+}
+
+/**
+ * SCRUM-594 (phone test F9): a language's voice failed (its stream never opened, or REST
+ * refused it). It is given up on for the call — its sentences go to the assistant's voice
+ * (sentenceVoice) — and captured once. A line in that language goes back to English, and
+ * the model is told (revertFastLanguageToEnglish).
+ * @param {CallSession} session
+ * @param {string} voice
+ * @param {string} service - "aura-stream" | "aura-rest"
+ * @param {string} what - for the capture, never caller words
+ * @param {unknown} err
+ */
+function noteFastVoiceFailed(session, voice, service, what, err) {
+  if (session.fastFailedVoices?.includes(voice)) return;
+  session.fastFailedVoices = [...(session.fastFailedVoices || []), voice];
+  console.warn(`[FastPath] The voice ${voice} failed: its sentences go to the assistant's voice (callSid=${session.callSid})`);
+  captureFastFailure(session, service, what, err);
+  const code = Object.keys(FAST_LANGUAGES).find((c) => FAST_LANGUAGES[c].voice === voice);
+  if (!code || session.fastBlockedLanguages?.includes(code)) return;
+  if (session.fastLanguage === code) {
+    revertFastLanguageToEnglish(session, what); // the line, and the model told
+    return;
+  }
+  // The line never follows the model into it; the model is told when the caller is speaking it.
+  session.fastBlockedLanguages = [...(session.fastBlockedLanguages || []), code];
+  if (session.fastTurnLanguage === code || session.fastReplyLanguage === code) session.addMessage("system", LANGUAGE_STOPPED_NOTE);
+}
+
+/**
+ * Spec 4.8.3: speak on the Aura stream. The text goes out at once, with a
+ * trailing space, so Aura releases each finished sentence without waiting for
+ * a flush (the next flush point releases the rest).
+ * @param {CallSession} session
+ * @param {string} text
+ * @param {{ reply?: boolean }} [kind] - NOT_A_REPLY: a filler or an apology, kept out of the turn's latency (gate H1)
+ * @returns {number} estimated playback ms (FAST_TTS_MS_PER_CHAR per character); 0 when nothing was sent
+ */
+function speakFast(session, text, kind) {
+  const speech = fastSpeech(session, text);
+  const clean = stripMarkdown(speech.text);
+  const state = session.fastState;
+  // Phone test F4: Aura drops letters of a hyphenated spelling; the echo filter, the
+  // transcript and the segments keep `clean`. Phone test F9: in the sentence's own voice.
+  if (!clean || !state || !session.fastTts?.speak(spellLettersForTts(clean), speech.voice)) return 0;
+  cancelFastReprompt(session); // the AI is talking again
+  if (endsWithQuestion(clean)) noteFastQuestion(session, clean);
+  state.auraSentChars += clean.length;
+  state.auraSegments.push({ text: clean, seq: null }); // gate H2: owed until its Flushed
+  state.speakingText = state.speakingText ? `${state.speakingText} ${clean}` : clean;
+  state.unflushed = true;
+  const record = session.fastStats?.current;
+  if (record && record.speakAt === null && kind?.reply !== false) record.speakAt = Date.now();
+  if (kind?.reply === false) {
+    state.notReplyOwed = true; // gate N5: its audio is not the reply's
+    state.notReplyFlushSeq = null;
+  }
+  return clean.length * FAST_TTS_MS_PER_CHAR;
+}
+
+/**
+ * Spec 4.8.4: flush the Aura stream at a flush point. A refusal (the client's
+ * budget of 18 a minute) is tolerated: finished sentences are released by
+ * their trailing space anyway, and the audio-quiet timer ends the utterance.
+ * Never throws.
+ * @param {CallSession} session
+ * @returns {number|null} the sequence id of the Flushed to expect; null when refused or not streaming
+ */
+function fastFlush(session) {
+  const state = session.fastState;
+  const tts = session.fastTts;
+  if (!state || state.closed || !tts?.isOpen()) return null;
+  let seq = null;
+  try {
+    seq = tts.flush();
+  } catch (err) {
+    console.warn(`[FastPath] Aura flush threw (callSid=${session.callSid}): ${err.message}`);
+    // As a refusal: no Flushed will answer for this text; it stays owed until Aura goes quiet.
+    state.flushRefused = true;
+    armFastQuietTimer(session);
+    return null;
+  }
+  if (seq === null) {
+    if (!state.flushRefusalLogged) {
+      state.flushRefusalLogged = true;
+      console.warn(`[FastPath] Aura flush refused (${tts.flushesInLastMinute()} in the last minute) — relying on sentence release (callSid=${session.callSid})`);
+    }
+    // No Flushed will answer for this text: it stays owed until Aura goes quiet.
+    state.flushRefused = true;
+    armFastQuietTimer(session);
+    return null;
+  }
+  state.unflushed = false;
+  state.flushRefused = false;
+  state.pendingFlushSeq = seq;
+  for (const segment of state.auraSegments) if (segment.seq === null) segment.seq = seq;
+  if (state.notReplyOwed && state.notReplyFlushSeq === null) state.notReplyFlushSeq = seq;
+  state.flushSentAt = Date.now();
+  armFastFlushWatchdog(session, FAST_FLUSH_WATCHDOG_MS);
+  return seq;
+}
+
+/**
+ * Minor 6: a flush whose Flushed is FAST_FLUSH_WATCHDOG_MS overdue, with no Aura
+ * audio in that time either, means a stuck stream: REST for the rest of the call.
+ * Audio still arriving (a long reply) pushes the deadline on.
+ * @param {CallSession} session
+ * @param {number} delayMs
+ */
+function armFastFlushWatchdog(session, delayMs) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  if (state.flushWatchdog) clearTimeout(state.flushWatchdog);
+  state.flushWatchdog = setTimeout(() => {
+    state.flushWatchdog = null;
+    if (state.closed || state.pendingFlushSeq === null || !session.fastTts) return;
+    const quietMs = Date.now() - Math.max(state.lastAudioAt, state.flushSentAt);
+    if (quietMs < FAST_FLUSH_WATCHDOG_MS) {
+      armFastFlushWatchdog(session, FAST_FLUSH_WATCHDOG_MS - quietMs);
+      return;
+    }
+    fallBackToRestTts(session, `no Flushed and no audio for ${quietMs} ms`, new Error(`Aura stream stuck: no Flushed and no audio for ${quietMs} ms after a flush`));
+  }, delayMs);
+}
+
+/**
+ * Aura audio for the caller: through the player to Twilio.
+ * @param {CallSession} session
+ * @param {Buffer} audio
+ * @param {string} [voice] - the stream's voice
+ */
+function onFastAudio(session, audio, voice) {
+  const state = session.fastState;
+  if (!state || state.closed || !session.fastPlayer) return;
+  session.fastPlayer.push(boostAura(audio, voice)); // phone tests F7/F9: Aura is quieter than line level, by voice (lib/aura-gain.js)
+  session.isSpeaking = true;
+  state.unmarked = true;
+  state.presumedIdle = false;
+  state.lastAudioAt = Date.now();
+  state.auraReceivedMs += audio.length / 8; // 8 kHz mulaw: 8 bytes a ms
+  state.auraHeardSinceFlushedMs += audio.length / 8;
+  armFastQuietTimer(session);
+  if (state.repromptAwaitingAudio) {
+    session.addMessage("assistant", state.repromptAwaitingAudio); // gate N1: it is being heard
+    state.repromptAwaitingAudio = null;
+  }
+  // The turn's first audio: its [FastTurn] line has everything now. Gate N5: not while a
+  // filler's or an apology's audio may still be arriving (it comes before the reply's).
+  const record = session.fastStats?.current;
+  if (record && record.speakAt !== null && record.audioAt === null && !state.notReplyOwed) {
+    record.audioAt = Date.now();
+    logFastTurn(session, record);
+  }
+}
+
+/**
+ * Aura finished the audio of one flush: the player marks it (spec 4.3), and
+ * whoever waits for that flush (the hang-up) goes on.
+ * @param {CallSession} session
+ * @param {number|null} seq
+ */
+function onFastFlushed(session, seq) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  if (state.unmarked) endFastUtterance(session);
+  const done = Number.isInteger(seq) ? /** @type {number} */ (seq) : state.pendingFlushSeq;
+  if (done !== null) state.flushedSeq = Math.max(state.flushedSeq, done);
+  // Gate H2: Aura sends a Flushed after the audio of the text before it: that text is voiced.
+  state.auraSegments = state.auraSegments.filter((segment) => segment.seq === null || segment.seq > state.flushedSeq);
+  state.auraHeardSinceFlushedMs = 0;
+  // Gate N5: and a filler's or an apology's audio has all arrived.
+  if (state.notReplyFlushSeq !== null && state.flushedSeq >= state.notReplyFlushSeq) {
+    state.notReplyOwed = false;
+    state.notReplyFlushSeq = null;
+  }
+  if (state.pendingFlushSeq !== null && state.flushedSeq >= state.pendingFlushSeq) {
+    state.pendingFlushSeq = null;
+    if (state.flushWatchdog) clearTimeout(state.flushWatchdog);
+    state.flushWatchdog = null;
+  }
+  for (const waiter of [...state.flushWaiters]) {
+    if (waiter.seq <= state.flushedSeq) waiter.done();
+  }
+  // A Flushed may come back after the player's last mark: once nothing plays
+  // and Aura owes nothing, the echo filter's text starts afresh then.
+  refreshFastSpeaking(session);
+}
+
+/**
+ * The player marks what it has sent; Twilio echoes the mark once it has played.
+ * Minor 3, the lost-mark backstop: if the latest mark is still out
+ * FAST_LOST_MARK_MS past the audio's estimated end (the player's byte
+ * estimate), that audio counts as played (logged once per call). Classic has
+ * a 20 s backstop for its tts-done.
+ * @param {CallSession} session
+ */
+function endFastUtterance(session) {
+  const player = session.fastPlayer;
+  const state = session.fastState;
+  if (!player || !state) return;
+  player.endUtterance();
+  state.unmarked = false;
+  state.markSeq += 1;
+  const mark = state.markSeq;
+  player.whenIdle(FAST_LOST_MARK_MS).then(() => {
+    if (state.closed || state.markSeq !== mark || state.unmarked || state.presumedIdle || !player.isPlaying()) return;
+    state.presumedIdle = true;
+    noteLostMark(session, "player");
+    refreshFastSpeaking(session);
+  });
+}
+
+/**
+ * @param {CallSession} session
+ * @param {string} what
+ */
+function noteLostMark(session, what) {
+  const state = session.fastState;
+  if (!state || state.lostMarkLogged) return;
+  state.lostMarkLogged = true;
+  console.warn(`[FastPath] A playback mark (${what}) never came back — treating that audio as played (callSid=${session.callSid})`);
+}
+
+/**
+ * The player has audio out that Twilio has not played yet (its marks), unless a
+ * lost mark made us give up on it.
+ * @param {CallSession} session
+ * @returns {boolean}
+ */
+function fastPlayerPlaying(session) {
+  return Boolean(session.fastPlayer?.isPlaying()) && !session.fastState?.presumedIdle;
+}
+
+/**
+ * REST audio (the greeting, the disclosure, sendTTS after an Aura fallback) not
+ * yet played: its tts-done marks are not all back. Lost marks are given up on
+ * FAST_LOST_MARK_MS past its estimated end.
+ * @param {CallSession} session
+ * @returns {boolean}
+ */
+function fastRestPlaying(session) {
+  const state = session.fastState;
+  if (!state || state.restMarks === 0) return false;
+  if (Date.now() > state.restPlaybackEndsAt + FAST_LOST_MARK_MS) {
+    state.restMarks = 0;
+    noteLostMark(session, "tts-done");
+    return false;
+  }
+  return true;
+}
+
+/**
+ * The IMPORTANT fix of the Task 5 review: Aura may still send audio for text it
+ * was given (not flushed yet, or flushed and its Flushed not back). "The player
+ * is idle" does not say that: a reply sent to Aura has no audio for its first
+ * ~50-100 ms.
+ * @param {import("./call-session").FastPathState|null} state
+ * @returns {boolean}
+ */
+function fastAuraOwes(state) {
+  return !!state && (state.unflushed || state.pendingFlushSeq !== null);
+}
+
+/**
+ * isSpeaking on the fast path: the player's audio, or REST audio, still playing.
+ * Once nothing plays and Aura owes nothing, the echo filter's text starts afresh.
+ * @param {CallSession} session
+ */
+function refreshFastSpeaking(session) {
+  const state = session.fastState;
+  session.isSpeaking = fastPlayerPlaying(session) || fastRestPlaying(session);
+  if (state && !session.isSpeaking && !fastAuraOwes(state)) {
+    if (state.speakingText) onFastAiIdle(session); // the AI has just finished what it said
+    clearFastSpeakingText(state);
+  }
+}
+
+/**
+ * Gate M4b: the caller's audio, as it goes to Flux. Speech energy with no Flux turn
+ * event for long enough (lib/no-turn-watchdog.js) means Flux cannot hear this caller,
+ * e.g. another language: Nova takes over (one log, one flux-stt capture) and the
+ * caller is asked to say it again. Audio is counted only while the AI is silent.
+ * @param {CallSession} session
+ * @param {Buffer} audio - mulaw, as Twilio sent it
+ */
+function noteFastInboundAudio(session, audio) {
+  const state = session.fastState;
+  const watchdog = state?.noTurnWatchdog;
+  if (!state || !watchdog || state.closed || session.fastPath !== true) return;
+  // Gate N2: nothing counts while the AI speaks (its echo) or works (hold audio, thinking).
+  const aiBusy = fastPlayerPlaying(session) || session.isSpeaking || session.isProcessing;
+  if (!watchdog.onAudio(audio, Date.now(), aiBusy)) return;
+  const err = new Error("Flux reported no turns for the caller's speech (a language it does not transcribe?)");
+  if (state.noTurnMode === "act") {
+    // A false trip (a noisy line) must not page: the fallback is captured at warning level.
+    state.fluxFallBack?.("speech but no turns", err, { callerSpoke: true, captureLevel: "warning" });
+    return;
+  }
+  if (state.noTurnLogged) return;
+  state.noTurnLogged = true;
+  console.warn(`[FastPath] no-turn watchdog would fall back (speech but no turns) — log only, NO_TURN_WATCHDOG=act to act (callSid=${session.callSid})`);
+  captureFastFailure(session, "flux-stt", "no-turn watchdog would fall back (speech but no turns)", err, "warning");
+}
+
+/** Gate N2: NO_TURN_WATCHDOG values already reported as not recognised (once each). */
+const warnedNoTurnModes = new Set();
+
+/**
+ * Gate N2: what a no-turn watchdog trip does, from NO_TURN_WATCHDOG, read when the fast
+ * path starts: "log" (the default: log and capture at warning level, once a call) or
+ * "act" (hand the call to Nova). Anything else warns once and logs.
+ * @param {string|undefined} [raw]
+ * @returns {"log"|"act"}
+ */
+function noTurnWatchdogMode(raw = process.env.NO_TURN_WATCHDOG) {
+  const value = String(raw ?? "").trim().toLowerCase();
+  if (value === "" || value === "log") return "log";
+  if (value === "act") return "act";
+  if (!warnedNoTurnModes.has(value)) {
+    warnedNoTurnModes.add(value);
+    console.warn(`[FastPath] NO_TURN_WATCHDOG "${value.slice(0, 20)}" not recognised — logging only (expected log or act)`);
+  }
+  return "log";
+}
+
+/**
+ * Gate M5: the AI has finished speaking (just before the echo filter's text clears).
+ * (i) A short answer dropped while it asked a long question is committed now (the
+ * turn engine decides). (ii) Otherwise, after a question, the caller gets
+ * FAST_REPROMPT_MS to start talking before the AI asks again, once per question.
+ * @param {CallSession} session
+ */
+function onFastAiIdle(session) {
+  const state = session.fastState;
+  if (!state || state.closed || session.fastPath !== true) return;
+  const committed = session.fastTurns?.onAiIdle({ aiSpeakingText: state.speakingText, questionAudioStartAt: state.questionAudioStartAt }) ?? false;
+  // Gate N1: a caller already talking (a turn Flux has open) is answering.
+  if (committed || session.isProcessing || !endsWithQuestion(state.speakingText) || session.fastTurns?.openTurn()) return;
+  const question = lastFastQuestion(state.speakingText);
+  // Once per question: the re-prompt ends with the question it asked again.
+  if (!question || (state.repromptedQuestion && question.endsWith(state.repromptedQuestion))) return;
+  cancelFastReprompt(session);
+  state.repromptTimer = setTimeout(() => repromptFast(session, question), FAST_REPROMPT_MS);
+}
+
+/**
+ * Gate M5 (ii): "Sorry, I didn't catch that." and the AI's question again.
+ * @param {CallSession} session
+ * @param {string} question
+ */
+function repromptFast(session, question) {
+  const state = session.fastState;
+  if (!state) return;
+  state.repromptTimer = null;
+  const ws = state.twilioWs;
+  if (state.closed || session.fastPath !== true || session.isProcessing || fastAudioBusy(session) || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (session.fastTurns?.openTurn()) return; // gate N1: the caller has started talking
+  state.repromptedQuestion = question;
+  const text = `${getErrorMsg(callLanguage(session), "didntCatch")} ${question}`;
+  console.log(`[FastTurn] No answer ${FAST_REPROMPT_MS} ms after the AI's question — asking it again (callSid=${session.callSid})`);
+  // Gate N1: recorded once heard, as an aborted turn keeps only what was said. On the Aura
+  // stream, at its first audio (a barge-in before that clears it); over REST, once its frames
+  // went out (a barge-in during the synthesis sends none).
+  const viaAura = Boolean(session.fastTts?.isOpen());
+  if (viaAura) state.repromptAwaitingAudio = text;
+  const clears = state.clearCount;
+  sendTTS(session, /** @type {any} */ (ws), text, () => state.closed || state.clearCount !== clears, NOT_A_REPLY).then(
+    (ms) => {
+      if (!viaAura && ms > 0) session.addMessage("assistant", text);
+      if (session.fastPath && ms > 0) fastFlush(session);
+    },
+    (err) => console.error(`[FastTurn] Asking the question again failed (callSid=${session.callSid}): ${err?.message || err}`),
+  );
+}
+
+/**
+ * Gate M5 (ii): the caller started a turn, a turn was committed, a barge-in, the AI
+ * spoke again, or the call ended: no re-prompt.
+ * @param {CallSession} session
+ */
+function cancelFastReprompt(session) {
+  const state = session.fastState;
+  if (!state?.repromptTimer) return;
+  clearTimeout(state.repromptTimer);
+  state.repromptTimer = null;
+}
+
+/**
+ * The last sentence of `text`, which ends with a question mark ("…ten. Shall I book it?"
+ * → "Shall I book it?").
+ * @param {string} text
+ * @returns {string}
+ */
+function lastFastQuestion(text) {
+  const body = text.replace(/["'\u201D\u2019\u00BB\s]+$/u, "");
+  return body.slice(fastQuestionLeadChars(body)).trim();
+}
+
+/**
+ * The echo filter's text starts afresh, and with it what R14″ knows about the AI's
+ * last question.
+ * @param {import("./call-session").FastPathState} state
+ */
+function clearFastSpeakingText(state) {
+  state.speakingText = "";
+  state.auraSentChars = 0;
+  state.auraReceivedMs = 0;
+  state.questionAudioStartAt = null;
+}
+
+/**
+ * R14″: the AI just sent a question to Aura (the chunk ends with "?"). Its audio starts
+ * once the audio already in the player has played (now + remainingMs) and the audio Aura
+ * still owes for the text before it has played too. The player cannot know that part
+ * yet: Aura delivers audio at about twice real time, so a reply's question is usually
+ * sent while its first sentence is still being synthesised. It is estimated at
+ * FAST_QUESTION_MS_PER_CHAR (a slow rate: late rather than early), never making the
+ * estimate earlier than the player's figure.
+ * @param {CallSession} session
+ * @param {string} text - the chunk, its question last
+ */
+function noteFastQuestion(session, text) {
+  const state = session.fastState;
+  if (!state) return;
+  const now = Date.now();
+  const queuedMs = session.fastPlayer?.remainingMs(now) ?? 0;
+  const charsBefore = state.auraSentChars + fastQuestionLeadChars(text);
+  const owedMs = Math.max(0, charsBefore * FAST_QUESTION_MS_PER_CHAR - state.auraReceivedMs);
+  state.questionAudioStartAt = now + queuedMs + owedMs;
+}
+
+/**
+ * The characters of a chunk before its last sentence ("Tuesday works. Shall I book it?"
+ * → 15): the question is that last sentence.
+ * @param {string} text
+ * @returns {number}
+ */
+function fastQuestionLeadChars(text) {
+  const body = text.replace(/["'\u201D\u2019\u00BB\s]+$/u, "");
+  let lead = 0;
+  for (const m of body.matchAll(/[.!?]["'\u201D\u2019\u00BB]*\s+/gu)) lead = (m.index ?? 0) + m[0].length;
+  return lead;
+}
+
+/**
+ * R12d′: REST audio went to Twilio on the fast path (the greeting, the
+ * disclosure, sendTTS after an Aura fallback). Its words join the echo filter's
+ * text, and isSpeaking holds until its tts-done mark is back.
+ * @param {CallSession} session
+ * @param {string} text
+ * @param {number} ms - its playback length
+ */
+function noteFastRestSpeech(session, text, ms) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  cancelFastReprompt(session);
+  state.speakingText = state.speakingText ? `${state.speakingText} ${text}` : text;
+  state.restMarks += 1;
+  state.restPlaybackEndsAt = Math.max(Date.now(), state.restPlaybackEndsAt) + ms;
+  session.isSpeaking = true;
+  // Minor 3: if its tts-done is lost, isSpeaking (and the echo filter's text)
+  // still recover FAST_LOST_MARK_MS past its estimated end.
+  if (state.restTimer) clearTimeout(state.restTimer);
+  state.restTimer = setTimeout(() => {
+    state.restTimer = null;
+    if (!state.closed) refreshFastSpeaking(session);
+  }, state.restPlaybackEndsAt + FAST_LOST_MARK_MS - Date.now() + 1);
+}
+
+/**
+ * A tts-done mark is back on the fast path: one REST audio less. (The classic
+ * handler has already set isSpeaking = false; this puts it back while other
+ * audio still plays: the disclosure's mark returns before the greeting's.)
+ * @param {CallSession} session
+ */
+function onFastRestMark(session) {
+  const state = session.fastState;
+  if (!state) return;
+  state.restMarks = Math.max(0, state.restMarks - 1);
+  refreshFastSpeaking(session);
+}
+
+/**
+ * R12d′: the recording disclosure is going out (either path). Until its audio
+ * has played nothing may cut it: no barge-in, no clear (stopFastAudio), and a
+ * turn that starts meanwhile waits (waitForFastTurnStart).
+ * @param {CallSession} session
+ */
+function beginFastDisclosure(session) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  state.disclosureActive = true;
+}
+
+/**
+ * The disclosure's frames are all at Twilio: a mark after them says when it has
+ * played, with a backstop in case the mark is lost.
+ * @param {CallSession} session
+ * @param {WebSocket} twilioWs
+ * @param {number} ms - its playback length
+ */
+function armFastDisclosureEnd(session, twilioWs, ms) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  sendTwilioJson(twilioWs, { event: "mark", streamSid: session.streamSid, mark: { name: FAST_DISCLOSURE_MARK } });
+  if (state.disclosureTimer) clearTimeout(state.disclosureTimer);
+  state.disclosureTimer = setTimeout(() => {
+    if (state.disclosureActive) noteLostMark(session, "disclosure");
+    endFastDisclosure(session);
+  }, ms + FAST_LOST_MARK_MS);
+}
+
+/**
+ * @param {CallSession} session
+ */
+function endFastDisclosure(session) {
+  const state = session.fastState;
+  if (!state) return;
+  if (state.disclosureTimer) clearTimeout(state.disclosureTimer);
+  state.disclosureTimer = null;
+  state.disclosureActive = false;
+}
+
+/**
+ * Anything of the AI's still to be heard: playing (the player, REST audio), owed
+ * by Aura, or the disclosure.
+ * @param {CallSession} session
+ * @returns {boolean}
+ */
+function fastAudioBusy(session) {
+  const state = session.fastState;
+  return fastPlayerPlaying(session) || session.isSpeaking || fastRestPlaying(session) || fastAuraOwes(state) || Boolean(state?.disclosureActive);
+}
+
+/**
+ * R12b″: a fast turn starts only once the AI has finished speaking, waiting at
+ * most FAST_TURN_START_WAIT_MS. Nothing is cleared: the turn answers after the
+ * AI's words, never over them. (A turn that waited is one committed while the AI
+ * spoke without a barge-in: a short answer, or one queued behind a reply.) The
+ * wait is part of the turn: its user message is already recorded, and a barge-in
+ * (the turn's abort) ends the wait at once, without an answer to these words.
+ * @param {CallSession} session
+ * @param {import("./call-session").FastTurn} turn - the turn waiting; its abort signal ends the wait
+ * @returns {Promise<void>}
+ */
+async function waitForFastTurnStart(session, turn) {
+  const started = Date.now();
+  const signal = turn.ctl.signal;
+  while (!signal.aborted && fastAudioBusy(session) && !session.fastState?.closed && Date.now() - started < FAST_TURN_START_WAIT_MS) {
+    // Polled, but a barge-in (the turn's abort) ends the wait at once (R12b″).
+    await new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", done);
+        resolve(undefined);
+      };
+      const timer = setTimeout(done, FAST_TURN_START_POLL_MS);
+      signal.addEventListener("abort", done, { once: true });
+    });
+  }
+  if (signal.aborted) return; // the turn's abort path logs it
+  const waited = Date.now() - started;
+  if (fastAudioBusy(session)) console.warn(`[FastTurn] The AI was still speaking after ${waited} ms — answering anyway (callSid=${session.callSid})`);
+  else console.log(`[FastTurn] Waited ${waited} ms for the AI to finish before answering (callSid=${session.callSid})`);
+}
+
+/**
+ * Minor 6: Flux answers audio with an Update about every 240 ms. No frame at all
+ * for FLUX_SILENCE_MS while audio still goes out means a stuck stream: Nova.
+ * @param {CallSession} session
+ * @param {(reason: string, err: unknown) => void} fallBack
+ */
+function startFluxWatchdog(session, fallBack) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  if (state.fluxWatchdog) clearInterval(state.fluxWatchdog);
+  // Since when audio has been going out without a break: after a pause in the
+  // caller's audio, Flux gets a fair chance to answer the first new frames.
+  let sendingSince = 0;
+  state.fluxWatchdog = setInterval(() => {
+    const flux = session.deepgramWs;
+    if (session.fastPath !== true || state.closed || !flux) {
+      if (state.fluxWatchdog) clearInterval(state.fluxWatchdog);
+      state.fluxWatchdog = null;
+      return;
+    }
+    if (flux.readyState !== WebSocket.OPEN) return;
+    const now = Date.now();
+    if (now - flux.lastSendAt > 2 * FLUX_WATCHDOG_TICK_MS) {
+      sendingSince = 0; // no audio going out: nothing to judge
+      return;
+    }
+    if (sendingSince === 0) sendingSince = now;
+    const silentMs = now - flux.lastMessageAt;
+    if (silentMs > FLUX_SILENCE_MS && now - sendingSince > FLUX_SILENCE_MS) {
+      fallBack(`no frames for ${silentMs} ms while audio went out`, new Error(`Flux stuck: no frames for ${silentMs} ms while audio went out`));
+    }
+  }, FLUX_WATCHDOG_TICK_MS);
+}
+
+/**
+ * (Re)start the audio-quiet timer: no Aura audio for FAST_AUDIO_QUIET_MS ends
+ * the utterance even when its Flushed never comes (a flush the budget refused).
+ * Without that, isPlaying() would stay true and the turn engine would take
+ * every short answer for echo.
+ * @param {CallSession} session
+ */
+function armFastQuietTimer(session) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  if (state.quietTimer) clearTimeout(state.quietTimer);
+  state.quietTimer = setTimeout(() => {
+    state.quietTimer = null;
+    if (state.closed) return;
+    if (state.unmarked) endFastUtterance(session);
+    // A refused flush's audio has stopped arriving: Aura owes nothing more for it.
+    if (state.flushRefused) {
+      state.flushRefused = false;
+      state.unflushed = false;
+      // Gate H2: its sentences were voiced (released by their trailing space).
+      state.auraSegments = state.auraSegments.filter((segment) => segment.seq !== null);
+      state.auraHeardSinceFlushedMs = 0;
+      if (state.notReplyFlushSeq === null) state.notReplyOwed = false; // gate N5
+    }
+    for (const resolve of state.quietWaiters.splice(0)) resolve();
+  }, FAST_AUDIO_QUIET_MS);
+}
+
+/**
+ * Spec 4.8.6: Twilio echoed one of the player's marks. isSpeaking follows what
+ * the player still has playing, and once it is idle the echo filter's text
+ * starts afresh.
+ * @param {CallSession} session
+ * @param {string} name
+ */
+function onFastMark(session, name) {
+  if (name === FAST_DISCLOSURE_MARK) endFastDisclosure(session);
+  else session.fastPlayer?.onMark(name);
+  // Never just the player's state: REST audio may still play, and text sent to
+  // Aura may have no audio yet (the echo filter keeps hearing it: the IMPORTANT fix).
+  refreshFastSpeaking(session);
+}
+
+/**
+ * Stop the AI's audio now: the player (a Twilio `clear`, and its marks) and,
+ * while Aura may still owe audio for text already sent, the Aura stream (a
+ * Clear; on an idle stream it was never probed, and a Cleared that never came
+ * would drop the next reply's first audio). Never throws.
+ * @param {CallSession} session
+ * @returns {boolean} false when it refused: the recording disclosure is playing (R12d′)
+ */
+function stopFastAudio(session) {
+  const state = session.fastState;
+  const player = session.fastPlayer;
+  // R12d′: never the recording disclosure.
+  if (state?.disclosureActive) return false;
+  // Anything the AI was saying (still playing, or still owed by Aura for text
+  // it was given: the IMPORTANT fix) gets an Aura Clear.
+  const owed = fastAuraOwes(state) || Boolean(state?.speakingText) || Boolean(player?.isPlaying());
+  session.isSpeaking = false;
+  cancelFastReprompt(session);
+  if (state) {
+    clearFastSpeakingText(state);
+    state.clearCount += 1;
+    state.auraSegments = [];
+    state.auraHeardSinceFlushedMs = 0;
+    state.repromptAwaitingAudio = null; // gate N1: cut before any of it played: not recorded
+    state.notReplyOwed = false;
+    state.notReplyFlushSeq = null;
+    state.unmarked = false;
+    state.unflushed = false;
+    state.flushRefused = false;
+    state.presumedIdle = false;
+    state.restMarks = 0; // the Twilio clear drops REST audio too
+    // A Clear discards pending flushes: their Flushed never comes.
+    state.pendingFlushSeq = null;
+    if (state.flushWatchdog) clearTimeout(state.flushWatchdog);
+    state.flushWatchdog = null;
+    for (const waiter of [...state.flushWaiters]) waiter.done();
+  }
+  if (player) {
+    try {
+      player.stop();
+    } catch (err) {
+      console.warn(`[FastPath] Stopping the player threw (callSid=${session.callSid}): ${err.message}`);
+    }
+  }
+  if (owed && session.fastTts?.isOpen()) {
+    try {
+      session.fastTts.clear();
+    } catch (err) {
+      console.warn(`[FastPath] Clearing the Aura stream threw (callSid=${session.callSid}): ${err.message}`);
+    }
+  }
+  return true;
+}
+
+/**
+ * Wait (at most FAST_FLUSHED_WAIT_MS) for the Flushed with sequence id `seq`.
+ * @param {CallSession} session
+ * @param {number} seq
+ * @returns {Promise<void>}
+ */
+function waitForFastFlushed(session, seq) {
+  const state = session.fastState;
+  if (!state || state.closed || state.flushedSeq >= seq) return Promise.resolve();
+  return new Promise((resolve) => {
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let timer;
+    const waiter = {
+      seq,
+      done: () => {
+        clearTimeout(timer);
+        state.flushWaiters = state.flushWaiters.filter((w) => w !== waiter);
+        resolve();
+      },
+    };
+    timer = setTimeout(waiter.done, FAST_FLUSHED_WAIT_MS);
+    state.flushWaiters.push(waiter);
+  });
+}
+
+/**
+ * Wait (at most FAST_FLUSHED_WAIT_MS) until no Aura audio has arrived for
+ * FAST_AUDIO_QUIET_MS: the end of the audio when there is no Flushed to wait for.
+ * @param {CallSession} session
+ * @returns {Promise<void>}
+ */
+function waitForFastAudioQuiet(session) {
+  const state = session.fastState;
+  if (!state || state.closed) return Promise.resolve();
+  return new Promise((resolve) => {
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let cap;
+    const finish = () => {
+      clearTimeout(cap);
+      state.quietWaiters = state.quietWaiters.filter((w) => w !== finish);
+      resolve();
+    };
+    cap = setTimeout(finish, FAST_FLUSHED_WAIT_MS);
+    state.quietWaiters.push(finish);
+    armFastQuietTimer(session); // quiet from now on, if no audio comes at all
+  });
+}
+
+/**
+ * Wait until the audio for everything sent to the Aura stream has reached the
+ * player: flush, then that flush's Flushed (a flush the budget refused has
+ * none: then until Aura goes quiet), and mark it. Both waits are bounded by
+ * FAST_FLUSHED_WAIT_MS. Resolves at once when not streaming; never rejects.
+ * @param {CallSession} session
+ * @returns {Promise<void>}
+ */
+async function settleFastAudio(session) {
+  const state = session.fastState;
+  if (!state || state.closed || !session.fastTts?.isOpen()) return;
+  let seq = state.pendingFlushSeq;
+  let refused = false;
+  if (state.unflushed) {
+    const flushed = fastFlush(session);
+    if (flushed === null) refused = true;
+    else seq = flushed;
+  }
+  if (refused) await waitForFastAudioQuiet(session);
+  else if (seq !== null) await waitForFastFlushed(session, seq);
+  if (state.unmarked && !state.closed) endFastUtterance(session);
+}
+
+/**
+ * session.awaitPlaybackEnd on the fast path (the end_call hang-up's playback
+ * signal): every word is out (settleFastAudio), then the player has played it
+ * (its marks; at most its byte estimate plus FAST_IDLE_CAP_MS). Rejects when
+ * the stream is not open: the hang-up then waits out its sendTTS estimate.
+ * @param {CallSession} session
+ * @returns {Promise<void>}
+ */
+async function awaitFastPlaybackEnd(session) {
+  const player = session.fastPlayer;
+  if (!player || !session.fastTts?.isOpen()) throw new Error("the Aura stream is not open");
+  await settleFastAudio(session);
+  await player.whenIdle(FAST_IDLE_CAP_MS);
+}
+
+/**
+ * Spec 4.8.10: end the fast path at cleanup. Flux is closed whatever its state
+ * (a CONNECTING handle would leak: our pings keep it alive), then the Aura
+ * stream, the player (releasing its whenIdle timers) and every wait still
+ * pending. Idempotent; never throws.
+ * @param {CallSession} session
+ */
+function closeFastPath(session) {
+  const state = session.fastState;
+  if (!state || state.closed) return;
+  state.closed = true;
+  for (const timer of [state.fluxOpenTimer, state.quietTimer, state.flushWatchdog, state.disclosureTimer, state.restTimer, state.auraOpenTimer, state.repromptTimer]) {
+    if (timer) clearTimeout(timer);
+  }
+  state.auraOpenTimer = null;
+  state.repromptTimer = null;
+  if (state.fluxWatchdog) clearInterval(state.fluxWatchdog);
+  state.fluxOpenTimer = null;
+  state.quietTimer = null;
+  state.flushWatchdog = null;
+  state.disclosureTimer = null;
+  state.restTimer = null;
+  state.fluxWatchdog = null;
+  /** @type {Array<[string, () => void]>} */
+  const steps = [];
+  // After a fallback, deepgramWs is Nova: destroy() closes it, as on any classic call.
+  if (session.fastPath === true && session.deepgramWs) {
+    const flux = session.deepgramWs;
+    steps.push(["Flux", () => flux.close()]);
+  }
+  const tts = session.fastTts;
+  if (tts) steps.push(["the Aura stream", () => tts.close()]);
+  const player = session.fastPlayer;
+  if (player) steps.push(["the player", () => player.stop()]);
+  for (const [what, step] of steps) {
+    try {
+      step();
+    } catch (err) {
+      console.warn(`[FastPath] Closing ${what} threw at cleanup (callSid=${session.callSid}): ${err?.message || err}`);
+    }
+  }
+  for (const waiter of [...state.flushWaiters]) waiter.done();
+  for (const resolve of state.quietWaiters.splice(0)) resolve();
+  // Nobody will hear them: stop paying for them.
+  dropFastDraft(session, "cleanup");
+  session.currentTurn?.abort("cleanup");
 }
 
 // --- Test Call WebSocket (/ws/test) ---
@@ -4326,6 +6793,23 @@ const testSessionCaps = createTestSessionCaps({
   maxGlobal: MAX_TEST_SESSIONS_GLOBAL,
   maxPerIp: MAX_TEST_SESSIONS_PER_IP,
 });
+// SCRUM-596: one owner session in the browser per org, and each owner token works
+// once (lib/owner-web-session.js).
+const ownerWebSessions = createOwnerWebSessions();
+const ownerTokenLedger = createOwnerTokenLedger();
+
+/** SCRUM-596: what an owner session in the browser needs to end like an owner phone call. */
+function ownerWebFinishDeps() {
+  return {
+    settleOwnerToolRuns,
+    buildOwnerCallSummary,
+    detectAndRedact,
+    completeCallRecord,
+    notifyCallCompleted,
+    internalApiUrl: INTERNAL_API_URL,
+    internalApiSecret: INTERNAL_API_SECRET,
+  };
+}
 
 /**
  * Verify a test call token (HMAC-SHA256 signed by TEST_CALL_SECRET).
@@ -4398,6 +6882,34 @@ testWss.on("connection", (ws, req) => {
     testSessionCaps.release(jti, clientIp);
   }
 
+  // SCRUM-596: an owner token opens the owner assistant in the browser. Next.js
+  // signs mode "owner" only for the org's owner. Only while
+  // OWNER_ASSISTANT_ENABLED is on, and one session per org (a second tab is refused).
+  const ownerWeb = isOwnerWebToken(tokenData);
+  let ownerWebSlotOpen = false;
+  if (ownerWeb) {
+    if (!ownerAssistantEnabled()) {
+      console.warn(`[OwnerWeb] Refused an owner session: OWNER_ASSISTANT_ENABLED is off (org=${organizationId})`);
+      releaseTestSlot();
+      ws.send(JSON.stringify({ type: "error", message: "The owner assistant is switched off." }));
+      ws.close(4004, "Owner assistant off");
+      return;
+    }
+    if (!ownerTokenLedger.claim(jti, tokenData.exp)) {
+      console.warn(`[OwnerWeb] Refused a reused owner token (org=${organizationId})`);
+      releaseTestSlot();
+      ws.close(4003, "Invalid or expired token");
+      return;
+    }
+    if (!ownerWebSessions.tryOpen(organizationId)) {
+      console.warn(`[OwnerWeb] Refused a second owner session (org=${organizationId}): one is already open`);
+      releaseTestSlot();
+      ws.close(4029, "Your assistant is already open in another tab.");
+      return;
+    }
+    ownerWebSlotOpen = true;
+  }
+
   let session = null;
   let cleaningUp = false;
   let autoEndTimer = null;
@@ -4405,10 +6917,20 @@ testWss.on("connection", (ws, req) => {
   async function cleanupTestSession() {
     if (cleaningUp) return;
     cleaningUp = true;
+    // SCRUM-596: an ending owner session takes no new turn. Speech recognition stays
+    // open through the post-call below, and a late transcript must not start one (a
+    // write, even) after the session's summary is taken.
+    if (session?.ownerMode) session.ownerSessionEnded = true;
 
     // SCRUM-341: free the concurrency slot (jti + per-IP + global) on every
     // teardown path. Idempotent via testSlotReleased.
     releaseTestSlot();
+    // SCRUM-596: and the org's owner slot, at once. The owner post-call below
+    // can take seconds, and the owner may start again meanwhile.
+    if (ownerWebSlotOpen) {
+      ownerWebSlotOpen = false;
+      ownerWebSessions.close(organizationId);
+    }
 
     if (autoEndTimer) {
       clearTimeout(autoEndTimer);
@@ -4428,6 +6950,20 @@ testWss.on("connection", (ws, req) => {
         }
         session.geminiSession = null;
       }
+      // SCRUM-596: an owner session ends like an owner phone call: its row
+      // (call_type "owner", channel "web") and the call-completed webhook.
+      if (session.ownerMode) {
+        const ended = session;
+        try {
+          await finishOwnerWebSession(
+            ended,
+            { transcript: ended.getTranscript(), durationSeconds: ended.getDurationSeconds() },
+            ownerWebFinishDeps(),
+          );
+        } catch (err) {
+          console.error(`[ALERT:error] [OwnerWeb] owner web session post-call failed (callSid=${ended.callSid}, org=${ended.organizationId}):`, err);
+        }
+      }
       session.destroy();
       session = null;
     }
@@ -4435,9 +6971,11 @@ testWss.on("connection", (ws, req) => {
 
   // Auto-disconnect after max duration. SCRUM-363: the public demo
   // (organizationId === DEMO_ORG_ID) gets a tighter cap than authed test calls.
-  const maxSessionDurationMs = getMaxSessionDurationMs(organizationId);
+  // SCRUM-596: an owner session gets OWNER_WEB_MAX_SESSION_MS (8 minutes).
+  const maxSessionDurationMs = ownerWeb ? OWNER_WEB_MAX_SESSION_MS : getMaxSessionDurationMs(organizationId);
   autoEndTimer = setTimeout(() => {
     if (ws.readyState === WebSocket.OPEN) {
+      if (ownerWeb) console.log(`[OwnerWeb] Session reached its time limit (org=${organizationId})`);
       ws.send(JSON.stringify({ type: "ended", reason: "max-duration" }));
       ws.close(1000, "Max duration reached");
     }
@@ -4447,13 +6985,16 @@ testWss.on("connection", (ws, req) => {
   (async () => {
     try {
       const context = await loadTestCallContext(assistantId, organizationId);
+      // The socket closed while the context loaded: start nothing. A session
+      // created now would never be cleaned up.
+      if (cleaningUp) return;
       if (!context) {
         ws.send(JSON.stringify({ type: "error", message: "Assistant not found or inactive" }));
         ws.close(4004, "Assistant not found");
         return;
       }
 
-      session = new CallSession(`test_${Date.now()}`);
+      session = new CallSession(ownerWeb ? ownerWebCallSid(jti) : `test_${Date.now()}`);
       session.organizationId = organizationId;
       session.assistantId = assistantId;
       session.transferRules = context.transferRules || [];
@@ -4465,6 +7006,52 @@ testWss.on("connection", (ws, req) => {
         businessHours: context.organization.businessHours,
       };
       session.orgPhoneNumber = null; // no real phone number in test mode
+
+      // SCRUM-596: the owner's session. Its identity first, then its call row
+      // before any tool can run (the owner tools' authority is ownerVerified plus
+      // the call's own id, unchanged), then the phone line's owner prompt.
+      let ownerWebPrompt = null;
+      if (ownerWeb) {
+        session.ownerMode = true;
+        session.ownerAuth = "verified";
+        session.piiRedactionEnabled = !!(context.assistant.settings?.piiRedactionEnabled);
+        session.ownerFirstName = await loadOwnerFirstName(organizationId);
+        if (cleaningUp) return; // closed while the name loaded: no row yet, nothing to complete
+        const ownerSession = session;
+        const callRecordId = await createCallRecord({
+          orgId: organizationId,
+          assistantId,
+          phoneNumberId: null,
+          callerPhone: null,
+          callSid: ownerSession.callSid,
+          // An owner call from the moment it exists, even if the session never
+          // reaches its post-call (a deploy or crash mid-session).
+          metadata: OWNER_WEB_RECORD_METADATA,
+        });
+        if (cleaningUp) {
+          // The owner closed the page while the row was being created: complete it
+          // now, so it doesn't stay "in-progress" in the call log. Nothing ran, so
+          // it is stored as failed (a completed call is billed).
+          if (callRecordId) {
+            ownerSession.callRecordId = callRecordId;
+            ownerSession.callFailed = true;
+            await finishOwnerWebSession(ownerSession, { transcript: "", durationSeconds: 0 }, ownerWebFinishDeps());
+          }
+          return;
+        }
+        if (!callRecordId) {
+          ws.send(JSON.stringify({ type: "error", message: "Couldn't start your assistant — please try again." }));
+          ws.close(4500, "Owner call record failed");
+          return;
+        }
+        session.callRecordId = callRecordId;
+        ownerWebPrompt = buildOwnerWebPrompt({
+          organization: context.organization,
+          serviceTypes: context.serviceTypes || [],
+          ownerFirstName: session.ownerFirstName,
+        });
+        console.log(`[OwnerWeb] Owner session for org=${organizationId} callSid=${session.callSid}`);
+      }
 
       // After-hours detection
       let { isAfterHours, afterHoursConfig, effectiveCalendarEnabled } = resolveAfterHoursState(context);
@@ -4490,24 +7077,27 @@ testWss.on("connection", (ws, req) => {
         console.log(`[TestAfterHours] After-hours mode ${reason} (calendar=${effectiveCalendarEnabled})`);
       }
 
-      // Build system prompt
-      const systemPrompt = buildSystemPrompt(
-        context.assistant,
-        context.organization,
-        context.knowledgeBase,
-        {
-          calendarEnabled: effectiveCalendarEnabled,
-          transferRules: session.transferRules,
-          isAfterHours,
-          afterHoursConfig,
-          serviceTypes: context.serviceTypes,
-        }
-      );
+      // Build system prompt (SCRUM-596: the owner prompt on an owner session)
+      const systemPrompt = ownerWebPrompt
+        ? ownerWebPrompt.systemPrompt
+        : buildSystemPrompt(
+          context.assistant,
+          context.organization,
+          context.knowledgeBase,
+          {
+            calendarEnabled: effectiveCalendarEnabled,
+            transferRules: session.transferRules,
+            isAfterHours,
+            afterHoursConfig,
+            serviceTypes: context.serviceTypes,
+          }
+        );
       session.setSystemPrompt(systemPrompt);
 
       // ── Schedule cache: pre-fetch availability snapshot for test calls ──
       let scheduleSnapshot = null;
-      if (session.calendarEnabled || session.serviceTypes?.length > 0) {
+      // SCRUM-596: an owner session reads live bookings through its tools — no snapshot.
+      if (!session.ownerMode && (session.calendarEnabled || session.serviceTypes?.length > 0)) {
         try {
           scheduleSnapshot = scheduleCache.getSchedule(context.organizationId);
           if (!scheduleSnapshot) {
@@ -4561,50 +7151,62 @@ testWss.on("connection", (ws, req) => {
       }
 
       // ── Pipeline selection: Gemini Live vs Classic ──────────────
-      const useGeminiLive = VOICE_PIPELINE === "gemini-live" && process.env.GEMINI_API_KEY;
+      // SCRUM-596: an owner session follows OWNER_PIPELINE, as on the phone line.
+      const sessionPipeline = session.ownerMode ? resolveOwnerPipeline() : VOICE_PIPELINE;
+      const useGeminiLive = sessionPipeline === "gemini-live" && process.env.GEMINI_API_KEY;
 
       if (useGeminiLive) {
         // ── Gemini Live pipeline for test/demo calls ──────────────
         console.log(`[TestGeminiLive] Initializing Gemini Live (${GEMINI_MODEL}) for test call`);
 
         // Build tool definitions using the same function as production
-        const llmOptions = buildLLMOptions(session);
+        const llmOptions = session.ownerMode ? { tools: buildOwnerTools() } : buildLLMOptions(session);
         const allTools = llmOptions.tools || [];
 
         // Build Gemini-specific system prompt with greeting instruction
-        const greeting = getGreeting(context.assistant, context.organization.name, {
-          isAfterHours,
-          afterHoursConfig,
-        });
+        const greeting = ownerWebPrompt
+          ? ownerWebPrompt.greeting
+          : getGreeting(context.assistant, context.organization.name, {
+            isAfterHours,
+            afterHoursConfig,
+          });
 
         let geminiSystemPrompt = systemPrompt;
 
-        // Gemini Live is natively multilingual — always remove English-only restrictions.
-        // For demo/test calls, we always enable multilingual since we promote 90+ language support.
-        geminiSystemPrompt = geminiSystemPrompt
-          .replace(/ENGLISH ONLY:.*?Do NOT respond in their language\./gs, "LANGUAGE: You are multilingual. Respond in the caller's language naturally.")
-          .replace(/You MUST ONLY respond in English\..*?Do NOT use any non-English words\./gs, "Respond in the caller's language naturally.")
-          .replace(/You must respond in English\..*?Do NOT respond in their language\./gs, "Respond in the caller's language naturally.")
-          .replace(/I can only assist in English/g, "I can assist in multiple languages")
-          .replace(/I'm sorry, I can only assist in English[^"']*/g, "I can assist in multiple languages");
+        if (ownerWebPrompt) {
+          // SCRUM-596: the phone line's owner variant. The greeting comes first and
+          // the owner rules LAST (Gemini obeys the freshest instruction), with none
+          // of the customer rules below.
+          geminiSystemPrompt += `\n\nIMPORTANT — YOUR FIRST MESSAGE: When the call connects, you will receive a short text message. Immediately respond by speaking the following greeting (word for word, naturally): "${greeting}" — Then wait for the owner to respond.`;
+          geminiSystemPrompt += buildOwnerGeminiSuffix();
+        } else {
+          // Gemini Live is natively multilingual — always remove English-only restrictions.
+          // For demo/test calls, we always enable multilingual since we promote 90+ language support.
+          geminiSystemPrompt = geminiSystemPrompt
+            .replace(/ENGLISH ONLY:.*?Do NOT respond in their language\./gs, "LANGUAGE: You are multilingual. Respond in the caller's language naturally.")
+            .replace(/You MUST ONLY respond in English\..*?Do NOT use any non-English words\./gs, "Respond in the caller's language naturally.")
+            .replace(/You must respond in English\..*?Do NOT respond in their language\./gs, "Respond in the caller's language naturally.")
+            .replace(/I can only assist in English/g, "I can assist in multiple languages")
+            .replace(/I'm sorry, I can only assist in English[^"']*/g, "I can assist in multiple languages");
 
-        geminiSystemPrompt += `\n\nIMPORTANT — YOUR FIRST MESSAGE: When the call connects, you will receive a short text message. Immediately respond by speaking the following greeting (word for word, naturally and warmly): "${greeting}" — Then wait for the caller to respond. Do NOT add anything extra. Do NOT invent a receptionist name — you are an AI assistant.`;
+          geminiSystemPrompt += `\n\nIMPORTANT — YOUR FIRST MESSAGE: When the call connects, you will receive a short text message. Immediately respond by speaking the following greeting (word for word, naturally and warmly): "${greeting}" — Then wait for the caller to respond. Do NOT add anything extra. Do NOT invent a receptionist name — you are an AI assistant.`;
 
-        geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
-        geminiSystemPrompt += `\n- ABSOLUTELY NEVER FABRICATE ACTIONS: This is the most important rule. You have tools (book_appointment, schedule_callback, check_availability, lookup_appointment, cancel_appointment, etc). You MUST call the tool AND receive a SUCCESS response BEFORE telling the caller the action was done. NEVER say "I've booked", "I've scheduled", "I've checked", "I've cancelled" UNLESS the tool already returned success.`;
-        geminiSystemPrompt += `\n- 🔎 UNDERSTAND BEFORE YOU ACT (be a real receptionist): Acting on a misheard request is worse than asking again. If a caller's turn is garbled, cuts in and out, is only fragments, suddenly switches to a language they weren't using, or doesn't form a clear request, do NOT guess what they meant and do NOT act on it — warmly say you didn't catch it and ask them to repeat, in the language they are using (e.g. "Sorry, I didn't quite catch that — could you say it again?"). If you DID hear the request clearly, just proceed — do NOT tack on an extra "is that right?". Only when you genuinely couldn't hear, or you'd be guessing a name / date / time, restate it and get a clear "yes" before booking, cancelling, rescheduling, or taking a message. A caller who is upset or in a hurry is NOT a reason to make them repeat — if the words are clear, help right away. After a couple of unclear tries, offer a callback rather than guessing. NEVER book, cancel, reschedule, or record details based on a guess or an unclear turn.`;
-        geminiSystemPrompt += `\n- ALWAYS COLLECT REAL NAME: Before calling book_appointment or schedule_callback, you MUST ask for and receive the caller's actual name. NEVER use placeholder names like "Caller Name", "Unknown", or "Guest".`;
-        geminiSystemPrompt += `\n- ALWAYS SAY FILLER BEFORE EVERY TOOL CALL: Before EVERY tool call, you MUST say a short filler phrase in the caller's language (the equivalent of "one moment" / "let me check" / "just a sec"). NEVER go silent during a tool call.`;
-        geminiSystemPrompt += `\n- LANGUAGE — conduct the ENTIRE call in the caller's language: fillers, tool acknowledgements, transfer/hold messages, confirmations and closings included. Any English phrase quoted in these instructions is an ENGLISH SAMPLE — say its equivalent in the caller's language, never the literal English unless the caller is speaking English. When a tool returns an English message, translate it before speaking, keeping names, numbers, dates, times and codes exactly as given.`;
-        geminiSystemPrompt += buildLanguageLockDirective(session.language);
-        geminiSystemPrompt += `\n- RESCHEDULING: When a caller wants to move or change the time of an existing appointment, you MUST call the reschedule_appointment tool — ONE call that books the new time and removes the old one atomically. Identify it by the caller's phone plus its current date (look it up first with lookup_appointment if needed) and pass new_datetime. NEVER reschedule by calling cancel_appointment and book_appointment separately — that can leave a duplicate.`;
-        // SCRUM-294: test/demo calls never have transfer rules (transferRules: []
-        // is passed to executeToolCall a few lines below), so transfer_call is
-        // never in the tool list. If we told the model to call it, Gemini would
-        // hallucinate the invocation. Use the no-rules variant: capture the
-        // request via schedule_callback so the demo gracefully handles the
-        // intent instead of either arguing or fabricating a transfer.
-        geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — this is a demo/test call so a live transfer isn't available. You MUST IMMEDIATELY acknowledge the request and call schedule_callback to capture their name and number. Do NOT argue. Do NOT claim you can help instead. Do NOT redirect to booking.`;
+          geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
+          geminiSystemPrompt += `\n- ABSOLUTELY NEVER FABRICATE ACTIONS: This is the most important rule. You have tools (book_appointment, schedule_callback, check_availability, lookup_appointment, cancel_appointment, etc). You MUST call the tool AND receive a SUCCESS response BEFORE telling the caller the action was done. NEVER say "I've booked", "I've scheduled", "I've checked", "I've cancelled" UNLESS the tool already returned success.`;
+          geminiSystemPrompt += `\n- 🔎 UNDERSTAND BEFORE YOU ACT (be a real receptionist): Acting on a misheard request is worse than asking again. If a caller's turn is garbled, cuts in and out, is only fragments, suddenly switches to a language they weren't using, or doesn't form a clear request, do NOT guess what they meant and do NOT act on it — warmly say you didn't catch it and ask them to repeat, in the language they are using (e.g. "Sorry, I didn't quite catch that — could you say it again?"). If you DID hear the request clearly, just proceed — do NOT tack on an extra "is that right?". Only when you genuinely couldn't hear, or you'd be guessing a name / date / time, restate it and get a clear "yes" before booking, cancelling, rescheduling, or taking a message. A caller who is upset or in a hurry is NOT a reason to make them repeat — if the words are clear, help right away. After a couple of unclear tries, offer a callback rather than guessing. NEVER book, cancel, reschedule, or record details based on a guess or an unclear turn.`;
+          geminiSystemPrompt += `\n- ALWAYS COLLECT REAL NAME: Before calling book_appointment or schedule_callback, you MUST ask for and receive the caller's actual name. NEVER use placeholder names like "Caller Name", "Unknown", or "Guest".`;
+          geminiSystemPrompt += `\n- ALWAYS SAY FILLER BEFORE EVERY TOOL CALL: Before EVERY tool call, you MUST say a short filler phrase in the caller's language (the equivalent of "one moment" / "let me check" / "just a sec"). NEVER go silent during a tool call.`;
+          geminiSystemPrompt += `\n- LANGUAGE — conduct the ENTIRE call in the caller's language: fillers, tool acknowledgements, transfer/hold messages, confirmations and closings included. Any English phrase quoted in these instructions is an ENGLISH SAMPLE — say its equivalent in the caller's language, never the literal English unless the caller is speaking English. When a tool returns an English message, translate it before speaking, keeping names, numbers, dates, times and codes exactly as given.`;
+          geminiSystemPrompt += buildLanguageLockDirective(session.language);
+          geminiSystemPrompt += `\n- RESCHEDULING: When a caller wants to move or change the time of an existing appointment, you MUST call the reschedule_appointment tool — ONE call that books the new time and removes the old one atomically. Identify it by the caller's phone plus its current date (look it up first with lookup_appointment if needed) and pass new_datetime. NEVER reschedule by calling cancel_appointment and book_appointment separately — that can leave a duplicate.`;
+          // SCRUM-294: test/demo calls never have transfer rules (transferRules: []
+          // is passed to executeToolCall a few lines below), so transfer_call is
+          // never in the tool list. If we told the model to call it, Gemini would
+          // hallucinate the invocation. Use the no-rules variant: capture the
+          // request via schedule_callback so the demo gracefully handles the
+          // intent instead of either arguing or fabricating a transfer.
+          geminiSystemPrompt += `\n- TRANSFERS — MUST OBEY: If the caller asks to be transferred, asks to speak to a human / person / manager / somebody / an actual human / a real person / staff, says 'transfer me' / 'put me through' / 'I want to talk to someone' / 'can I speak to a human' / 'get me a person' or any equivalent intent — this is a demo/test call so a live transfer isn't available. You MUST IMMEDIATELY acknowledge the request and call schedule_callback to capture their name and number. Do NOT argue. Do NOT claim you can help instead. Do NOT redirect to booking.`;
+        }
 
         // Transcript buffering for test calls
         let pendingUserTranscript = "";
@@ -4623,6 +7225,8 @@ testWss.on("connection", (ws, req) => {
                 const audioBuffer = Buffer.from(twilioBase64, "base64");
                 ws.send(audioBuffer);
               }
+              // SCRUM-596: this assistant turn produced speech (the owner confirmation gate's clock).
+              if (session?.ownerMode) noteAssistantSpeech(session);
             },
             onToolCall: async (toolCall) => {
               // Guard: session may be null if Gemini delivers buffered tool calls after cleanup
@@ -4631,6 +7235,17 @@ testWss.on("connection", (ws, req) => {
                 return { message: "" };
               }
               logToolCall("[TestGeminiLive] Tool call", toolCall.name, toolCall.args);
+              // SCRUM-596: every owner tool call goes through the phone line's owner
+              // runner (its confirmation gate and authority checks), in flight as on
+              // the phone line, and never in test mode.
+              if (session.ownerMode) {
+                session._toolCallInFlight = true;
+                try {
+                  return await runOwnerToolCall(session, toolCall, { executeToolCall, scheduleCache, sendText: (text) => session?.geminiSession?.sendText(text) });
+                } finally {
+                  if (session) session._toolCallInFlight = false;
+                }
+              }
               // SCRUM-372: cancel-confirmation gate (test/demo path — parity with production)
               if (toolCall.name === "cancel_appointment" && !session.confirmCancel(toolCall.args || {}, Date.now())) {
                 console.warn(`[CancelGate] Holding cancel_appointment pending confirmation (test). callSid=${session.callSid}`);
@@ -4656,6 +7271,8 @@ testWss.on("connection", (ws, req) => {
             },
             onTranscriptIn: (text) => {
               pendingUserTranscript += text;
+              // SCRUM-596: the owner spoke (the confirmation gate's clock; once per utterance).
+              if (session?.ownerMode) noteOwnerSpeech(session, text);
             },
             onTranscriptOut: (text) => {
               pendingAiTranscript += text;
@@ -4676,6 +7293,8 @@ testWss.on("connection", (ws, req) => {
                 pendingAiTranscript = "";
                 return;
               }
+              // SCRUM-596: an interrupted turn has ended (counted once, as on the phone line).
+              if (session.ownerMode) noteAssistantTurnEnd(session);
               if (pendingAiTranscript.trim()) {
                 session.addMessage("assistant", pendingAiTranscript.trim());
                 if (ws.readyState === WebSocket.OPEN) {
@@ -4685,13 +7304,16 @@ testWss.on("connection", (ws, req) => {
                 pendingAiTranscript = "";
               }
             },
-            onTurnComplete: () => {
+            onTurnComplete: (turnInfo) => {
               // Guard: session may be null if Gemini delivers buffered events after cleanup
               if (!session) {
                 pendingUserTranscript = "";
                 pendingAiTranscript = "";
                 return;
               }
+              // SCRUM-596: one assistant turn on the confirmation gate's clock, only if
+              // it produced speech (a tool-call-only turn is not one), as on the phone line.
+              if (session.ownerMode && turnInfo?.endedWithToolCalls !== true) noteAssistantTurnEnd(session);
               if (pendingUserTranscript.trim()) {
                 session.addMessage("user", pendingUserTranscript.trim());
                 if (ws.readyState === WebSocket.OPEN) {
@@ -4708,15 +7330,51 @@ testWss.on("connection", (ws, req) => {
                 pendingAiTranscript = "";
               }
             },
+            // SCRUM-596: Gemini cancelled these tool calls (the owner talked over them),
+            // as on the phone line (lib/owner-tool-runner.js).
+            onToolCallCancellation: (ids) => {
+              if (session?.ownerMode) noteCancelledOwnerToolCalls(session, ids);
+            },
             onError: (err) => {
+              // SCRUM-596: once the owner has ended the session, an error from the
+              // Gemini socket being closed (one still connecting raises one) is not a
+              // problem: it is neither shown nor stored as a failure.
+              if (session?.ownerMode && cleaningUp) {
+                console.log(`[TestGeminiLive] Error while the owner session closes (ignored): ${err.message}`);
+                return;
+              }
               console.error("[TestGeminiLive] Session error:", err.message);
+              // SCRUM-596: an owner session that broke is stored as failed.
+              if (session?.ownerMode) session.callFailed = true;
               if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "error", message: "AI session error" }));
+                ws.send(JSON.stringify({ type: "error", message: session?.ownerMode ? OWNER_WEB_PROBLEM_MESSAGE : "AI session error" }));
                 ws.close(4500, "Gemini session error");
               }
             },
-            onClose: (code) => {
+            onClose: (code, reason) => {
               console.log(`[TestGeminiLive] Session closed (code=${code})`);
+              if (session?.ownerMode && ws.readyState === WebSocket.OPEN && !cleaningUp) {
+                // SCRUM-596: the owner said goodbye (end_call). Let the goodbye's
+                // audio play, as on the phone line, then end the session.
+                if (reason === "end_call") {
+                  setTimeout(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({ type: "ended", reason: "owner-ended" }));
+                      ws.close(1000, "Owner said goodbye");
+                    }
+                  }, 1000);
+                  return;
+                }
+                // Any other abnormal close is Gemini dropping the session: say so
+                // (it is stored as failed), rather than end it as if all went well.
+                if (code !== 1000) {
+                  session.callFailed = true;
+                  console.error(`[OwnerWeb] Gemini closed the owner session unexpectedly (code=${code}, org=${session.organizationId}, callSid=${session.callSid})`);
+                  ws.send(JSON.stringify({ type: "error", message: OWNER_WEB_PROBLEM_MESSAGE }));
+                  ws.close(4500, "Gemini session closed");
+                  return;
+                }
+              }
               if (ws.readyState === WebSocket.OPEN && !cleaningUp) {
                 ws.send(JSON.stringify({ type: "ended", reason: "ai-session-closed" }));
                 ws.close(1000, "Gemini session closed");
@@ -4747,6 +7405,8 @@ testWss.on("connection", (ws, req) => {
           }
           if (!isFinal) return;
           logTranscript("[TestSTT] Final", transcript);
+          // SCRUM-596: the owner spoke (the confirmation gate's clock; once per utterance).
+          if (session?.ownerMode) noteOwnerSpeech(session, transcript);
           session.bufferTranscript(transcript, (combined, inputType) => {
             logTranscript("[TestSTT] Buffered", combined);
             session.queueOrProcess(combined, (text) => handleTestUserSpeech(session, ws, text));
@@ -4756,26 +7416,50 @@ testWss.on("connection", (ws, req) => {
           session.flushBuffer();
         },
         onError: (err) => {
+          // SCRUM-596: as for Gemini, an error while an owner session closes is not
+          // a failure of the session.
+          if (session?.ownerMode && cleaningUp) {
+            console.log(`[TestSTT] Error while the owner session closes (ignored): ${err?.message || err}`);
+            return;
+          }
           console.error("[TestSTT] Error:", err);
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "error", message: "Speech recognition error" }));
+            ws.send(JSON.stringify({ type: "error", message: session?.ownerMode ? OWNER_WEB_PROBLEM_MESSAGE : "Speech recognition error" }));
+          }
+          // SCRUM-596: an owner session can't go on without hearing the owner. End
+          // it (stored as failed) rather than leave the mic and the row open.
+          if (session?.ownerMode) {
+            session.callFailed = true;
+            if (ws.readyState === WebSocket.OPEN) ws.close(4500, "Speech recognition error");
           }
         },
         onClose: (code) => {
           if (code !== 1000 && code !== 1005) {
             console.error(`[TestSTT] Deepgram connection closed unexpectedly (code=${code})`);
+            // SCRUM-596: as on the phone line, an owner session that can no longer
+            // hear the owner ends (stored as failed) rather than stay open, deaf.
+            if (session?.ownerMode && !cleaningUp && !session.callFailed) {
+              session.callFailed = true;
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "error", message: OWNER_WEB_PROBLEM_MESSAGE }));
+                ws.close(4500, "Speech recognition lost");
+              }
+            }
           }
         },
       }, { industry: session.organization?.industry });
 
       // Play recording disclosure if required by jurisdiction (test calls too)
       let disclosurePrefix = "";
-      const testConsentResult = requiresRecordingDisclosureHybrid(
-        context.organization.country,
-        context.organization.businessState,
-        context.organization.recordingConsentMode,
-        null // test calls have no real caller phone
-      );
+      // SCRUM-596: no spoken disclosure on an owner session, as on the phone line.
+      const testConsentResult = session.ownerMode
+        ? { required: false, callerState: null, reason: "owner-call" }
+        : requiresRecordingDisclosureHybrid(
+          context.organization.country,
+          context.organization.businessState,
+          context.organization.recordingConsentMode,
+          null // test calls have no real caller phone
+        );
       session.callerState = testConsentResult.callerState;
       session.consentReason = testConsentResult.reason;
       console.log(`[TestRecording] Consent: required=${testConsentResult.required}, callerState=${testConsentResult.callerState}, reason=${testConsentResult.reason}`);
@@ -4807,7 +7491,7 @@ testWss.on("connection", (ws, req) => {
       }
 
       // Send greeting (with disclosure prepended if standalone TTS failed)
-      const greeting = disclosurePrefix + getGreeting(context.assistant, context.organization.name, {
+      const greeting = ownerWebPrompt ? ownerWebPrompt.greeting : disclosurePrefix + getGreeting(context.assistant, context.organization.name, {
         isAfterHours,
         afterHoursConfig,
       });
@@ -4848,8 +7532,10 @@ testWss.on("connection", (ws, req) => {
       }
     } catch (err) {
       console.error("[TestCall] Init error:", err);
+      // SCRUM-596: an owner session that failed to start is stored as failed.
+      if (session?.ownerMode) session.callFailed = true;
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "error", message: "Failed to initialize test call" }));
+        ws.send(JSON.stringify({ type: "error", message: ownerWeb ? "Couldn't start your assistant — please try again." : "Failed to initialize test call" }));
         ws.close(4500, "Init error");
       }
     }
@@ -4905,6 +7591,8 @@ testWss.on("connection", (ws, req) => {
  */
 async function handleTestUserSpeech(session, ws, transcript) {
   if (!session) return;
+  // SCRUM-596: an owner session that is ending or has failed takes no new turn.
+  if (session.ownerMode && (session.ownerSessionEnded || session.callFailed)) return;
   session.isProcessing = true;
 
   // Play hold audio while AI processes
@@ -4913,19 +7601,29 @@ async function handleTestUserSpeech(session, ws, transcript) {
   try {
     session.addMessage("user", transcript);
 
-    const llmOptions = buildLLMOptions(session);
+    const llmOptions = session.ownerMode ? { tools: buildOwnerTools() } : buildLLMOptions(session);
     let reply = null;
+    // SCRUM-596: an owner's end_call ends the turn and then the session (no further
+    // model call). turnAudioBytes times the goodbye's playback before the close.
+    let endCall = false;
+    let lastOwnerTool = null;
+    let turnAudioBytes = 0;
 
-    for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+    // SCRUM-596: an owner gets the phone line's tool budget (a move is a list, a
+    // check, the move, then the read-back), as in the phone line's classic loop.
+    const maxIterations = session.ownerMode ? OWNER_MAX_TOOL_CALLS : MAX_TOOL_ITERATIONS;
+    for (let i = 0; i < maxIterations; i++) {
       const t0 = Date.now();
       let sentenceCount = 0;
       let ttsChain = Promise.resolve();
       let holdStopped = false;
+      const spoken = [];
 
       const result = await streamChatResponse(LLM_API_KEY, session.messages, {
         ...llmOptions,
         onSentence: (sentence) => {
           sentenceCount++;
+          spoken.push(sentence);
           if (!holdStopped) {
             hold.stop();
             holdStopped = true;
@@ -4938,6 +7636,9 @@ async function handleTestUserSpeech(session, ws, transcript) {
               ws.send(JSON.stringify({ type: "speaking", speaking: true }));
               ws.send(audioBuffer);
             }
+            turnAudioBytes += audioBuffer.length;
+            // SCRUM-596: a reply sentence reached the owner, so this turn produced speech.
+            if (session?.ownerMode) noteAssistantSpeech(session);
           }).catch((err) => {
             session.isSpeaking = false;
             console.error("[TestStreamTTS] Error sending sentence:", err.message);
@@ -4948,6 +7649,8 @@ async function handleTestUserSpeech(session, ws, transcript) {
       if (result.type === "content") {
         reply = result.content;
         await ttsChain;
+        // SCRUM-596: the reply has been spoken: one assistant turn on the owner confirmation gate's clock.
+        if (session.ownerMode) noteAssistantTurnEnd(session);
         // Send final speaking=false and full transcript
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "speaking", speaking: false }));
@@ -4970,6 +7673,26 @@ async function handleTestUserSpeech(session, ws, transcript) {
         for (const toolCall of result.toolCalls) {
           const fnName = toolCall.function.name;
           const fnArgs = parseToolArgs(toolCall, "TestToolCall");
+
+          // SCRUM-596: owner tools go through the phone line's owner runner (its
+          // confirmation gate and authority checks), never in test mode. Its message
+          // and data go back to the model, as in the phone line's classic loop.
+          if (session.ownerMode) {
+            const ownerRet = await runOwnerToolCall(session, { name: fnName, args: fnArgs }, { executeToolCall, scheduleCache });
+            lastOwnerTool = { name: fnName, ret: ownerRet };
+            // The owner said goodbye: from here the session is ending, and words
+            // heard while the goodbye plays start no new turn.
+            if (ownerRet.__endCall === true) {
+              endCall = true;
+              session.ownerSessionEnded = true;
+            }
+            session.messages.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              content: ownerRet.data !== undefined ? JSON.stringify({ message: ownerRet.message, data: ownerRet.data }) : ownerRet.message,
+            });
+            continue;
+          }
 
           // SCRUM-372: cancel-confirmation gate (test/demo classic path — parity)
           if (fnName === "cancel_appointment" && !session.confirmCancel(fnArgs || {}, Date.now())) {
@@ -5001,6 +7724,31 @@ async function handleTestUserSpeech(session, ws, transcript) {
             content: resultMessage,
           });
         }
+        if (endCall) {
+          // SCRUM-596: the owner said goodbye. They last hear this response's own
+          // words or, when it said nothing, a short goodbye.
+          hold.stop();
+          await ttsChain;
+          reply = spoken.join(" ");
+          if (!reply) {
+            reply = getErrorMsg(session.language, "goodbye");
+            try {
+              const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, reply, { voice: session?.deepgramVoice });
+              turnAudioBytes += audioBuffer.length;
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "speaking", speaking: true }));
+                ws.send(audioBuffer);
+              }
+            } catch (err) {
+              console.error(`[OwnerWeb] Goodbye TTS failed — ending without it (callSid=${session.callSid}):`, err.message);
+            }
+          }
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "speaking", speaking: false }));
+            ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: reply, isFinal: true }));
+          }
+          break;
+        }
         continue;
       }
     }
@@ -5008,7 +7756,11 @@ async function handleTestUserSpeech(session, ws, transcript) {
     if (!reply) {
       hold.stop();
       reply = getErrorMsg(session.language, "repeatRequest");
-      console.warn(`[TestPipeline] Tool call loop exhausted after ${MAX_TOOL_ITERATIONS} iterations (assistantId=${session.assistantId})`);
+      // SCRUM-596 (as SF5 on the phone line): an owner never hears "could you repeat
+      // that?", which after a change invites a duplicate request. They hear the
+      // last tool's own words.
+      if (session.ownerMode) reply = ownerToolLoopReply(session, lastOwnerTool);
+      console.warn(`[TestPipeline] Tool call loop exhausted after ${maxIterations} iterations (assistantId=${session.assistantId})`);
       const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, reply, { voice: session?.deepgramVoice });
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "speaking", speaking: true }));
@@ -5019,6 +7771,20 @@ async function handleTestUserSpeech(session, ws, transcript) {
     }
 
     session.addMessage("assistant", reply);
+    session.ownerTurnFailureStreak = 0; // SCRUM-596: a turn that answered ends a failure streak
+
+    // SCRUM-596: the session ends once the goodbye's audio has had time to play
+    // (8 kHz μ-law: 8 bytes a millisecond).
+    if (endCall) {
+      const graceMs = Math.min(15_000, Math.round(turnAudioBytes / 8) + 500);
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "ended", reason: "owner-ended" }));
+          ws.close(1000, "Owner said goodbye");
+        }
+      }, graceMs);
+      return;
+    }
 
     // Detect what input the AI is expecting next and adapt buffering
     const testNextInputType = detectExpectedInput(reply);
@@ -5029,6 +7795,18 @@ async function handleTestUserSpeech(session, ws, transcript) {
   } catch (err) {
     hold.stop();
     console.error("[TestPipeline] Error:", err);
+    // SCRUM-596: an owner session whose turns keep failing (an LLM outage, credit
+    // run out) ends at the second failure in a row, said as a problem and stored
+    // as failed, rather than "could you repeat that?" on every turn.
+    if (session.ownerMode && ++session.ownerTurnFailureStreak >= 2) {
+      session.callFailed = true;
+      console.error(`[ALERT:error] [OwnerWeb] owner session ended: ${session.ownerTurnFailureStreak} turns failed in a row (callSid=${session.callSid}, org=${session.organizationId})`);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "error", message: OWNER_WEB_PROBLEM_MESSAGE }));
+        ws.close(4500, "Owner turns failing");
+      }
+      return;
+    }
     try {
       if (ws.readyState === WebSocket.OPEN) {
         const fallback = getErrorMsg(session?.language, "troubleRepeat");
@@ -5120,6 +7898,8 @@ initAudioFrontend().then(({ enabled, reason }) => {
 server.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`Voice server listening on port ${PORT}`);
   console.log(`Voice pipeline: ${VOICE_PIPELINE}${VOICE_PIPELINE === "gemini-live" ? ` (Gemini Live: ${GEMINI_MODEL})` : ` (LLM: ${LLM_PROVIDER}/${FULL_MODEL})`}`);
+  const anthropicGatewayLine = describeAnthropicGateway(); // SCRUM-594: ANTHROPIC_GATEWAY=openrouter, while the Anthropic balance is empty
+  if (anthropicGatewayLine) console.log(anthropicGatewayLine);
   console.log(`TwiML endpoint: ${PUBLIC_URL}/twiml`);
   console.log(`WebSocket endpoint: ${WS_URL}`);
   if (TEST_CALL_SECRET) {

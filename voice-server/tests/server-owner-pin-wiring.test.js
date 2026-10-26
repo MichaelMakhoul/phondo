@@ -105,10 +105,15 @@ describe("SCRUM-587: controller overrides — pins", () => {
     assert.match(src, /require\("\.\/lib\/stream-token"\)/);
   });
 
-  it("session.ownerMode is assigned at exactly one site: the stream start, from tokenData", () => {
+  it("session.ownerMode is assigned at exactly two sites: the phone stream start from tokenData, and the browser owner session (SCRUM-596) from a verified owner token", () => {
     const sites = src.match(/session\.ownerMode\s*=(?!=)/g) || [];
-    assert.equal(sites.length, 1, "owner mode must have one source of truth: the server-side token");
+    assert.equal(sites.length, 2, "owner mode comes only from a server-verified token: the phone's PIN-checked stream token, or the dashboard's owner token");
     assert.match(src, /session\.callerPhone = callerPhone;\s*\n(?:\s*\/\/[^\n]*\n)*\s*session\.ownerMode = tokenData\.ownerMode === true;/);
+    // The browser site sits in the /ws/test handler, at the top of the owner-token branch.
+    const web = src.indexOf("session.ownerMode = true;");
+    const branch = src.lastIndexOf("if (ownerWeb) {", web);
+    assert.ok(branch > src.indexOf('testWss.on("connection", (ws, req) => {') && web - branch < 40, `web site at ${web}, owner branch at ${branch}`);
+    assert.match(src, /const ownerWeb = isOwnerWebToken\(tokenData\);/);
   });
 
   it("the first Gather is attempt 1, not a retry, sized and voiced for the org", () => {

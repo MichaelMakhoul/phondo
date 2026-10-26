@@ -668,11 +668,15 @@ async function loadScheduleSnapshot(organizationId, orgConfig, serviceTypes) {
     console.error("[ScheduleSnapshot] Appointments fetch failed — skipping snapshot:", appointmentsResult.error);
     return null;
   }
-  if (blockedResult.error) {
-    console.error("[ScheduleSnapshot] Blocked times fetch error:", blockedResult.error);
-  }
-  if (practitionersResult.error) {
-    console.error("[ScheduleSnapshot] Practitioners fetch error:", practitionersResult.error);
+  // SCRUM-594 gate review: without the blocks, or the practitioners and their blocks, any listed time
+  // could be one nobody can take, and a snapshot without practitioners reads as exact to the prompt
+  // (prompt-builder.js). Skip it as for appointments: a call set up now gets no snapshot, so its
+  // check_availability asks the internal API.
+  if (blockedResult.error || practitionersResult.error) {
+    console.error("[ScheduleSnapshot] Blocked times or practitioners fetch failed — skipping snapshot", {
+      organizationId, blockedTimesError: blockedResult.error, practitionersError: practitionersResult.error,
+    });
+    return null;
   }
 
   const appointments = appointmentsResult.data || [];

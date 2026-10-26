@@ -52,6 +52,13 @@ describe("server.js /internal/retranscribe wiring (SCRUM-550)", () => {
     );
   });
 
+  it("SCRUM-594 (phone test F10): wires the booked-names lookup into deps (without it every re-transcription fails)", () => {
+    const route = serverSource.slice(serverSource.indexOf('app.post("/internal/retranscribe"'));
+    const deps = route.slice(route.indexOf("deps: {"), route.indexOf("},", route.indexOf("deps: {")));
+    assert.match(deps, /\bbookedNamesForAnalysis\b/);
+    assert.match(serverSource, /const \{ bookedNamesForAnalysis \} = require\("\.\/lib\/booked-names"\)/);
+  });
+
   it("imports the wiring pieces (transcribeRecording, applyReanalysis, handleRetranscribe, buildTwoSidedTranscript)", () => {
     assert.match(serverSource, /openDeepgramStream, transcribeRecording \} = require\("\.\/services\/deepgram-stt"\)/);
     assert.match(serverSource, /applyReanalysis \} = require\("\.\/lib\/call-logger"\)/);

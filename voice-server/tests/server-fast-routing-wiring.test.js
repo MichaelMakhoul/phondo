@@ -1,0 +1,452 @@
+"use strict";
+
+// SCRUM-594: the demo-line pipeline switch in server.js. Source pins for the
+// shape (idiom A), and the real server.js text run against stubs for the
+// behaviour (idiom B, runSlice — the same technique as
+// server-owner-mode-wiring.test.js: server.js can't be required, and a source
+// pin can't catch an inverted condition).
+
+process.env.INTERNAL_API_URL = process.env.INTERNAL_API_URL || "http://localhost:3000";
+process.env.INTERNAL_API_SECRET = process.env.INTERNAL_API_SECRET || "test-secret";
+process.env.SUPABASE_URL = process.env.SUPABASE_URL || "http://localhost";
+process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "test";
+// Hermetic: the switch's value comes from each test's fake env, never the shell
+// (the real resolver's default reads process.env when the slice passes undefined).
+delete process.env.DEMO_LINE_PIPELINE;
+
+const { describe, it } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const util = require("node:util");
+
+const { CallSession } = require("../call-session");
+const { resolveCallPipeline, fastPathKeysPresent } = require("../lib/pipeline-routing");
+const { maskPhone } = require("../lib/mask-phone");
+const { buildOwnerCallSummary, settleOwnerToolRuns } = require("../lib/owner-tool-runner");
+
+const { fastLanguagesEnabled, setLanguageToolDefinition, applyLanguageSwitch } = require("../lib/fast-languages");
+const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+const startHandler = src.slice(src.indexOf('case "start": {'), src.indexOf('case "media": {'));
+const cleanup = src.slice(src.indexOf("async function cleanupSession()"), src.indexOf('twilioWs.on("message"'));
+
+const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+function sliceOf(from, to) {
+  const start = src.indexOf(from);
+  assert.ok(start >= 0, `server.js marker not found: ${JSON.stringify(from)}`);
+  const end = src.indexOf(to, start + from.length);
+  assert.ok(end > start, `server.js end marker not found after ${JSON.stringify(from)}: ${JSON.stringify(to)}`);
+  return src.slice(start, end);
+}
+/** Runs server.js text between two markers as a function body whose parameters are `scope`'s keys. */
+function runSlice({ from, to, scope, names = [], isAsync = false }) {
+  const params = Object.keys(scope);
+  const body = `${sliceOf(from, to)}\nreturn { ${names.join(", ")} };`;
+  const Ctor = isAsync ? AsyncFunction : Function;
+  return new Ctor(...params, body)(...params.map((p) => scope[p]));
+}
+function recordingConsole(lines) {
+  const rec = (m) => (...args) => lines.push(`${m}| ${args.map((a) => (typeof a === "string" ? a : util.inspect(a, { depth: 4 }))).join(" ")}`);
+  return { log: rec("log"), info: rec("info"), warn: rec("warn"), error: rec("error"), debug: rec("debug") };
+}
+
+/** server.js's FAST_VOICE_ADDENDUM (phone test F3/F5) and the fast path's conversation settings (PHASE 2), evaluated from its own text. */
+const { FAST_VOICE_ADDENDUM, FAST_MAX_MESSAGES, applyFastConversationSettings, FAST_LANGUAGE_RULES, FAST_ENGLISH_ONLY_RULES } = runSlice({
+  from: "const FAST_VOICE_ADDENDUM = [",
+  to: "// Gate B: speculative drafts",
+  scope: { fastLanguagesEnabled },
+  names: ["FAST_VOICE_ADDENDUM", "FAST_MAX_MESSAGES", "applyFastConversationSettings", "FAST_LANGUAGE_RULES", "FAST_ENGLISH_ONLY_RULES"],
+});
+/** Every line the REAL resolver writes (it logs through the global console). */
+function captureConsole(t) {
+  const lines = [];
+  for (const m of ["log", "warn", "error"]) t.mock.method(console, m, (...a) => lines.push(`${m}| ${a.join(" ")}`));
+  return lines;
+}
+
+const DEMO = "+61238205672";
+const CUSTOMER_LINE = "+61255550000";
+function makeSession({ owner = false, language = "en", calledNumber = CUSTOMER_LINE } = {}) {
+  const s = new CallSession(owner ? "CA-owner" : "CA-customer");
+  s.ownerMode = owner; // test fixture: server.js sets this only from the server-side stream token
+  if (owner) { s.ownerAuth = "verified"; s.ownerFirstName = "Dave"; }
+  s.language = language;
+  s.organizationId = "org-1";
+  s.assistantId = "asst-1";
+  s.callRecordId = "call-1";
+  s.callerPhone = "+61400000001";
+  s.orgPhoneNumber = calledNumber;
+  s.organization = { timezone: "Australia/Sydney", industry: "dental" };
+  return s;
+}
+
+// ─── Source pins ────────────────────────────────────────────────────────────
+
+describe("SCRUM-594: demo-line switch — source pins", () => {
+  it("imports the resolver and routes non-owner calls through it; owner calls keep resolveOwnerPipeline()", () => {
+    assert.match(src, /const \{ [^}]*\bresolveCallPipeline\b[^}]* \} = require\("\.\/lib\/pipeline-routing"\);/);
+    assert.match(startHandler, /const effectivePipeline = session\.ownerMode\s*\?\s*resolveOwnerPipeline\(\)\s*:\s*resolveCallPipeline\(\{/);
+    // SCRUM-596: plus the browser owner session's own site in /ws/test.
+    assert.equal((src.match(/resolveOwnerPipeline\(/g) || []).length, 2, "owner calls resolve their pipeline once, at this site (and the browser owner session at its own)");
+    assert.equal((src.match(/resolveCallPipeline\(/g) || []).length, 1, "one routing decision per call");
+  });
+
+  it("the session records the selection before either pipeline starts", () => {
+    const sel = startHandler.indexOf("const effectivePipeline =");
+    const stamp = startHandler.indexOf("session.effectivePipeline = effectivePipeline;", sel);
+    const gemini = startHandler.indexOf('if (effectivePipeline === "gemini-live" && process.env.GEMINI_API_KEY) {');
+    assert.ok(sel > 0 && stamp > sel && stamp < gemini, `order: select=${sel} stamp=${stamp} gemini=${gemini}`);
+  });
+
+  it("the classic block flags the fast variant as its first statement, before any STT opens", () => {
+    const marker = "// ── Classic pipeline (Deepgram STT + OpenAI LLM + Deepgram TTS) ──\n";
+    const top = startHandler.indexOf(marker);
+    assert.ok(top > 0);
+    const block = startHandler.slice(top + marker.length);
+    const flag = block.indexOf('session.fastPath = !session.ownerMode && effectivePipeline === "classic-fast";');
+    assert.ok(flag >= 0, "the classic block sets session.fastPath");
+    assert.ok(flag < block.indexOf("openDeepgramStream("), "Task 5 picks the STT from session.fastPath — it must be set first");
+    assert.doesNotMatch(block.slice(0, flag), /;\s*$/m, "nothing runs before the flag");
+  });
+
+  it("cleanup hands the pipeline to completeCallRecord for demo-line customer calls only", () => {
+    // Gate C7: computed once, so a transfer can carry it (and a reconnected leg write the first leg's).
+    assert.match(cleanup, /const pipelineServed = \(!s\.ownerMode && isDemoLineNumber\(s\.orgPhoneNumber\) \? s\.effectivePipeline : null\) \|\| s\.carriedPipeline \|\| null;/);
+    assert.match(cleanup, /pipeline: pipelineServed,\n/);
+    assert.match(cleanup, /pipelineFailover: s\.pipelineFailover \|\| null,\n/);
+  });
+
+  it("the demo-line cap condition is not reused (its text is pinned at exactly two sites)", () => {
+    assert.equal((src.match(/organizationId === DEMO_ORG_ID \|\| isDemoLineNumber\(calledNumber\)/g) || []).length, 2);
+  });
+});
+
+// ─── Pipeline selection, run for real ───────────────────────────────────────
+
+/**
+ * Runs the real selection text. `resolver` defaults to the real resolveCallPipeline;
+ * `env` is the process.env the slice sees.
+ */
+function select({ owner = false, language = "en", calledNumber = CUSTOMER_LINE, voicePipeline = "gemini-live", env = { GEMINI_API_KEY: "k" }, demoLine = (n) => n === DEMO, resolver = resolveCallPipeline, ownerPipeline = "classic", fastModel = "claude-haiku-5-5" } = {}) {
+  const lines = [];
+  const calls = [];
+  const session = makeSession({ owner, language, calledNumber });
+  const { effectivePipeline } = runSlice({
+    from: "// ── Pipeline selection",
+    to: 'if (effectivePipeline === "gemini-live" && process.env.GEMINI_API_KEY) {',
+    scope: {
+      session,
+      calledNumber,
+      resolveOwnerPipeline: () => { calls.push(["resolveOwnerPipeline"]); return ownerPipeline; },
+      resolveCallPipeline: (opts) => { calls.push(["resolveCallPipeline", opts]); return resolver(opts); },
+      fastPathKeysPresent,
+      FAST_LLM_MODEL: fastModel,
+      isDemoLineNumber: demoLine,
+      VOICE_PIPELINE: voicePipeline,
+      process: { env },
+      console: recordingConsole(lines),
+    },
+    names: ["effectivePipeline"],
+  });
+  return { effectivePipeline, session, calls, lines };
+}
+
+describe("SCRUM-594: pipeline selection, run for real", () => {
+  it("a customer call asks the resolver, with the dialled number, the assistant's language, VOICE_PIPELINE, DEMO_LINE_PIPELINE as read NOW, the demo-line predicate and the fast-path keys as read when asked", () => {
+    const demoLine = (n) => n === DEMO;
+    const env = { GEMINI_API_KEY: "k", DEMO_LINE_PIPELINE: "classic-fast", ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "dg" };
+    const r = select({ calledNumber: DEMO, language: "en", voicePipeline: "gemini-live", env, demoLine, resolver: () => "classic-fast" });
+    assert.equal(r.calls.length, 1);
+    const [name, { hasFastPathKeys, ...opts }] = r.calls[0];
+    assert.equal(name, "resolveCallPipeline");
+    assert.deepEqual(opts, { calledNumber: DEMO, ownerMode: false, language: "en", globalPipeline: "gemini-live", demoLinePipeline: "classic-fast", isDemoLine: demoLine });
+    // SCRUM-594 R12c: the keys are read from the environment when the resolver asks.
+    assert.equal(typeof hasFastPathKeys, "function");
+    assert.equal(hasFastPathKeys(), true);
+    delete env.ANTHROPIC_API_KEY;
+    assert.equal(hasFastPathKeys(), false);
+    env.ANTHROPIC_API_KEY = "sk";
+    delete env.DEEPGRAM_API_KEY;
+    assert.equal(hasFastPathKeys(), false);
+    // SCRUM-594: under ANTHROPIC_GATEWAY=openrouter, the OpenRouter key, and a FAST_LLM_MODEL it takes.
+    Object.assign(env, { DEEPGRAM_API_KEY: "dg", ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "or" });
+    assert.equal(hasFastPathKeys(), true);
+    const reverted = select({ calledNumber: DEMO, env: { ...env }, demoLine, resolver: () => "classic-fast", fastModel: "claude-haiku-4-5-20251001" });
+    assert.equal(reverted.calls[0][1].hasFastPathKeys(), false, "the Haiku 4.5 revert lever can't go through OpenRouter");
+    assert.equal(r.effectivePipeline, "classic-fast");
+    assert.equal(r.session.effectivePipeline, "classic-fast", "the session records it (calls.metadata.pipeline, Task 5)");
+    assert.deepEqual(r.lines, []);
+  });
+
+  it("an owner call never reaches the switch: resolveOwnerPipeline() decides, once", () => {
+    const r = select({ owner: true, calledNumber: DEMO, env: { GEMINI_API_KEY: "k", DEMO_LINE_PIPELINE: "classic-fast" }, ownerPipeline: "gemini-live" });
+    assert.deepEqual(r.calls, [["resolveOwnerPipeline"]]);
+    assert.equal(r.effectivePipeline, "gemini-live");
+    assert.equal(r.session.effectivePipeline, "gemini-live");
+  });
+
+  it("with the real resolver: only the demo line moves, and only for an English assistant", (t) => {
+    const consoleLines = captureConsole(t);
+    const env = { GEMINI_API_KEY: "k", DEMO_LINE_PIPELINE: "classic-fast", ANTHROPIC_API_KEY: "sk", DEEPGRAM_API_KEY: "dg" };
+    assert.equal(select({ calledNumber: DEMO, env }).effectivePipeline, "classic-fast");
+    assert.equal(select({ calledNumber: CUSTOMER_LINE, env }).effectivePipeline, "gemini-live", "every other number: VOICE_PIPELINE");
+    assert.equal(select({ calledNumber: CUSTOMER_LINE, env, voicePipeline: "classic" }).effectivePipeline, "classic");
+    assert.equal(select({ calledNumber: DEMO, env, language: "es" }).effectivePipeline, "gemini-live", "Flux is English-only");
+    assert.equal(select({ calledNumber: DEMO, env: { GEMINI_API_KEY: "k" } }).effectivePipeline, "gemini-live", "unset: no change");
+    assert.equal(select({ calledNumber: DEMO, env: { GEMINI_API_KEY: "k", DEMO_LINE_PIPELINE: "classic" } }).effectivePipeline, "classic", "pinned to classic");
+    assert.equal(consoleLines.length, 1, consoleLines.join("\n"));
+    assert.match(consoleLines[0], /\[PipelineRouting\] DEMO_LINE_PIPELINE=classic-fast ignored — the assistant's language is "es"/);
+  });
+
+  it("R12c: classic-fast without ANTHROPIC_API_KEY or DEEPGRAM_API_KEY runs the global pipeline instead (logged once per process)", (t) => {
+    // The line names why from the process's own environment (lib/pipeline-routing.js fastPathProblem): pin it.
+    const pinned = { ANTHROPIC_API_KEY: undefined, ANTHROPIC_GATEWAY: undefined, OPENROUTER_API_KEY: undefined, FAST_LLM_MODEL: undefined };
+    const saved = Object.fromEntries(Object.keys(pinned).map((k) => [k, process.env[k]]));
+    for (const k of Object.keys(pinned)) delete process.env[k];
+    t.after(() => { for (const [k, v] of Object.entries(saved)) if (v !== undefined) process.env[k] = v; });
+    const consoleLines = captureConsole(t);
+    const noClaude = select({ calledNumber: DEMO, env: { GEMINI_API_KEY: "k", DEMO_LINE_PIPELINE: "classic-fast", DEEPGRAM_API_KEY: "dg" } });
+    assert.equal(noClaude.effectivePipeline, "gemini-live");
+    assert.equal(noClaude.session.effectivePipeline, "gemini-live", "what the call record says it ran");
+    const noDeepgram = select({ calledNumber: DEMO, voicePipeline: "classic", env: { DEMO_LINE_PIPELINE: "classic-fast", ANTHROPIC_API_KEY: "sk" } });
+    assert.equal(noDeepgram.effectivePipeline, "classic");
+    assert.deepEqual(noClaude.lines, [], "Gemini has its key: no other line");
+    assert.deepEqual(consoleLines, ["warn| [PipelineRouting] classic-fast can't run (ANTHROPIC_API_KEY not set) — using gemini-live"]);
+  });
+
+  it("the missing-key fallback still follows the EFFECTIVE pipeline (a demo line pinned to gemini-live without a key)", () => {
+    const r = select({ calledNumber: DEMO, voicePipeline: "classic", env: { DEMO_LINE_PIPELINE: "gemini-live" } });
+    assert.equal(r.effectivePipeline, "gemini-live");
+    assert.equal(r.lines.length, 1);
+    assert.match(r.lines[0], /^error\| \[GeminiLive\] pipeline=gemini-live but GEMINI_API_KEY not set — falling back to classic pipeline/);
+  });
+});
+
+// ─── The classic block's first statement, run for real ──────────────────────
+
+function classicTop({ effectivePipeline, sessionPipeline = effectivePipeline, owner = false, prompt = "You are Dave's receptionist." }) {
+  const session = makeSession({ owner, calledNumber: DEMO });
+  session.effectivePipeline = sessionPipeline;
+  session.setSystemPrompt(prompt); // the start handler has built it by now (context, caller history, live schedule)
+  let fastPathAtSttOpen = "not opened";
+  /** Which STT the block opened: "nova" (openDeepgramStream) or "flux" (Task 5's startFastPath). */
+  let stt = null;
+  runSlice({
+    from: "// ── Classic pipeline (Deepgram STT + OpenAI LLM + Deepgram TTS) ──",
+    to: "// Recording disclosure + greeting — pre-synthesize disclosure while STT connects",
+    scope: {
+      session,
+      effectivePipeline,
+      openDeepgramStream: () => { fastPathAtSttOpen = session.fastPath; stt = "nova"; return { readyState: 1 }; },
+      startFastPath: () => { fastPathAtSttOpen = session.fastPath; stt = "flux"; },
+      DEEPGRAM_API_KEY: "dg",
+      applyFastConversationSettings,
+      logTranscript: () => {},
+      handleUserSpeech: async () => {},
+      twilioWs: { readyState: 1, send: () => {}, close: () => {} },
+      sendTTS: async () => 0,
+      getErrorMsg: () => "",
+      noteOwnerSpeech: () => {},
+      console: recordingConsole([]),
+    },
+  });
+  return { session, fastPathAtSttOpen, stt };
+}
+
+describe("SCRUM-594: the classic block flags the fast variant, run for real", () => {
+  it("classic-fast sets session.fastPath before the STT opens; nothing else does", () => {
+    const fast = classicTop({ effectivePipeline: "classic-fast" });
+    assert.equal(fast.session.fastPath, true);
+    assert.equal(fast.fastPathAtSttOpen, true);
+    assert.equal(fast.stt, "flux", "the fast path starts Flux (Task 5), not Nova");
+    assert.equal(fast.session.effectivePipeline, "classic-fast");
+    for (const p of ["classic", "gemini-live"]) {
+      const r = classicTop({ effectivePipeline: p });
+      assert.equal(r.session.fastPath, false, p);
+      assert.equal(r.fastPathAtSttOpen, false, p);
+      assert.equal(r.stt, "nova", p);
+    }
+  });
+
+  it("an owner call is never the fast variant, even when its pipeline resolves to classic-fast (a raw VOICE_PIPELINE=classic-fast)", () => {
+    const r = classicTop({ effectivePipeline: "classic-fast", owner: true });
+    assert.equal(r.session.fastPath, false);
+    assert.equal(r.fastPathAtSttOpen, false);
+    assert.equal(r.stt, "nova");
+    assert.equal(r.session.effectivePipeline, "classic", "recorded as the classic call it is");
+  });
+
+  it("a Gemini selection that fell back to classic (no GEMINI_API_KEY) is recorded as the classic call it is", () => {
+    assert.equal(classicTop({ effectivePipeline: "gemini-live" }).session.effectivePipeline, "classic");
+    assert.equal(classicTop({ effectivePipeline: "classic" }).session.effectivePipeline, "classic");
+  });
+
+  it("phone test F5: the fast path's language rules name every language it speaks, and the kill switch leaves English only", () => {
+    const { FAST_LANGUAGES } = require("../lib/fast-languages");
+    for (const { name } of Object.values(FAST_LANGUAGES)) assert.ok(FAST_LANGUAGE_RULES.includes(name), name);
+    assert.match(FAST_LANGUAGE_RULES, /replaces the LANGUAGE rule above/);
+    assert.match(FAST_LANGUAGE_RULES, /Arabic/);
+    // Phone test F9: no set_language. Each sentence is said in its own language's voice and the line
+    // follows the replies, so the model only has to answer in the caller's language.
+    assert.doesNotMatch(FAST_LANGUAGE_RULES, /set_language/);
+    assert.match(FAST_LANGUAGE_RULES, /Answer in the language the caller speaks, or the one they ask for, and keep to it until they change language\. Nothing needs switching/);
+    assert.doesNotMatch(FAST_LANGUAGE_RULES, /for the rest of the call/);
+    // F5 simulated calls: the demo's English script line read out on a Spanish call; F9: English tool results.
+    assert.match(FAST_LANGUAGE_RULES, /including any line this prompt gives you to say and what the tools tell you \(translate them\)/);
+    assert.match(FAST_LANGUAGE_RULES, /keep names, numbers, dates, times and confirmation codes exactly as they are/);
+    // F9 simulated calls: "Let me book that for you." in English on Spanish, French and Japanese calls.
+    assert.match(FAST_LANGUAGE_RULES, /Never mix two languages in one reply\./);
+    // F9 replay simulations: "Let me check tomorrow's times" in English mid-Spanish (2 of 15 calls), mid-Japanese (1).
+    // Final language simulations: "Let me book that for you." and "K-H-O-U-R-Y, is that right?" in English mid-Japanese.
+    assert.match(FAST_LANGUAGE_RULES, /the short line before you check or book something and the spelling read-back: in Spanish "Un momento, lo compruebo\." or "Se lo reservo ahora\.", in Japanese "確認いたします。"; never say "Let me book that for you\." or "Is that right\?" to them in English\./);
+    // F9 simulated calls: asked "Do you speak Spanish?", the AI answered in Spanish (5 of 6 calls before this line, none after).
+    assert.match(FAST_LANGUAGE_RULES, /If the caller only asks, in English, whether you speak one of them, answer in English/);
+    const prev = process.env.FAST_LANGUAGES;
+    process.env.FAST_LANGUAGES = "off";
+    try {
+      const s = { messages: [{ role: "system", content: "BASE" }], deepgramVoice: "aura-2-theia-en", setSystemPrompt(p) { this.messages[0] = { role: "system", content: p }; } };
+      applyFastConversationSettings(s);
+      assert.equal(s.fastLanguages, false);
+      assert.equal(s.messages[0].content, `BASE\n${FAST_VOICE_ADDENDUM}\n${FAST_ENGLISH_ONLY_RULES}`);
+      assert.match(FAST_ENGLISH_ONLY_RULES, /English only/);
+    } finally {
+      if (prev === undefined) delete process.env.FAST_LANGUAGES;
+      else process.env.FAST_LANGUAGES = prev;
+    }
+  });
+
+  it("phone test F5 (gate review): the addendum tells the model to offer today first and never invent a reason a day is unavailable", () => {
+    assert.match(FAST_VOICE_ADDENDUM, /TIMES:\n- Offer the earliest free time in the LIVE SCHEDULE: today first, if it still has times\. Never give a reason a day is unavailable that the schedule doesn't show\./);
+  });
+
+  it("phone test F6: the addendum overrides the shared POST-CONFIRMATION CLOSE (goodbye + end_call on the read-back's yes, which this line holds)", () => {
+    assert.match(FAST_VOICE_ADDENDUM, /\n- POST-CONFIRMATION CLOSE ON THIS LINE \(this replaces the one above, and any line above that says goodbye once they confirm\): a yes to your booking read-back, even "yes, thanks" or "perfect, thanks", means the details are right, not that the caller is done\. Say no goodbye and don't call end_call: ask if there's anything else, then wait for their answer\. If they also said goodbye or that's all, say a short goodbye and call end_call\.\n/);
+    // The rule it replaces must still exist by that name, or the override points at nothing.
+    assert.match(require("../lib/prompt-builder").buildSystemPrompt({ language: "en", systemPrompt: "", promptConfig: null, settings: {} }, { name: "X", timezone: "Australia/Sydney", country: "AU", businessHours: {} }, "", { calendarEnabled: true, transferRules: [], isAfterHours: false, afterHoursConfig: null, serviceTypes: [] }), /POST-CONFIRMATION CLOSE/);
+  });
+
+  it("phone test F6: the addendum tells the model to say each time once (\"Today's openings start at 11 … Would today at 11 …?\")", () => {
+    // Phone test F9 (1:53 AM): "Want 2 PM, or would you rather have 9 AM tomorrow?" after "Today's first openings are 9:30 AM".
+    // The example was "Today at 11, or tomorrow at 9:30?": the model paired a later time today with the next day, called that
+    // day "tomorrow" in the small hours, and still said the times in a sentence before the question. Now it shows the shape
+    // the model reaches for anyway (the earliest, said once, then the question), and no "tomorrow".
+    assert.match(FAST_VOICE_ADDENDUM, /\n- Say each time once: name the two earliest in one sentence, then ask which \("The earliest is today at 11, or 11:30\. Which suits you\?"\), not in a sentence first and then again in the question\.$/);
+    assert.doesNotMatch(FAST_VOICE_ADDENDUM, /tomorrow/i);
+  });
+
+  it("phone test F5: the fast path starts in English with the assistant's voice to come back to", () => {
+    const s = { messages: [{ role: "system", content: "BASE" }], deepgramVoice: "aura-2-theia-en", setSystemPrompt(p) { this.messages[0] = { role: "system", content: p }; } };
+    applyFastConversationSettings(s);
+    assert.equal(s.fastLanguages, true);
+    assert.equal(s.fastLanguage, "en");
+    assert.equal(s.baseDeepgramVoice, "aura-2-theia-en");
+  });
+
+  it("phone test F3/F5: a classic-fast call's system prompt ends with the voice-style addendum; no other call's changes", () => {
+    const fast = classicTop({ effectivePipeline: "classic-fast", prompt: "BASE PROMPT" });
+    assert.deepEqual(fast.session.messages, [{ role: "system", content: `BASE PROMPT\n${FAST_VOICE_ADDENDUM}\n${FAST_LANGUAGE_RULES}` }], "amended in place, once");
+    // PHASE 2: the whole call in context (B1) and the booking guards (B2–B4), on the fast path only.
+    assert.equal(fast.session.maxMessages, FAST_MAX_MESSAGES);
+    assert.ok(FAST_MAX_MESSAGES > 100, "a 10-minute call fits");
+    assert.equal(fast.session.bookingGuards, true);
+    for (const r of [
+      classicTop({ effectivePipeline: "classic", prompt: "BASE PROMPT" }),
+      classicTop({ effectivePipeline: "gemini-live", prompt: "BASE PROMPT" }),
+      classicTop({ effectivePipeline: "classic-fast", owner: true, prompt: "BASE PROMPT" }),
+    ]) {
+      assert.deepEqual(r.session.messages, [{ role: "system", content: "BASE PROMPT" }], r.session.effectivePipeline);
+      assert.notEqual(r.session.bookingGuards, true, `${r.session.effectivePipeline}: no booking guards`);
+      assert.notEqual(r.session.maxMessages, FAST_MAX_MESSAGES, `${r.session.effectivePipeline}: the classic window`);
+    }
+  });
+
+  it("phone test F3/F5: the addendum's words, appended after the start handler has built the prompt (live schedule included)", () => {
+    for (const line of [
+      "Speak in short turns: at most two short sentences (about 25 words), then stop and let the caller answer.",
+      "Ask one question at a time.",
+      "Never repeat an offer or question you already made in your last reply; if the caller didn't answer it, rephrase briefly or move on.",
+      "If you booked an appointment earlier in this call, use the exact name and time you booked when calling reschedule_appointment or cancel_appointment (pass the full name on the booking as name); do not ask the caller to repeat them.",
+      "Don't ask for anything the caller already told you, and don't offer what they already asked for.",
+      "Ask \"anything else?\" once, when their request is done, not after every answer.",
+      "Say goodbye and end the call only after the caller says goodbye or that they're done.",
+      // PHASE 2 (B2/B3)
+      "Before you book, spell the caller's last name back to them letter by letter (for example \"That's S-M-I-T-H?\") and wait for a yes. Speech recognition often mishears surnames.",
+      "If the caller wants a different time for an appointment you booked on this call, move it with reschedule_appointment; book a second one only if they want two.",
+      "When they ask to move it to a day (\"how about Tuesday?\"), offer the times free that day and let them pick one before you move it.",
+    ]) {
+      assert.ok(FAST_VOICE_ADDENDUM.includes(`- ${line}\n`) || FAST_VOICE_ADDENDUM.endsWith(`- ${line}`), line);
+    }
+    const start = src.slice(src.indexOf('case "start": {'), src.indexOf('case "media": {'));
+    const amended = start.indexOf("if (session.fastPath) applyFastConversationSettings(session);");
+    assert.ok(amended > 0, "the classic block amends the prompt");
+    assert.ok(amended > start.indexOf('session.setSystemPrompt(currentPrompt + "\\n" + liveSection);'), "after the live schedule");
+    assert.ok(amended > start.indexOf("session.setSystemPrompt(systemPrompt + callerContext);"), "after the prompt and caller history");
+    assert.ok(amended < start.indexOf("startFastPath("), "before Flux opens: no turn is answered without it");
+  });
+});
+
+// ─── calls.metadata.pipeline via cleanupSession, run for real ───────────────
+
+async function runCleanup(session, { demoLine = (n) => n === DEMO } = {}) {
+  const calls = [];
+  const lines = [];
+  const scope = {
+    session,
+    cleaningUp: false,
+    sessions: new Map(),
+    Sentry: { withScope: (fn) => fn({ setTag() {}, setExtras() {}, setExtra() {}, setLevel() {} }), captureMessage() {}, captureException() {} },
+    detectPostCallPhantoms: () => [],
+    summarizePhantoms: () => ({ bugTag: "x", reason: "x" }),
+    analyzeCallTranscript: async () => null,
+    buildToolOutcomeDigest: () => "",
+    getSupabase: () => ({}), // SCRUM-594 (F10): the booked-names lookup
+    bookedNamesForAnalysis: async () => [],
+    DEBUG_TRANSCRIPTS: false,
+    maybeEmitUnhappyCall: () => {},
+    netLiveOutcome: () => 0,
+    setReasonTag: () => {},
+    SENTRY_REASONS: { BOOKING_STATE_MISMATCH: "booking-state-mismatch" },
+    detectAndRedact: (t) => ({ piiFound: false, redacted: t }),
+    redactObject: (x) => ({ piiFound: false, redacted: x }),
+    completeCallRecord: async (id, fields) => { calls.push(["completeCallRecord", id, fields]); },
+    setTimeout: (fn) => fn(),
+    notifyCallCompleted: async () => {},
+    INTERNAL_API_URL: "http://next.internal",
+    INTERNAL_API_SECRET: "secret",
+    maskPhone,
+    buildOwnerCallSummary,
+    settleOwnerToolRuns,
+    isDemoLineNumber: demoLine,
+    closeFastPath: () => {}, // these sessions never started the fast path (no fastState)
+    summarizeFastCall: () => null, // ... nor have its latency record (no fastStats)
+    getTransfer: () => null,
+    console: recordingConsole(lines),
+  };
+  const { cleanupSession } = runSlice({ from: "async function cleanupSession() {", to: 'twilioWs.on("message", async (raw) => {', scope, names: ["cleanupSession"] });
+  await cleanupSession();
+  const record = calls.find((c) => c[0] === "completeCallRecord");
+  assert.ok(record, lines.join("\n"));
+  return record[2];
+}
+function endedCall(s, pipeline) {
+  s.effectivePipeline = pipeline;
+  s.startedAt = Date.now() - 60_000;
+  s.addMessage("user", "I'd like to book a check-up.");
+  s.addMessage("assistant", "Sure — what day suits you?");
+  return s;
+}
+
+describe("SCRUM-594: calls.metadata.pipeline, run for real", () => {
+  it("a demo-line customer call records the pipeline that served it", async () => {
+    for (const p of ["classic-fast", "classic", "gemini-live"]) {
+      const fields = await runCleanup(endedCall(makeSession({ calledNumber: DEMO }), p));
+      assert.equal(fields.pipeline, p);
+    }
+  });
+
+  it("every other call passes null — so it writes no new metadata", async () => {
+    assert.equal((await runCleanup(endedCall(makeSession({ calledNumber: CUSTOMER_LINE }), "gemini-live"))).pipeline, null);
+    assert.equal((await runCleanup(endedCall(makeSession({ owner: true, calledNumber: DEMO }), "classic"))).pipeline, null, "an owner call is not part of the comparison");
+    assert.equal((await runCleanup(endedCall(makeSession({ calledNumber: DEMO }), null))).pipeline, null, "a call that never reached selection");
+  });
+});

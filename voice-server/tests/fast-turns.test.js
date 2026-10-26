@@ -1,0 +1,1999 @@
+"use strict";
+
+/**
+ * SCRUM-594 (Task 3): lib/fast-turns.js, the Flux turn engine (spec 4.6).
+ *
+ * The engine is a pure state machine: Flux TurnInfo events go in, calls on six
+ * injected actions come out. Nothing here needs a mock of anything real: a
+ * recorder stands in for the session, `live` is the session state the test owns
+ * (flip it between events to let time pass), and every expectation is a
+ * hand-written list of calls, in order, with their arguments.
+ *
+ * Layout
+ *   1. the rules of spec 4.6 as a table
+ *   2. what the table cannot express: one handling per turn, barge-in timing,
+ *      speculation off, throwing actions, reset(), wiring contracts
+ *   3. the speakerphone echo filter: the engine's use of it, then isLikelyEcho and
+ *      speechTokens (the matching) on their own
+ *   4. INTERRUPT_RE and wordCount, and their parity with the classic echo rule
+ *      (and, in section 11, the fast path's own interrupt words)
+ *   5. recorded Flux streams (flux-aura-api.md A.11) replayed end to end
+ *   6. purity: no clock, timers, console or imports
+ */
+
+const { describe, it } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const { createFastTurnEngine, INTERRUPT_RE, FAST_INTERRUPT_RE, wordCount, isLikelyEcho, speechTokens, isBackchannel, endsWithQuestion, BACKCHANNEL_PHRASES } = require("../lib/fast-turns");
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** A TurnInfo exactly as services/flux-stt.js delivers it to onTurnInfo. */
+const ev = (event, turnIndex, transcript, trigger = "model") => ({
+  event,
+  turnIndex,
+  transcript,
+  eotConfidence: 0.5,
+  trigger: event === "EndOfTurn" ? trigger : null,
+});
+
+/** A step that lets time pass: change what the session reports before the next event. */
+const set = (patch) => ({ set: patch });
+
+const IDLE = { aiSpeaking: false, processing: false, expectedInputType: "general" };
+const SPEAKING = { aiSpeaking: true };
+const PROCESSING = { processing: true };
+const BUSY = { aiSpeaking: true, processing: true };
+
+const ACTION_NAMES = ["speculate", "cancelSpeculation", "commit", "bargeIn", "dropEcho", "bufferStructured"];
+
+/**
+ * An engine wired to a recorder. `calls` is every action call in order, as
+ * [name, ...args]. `overrides` replace single actions (a thrower, an absent one).
+ */
+function harness({ state = {}, speculationEnabled, actions: overrides = {} } = {}) {
+  const calls = [];
+  const live = { ...IDLE, ...state };
+  const actions = {};
+  for (const name of ACTION_NAMES) {
+    actions[name] = (...args) => {
+      calls.push([name, ...args]);
+    };
+  }
+  Object.assign(actions, overrides);
+  const options = { getState: () => ({ ...live }), actions };
+  if (speculationEnabled !== undefined) options.speculationEnabled = speculationEnabled;
+  const engine = createFastTurnEngine(options);
+  /** Events go to the engine; { set } steps change the live session state. */
+  const feed = (...steps) => {
+    for (const step of steps) {
+      if ("set" in step) Object.assign(live, step.set);
+      else engine.onTurnInfo(step);
+    }
+    return calls;
+  };
+  return { engine, calls, live, feed };
+}
+
+// One input type per structured kind CallSession can expect, with something a caller would say.
+const STRUCTURED = [
+  ["phone", "zero four one two"],
+  ["email", "michael at gmail dot com"],
+  ["name", "M I C H A E L"],
+  ["address", "twelve smith street"],
+  ["date_time", "next tuesday at ten"],
+];
+
+// One phrase per alternative of the classic regex. Each is two words or fewer, so
+// the interrupt rule (and not the word count) is what lets it through.
+const INTERRUPTS = ["stop", "Wait.", "Hold on.", "No.", "Cancel", "Nevermind.", "Never mind.", "Excuse me?", "Hello?", "Hey!"];
+
+// Short things callers say that are NOT interruptions: near misses of the words
+// ("Nope" is not "no"), and an interrupt word that is not first.
+const NOT_INTERRUPTS = ["Nope.", "Nothing.", "Stopped.", "Waiting.", "Cancellation", "Heyyy", "Holding on", "Not now", "Okay, wait", "um stop"];
+
+// ---------------------------------------------------------------------------
+// 1. Spec 4.6, rule by rule
+// ---------------------------------------------------------------------------
+
+const RULES = [
+  // ---- Rule 1: ignore empty transcripts ----
+  { rule: 1, name: "an empty EndOfTurn commits nothing", steps: [ev("EndOfTurn", 0, "")], want: [] },
+  { rule: 1, name: "a whitespace-only EndOfTurn commits nothing", steps: [ev("EndOfTurn", 0, " \n\t ")], want: [] },
+  { rule: 1, name: "an empty EagerEndOfTurn starts no draft", steps: [ev("EagerEndOfTurn", 0, "")], want: [] },
+  {
+    rule: 1,
+    name: "an ignored empty EndOfTurn does not use the turn up: the real one still commits",
+    steps: [ev("EndOfTurn", 2, ""), ev("EndOfTurn", 2, "yes please")],
+    want: [["commit", "yes please", 2, "model"]],
+  },
+  {
+    rule: 1,
+    name: "an empty StartOfTurn or Update never barges in",
+    state: SPEAKING,
+    steps: [ev("StartOfTurn", 1, ""), ev("Update", 1, "   ")],
+    want: [],
+  },
+  {
+    rule: 1,
+    name: "an empty TurnResumed still cancels: it is not transcript-driven, and a dead draft must not linger",
+    steps: [ev("EagerEndOfTurn", 0, "book me in"), ev("TurnResumed", 0, "")],
+    want: [["speculate", "book me in", 0], ["cancelSpeculation", "resumed"]],
+  },
+
+  // ---- Rule 2: a new turn cancels any draft from another turn ----
+  {
+    rule: 2,
+    name: "StartOfTurn for a new turnIndex cancels the old draft",
+    steps: [ev("EagerEndOfTurn", 1, "book me in"), ev("StartOfTurn", 2, "hi")],
+    want: [["speculate", "book me in", 1], ["cancelSpeculation", "new-turn"]],
+  },
+  {
+    rule: 2,
+    name: "events of the draft's own turn leave it alone",
+    steps: [ev("EagerEndOfTurn", 1, "book me in"), ev("Update", 1, "book me in"), ev("Update", 1, "book me in")],
+    want: [["speculate", "book me in", 1]],
+  },
+  {
+    rule: 2,
+    name: "EndOfTurn for a different turnIndex cancels the old draft, then commits",
+    steps: [ev("EagerEndOfTurn", 1, "book me in"), ev("EndOfTurn", 2, "yes")],
+    want: [["speculate", "book me in", 1], ["cancelSpeculation", "new-turn"], ["commit", "yes", 2, "model"]],
+  },
+  {
+    rule: 2,
+    name: "EagerEndOfTurn for a new turn cancels the old draft BEFORE starting the new one (a late cancel would kill the new draft)",
+    steps: [ev("EagerEndOfTurn", 1, "book me in"), ev("EagerEndOfTurn", 2, "yes please")],
+    want: [["speculate", "book me in", 1], ["cancelSpeculation", "new-turn"], ["speculate", "yes please", 2]],
+  },
+  {
+    rule: 2,
+    name: "the first Update of a new turn cancels the old draft too (the StartOfTurn was missed)",
+    steps: [ev("EagerEndOfTurn", 1, "book me in"), ev("Update", 2, "yes")],
+    want: [["speculate", "book me in", 1], ["cancelSpeculation", "new-turn"]],
+  },
+  {
+    rule: 2,
+    name: "a cancelled draft is forgotten: later turns do not cancel it again",
+    steps: [ev("EagerEndOfTurn", 1, "book me in"), ev("StartOfTurn", 2, "hi"), ev("StartOfTurn", 3, "hello")],
+    want: [["speculate", "book me in", 1], ["cancelSpeculation", "new-turn"]],
+  },
+  {
+    rule: 2,
+    name: "no draft, nothing to cancel: a new turn alone makes no call",
+    steps: [ev("StartOfTurn", 1, "hi"), ev("StartOfTurn", 2, "hello")],
+    want: [],
+  },
+
+  // ---- Rule 3: barge-in, once per turn ----
+  {
+    rule: 3,
+    name: "while the AI speaks, the first Update to reach 3 words barges in, once",
+    state: SPEAKING,
+    steps: [
+      ev("StartOfTurn", 0, "Yeah."),
+      ev("Update", 0, "Yeah. Morning"),
+      ev("Update", 0, "Yeah. Morning is good"),
+      ev("Update", 0, "Yeah. Morning is good."),
+      ev("Update", 0, "Yeah. Morning is good. Maybe"),
+    ],
+    want: [["bargeIn"]],
+  },
+  {
+    rule: 3,
+    name: "2 words are not enough to interrupt",
+    state: SPEAKING,
+    steps: [ev("StartOfTurn", 0, "Yeah."), ev("Update", 0, "Yeah. Morning")],
+    want: [],
+  },
+  { rule: 3, name: "3 words are enough (boundary)", state: SPEAKING, steps: [ev("Update", 0, "one two three")], want: [["bargeIn"]] },
+  {
+    rule: 3,
+    name: "StartOfTurn can barge in when its first decode already has 3 words",
+    state: SPEAKING,
+    steps: [ev("StartOfTurn", 0, "I need to")],
+    want: [["bargeIn"]],
+  },
+  {
+    rule: 3,
+    name: "while the AI is still processing (not yet speaking), barging in aborts the turn in flight",
+    state: PROCESSING,
+    steps: [ev("Update", 0, "actually can you")],
+    want: [["bargeIn"]],
+  },
+  {
+    rule: 3,
+    name: "an idle line: a long Update is just the caller talking",
+    steps: [ev("StartOfTurn", 0, "I would like to book"), ev("Update", 0, "I would like to book a table for four")],
+    want: [],
+  },
+  {
+    rule: 3,
+    name: "each turn barges in once: the next turn barges in again",
+    state: SPEAKING,
+    steps: [
+      ev("Update", 0, "I need to"),
+      ev("Update", 0, "I need to change"),
+      ev("EndOfTurn", 0, "I need to change it."),
+      ev("Update", 1, "and also my"),
+      ev("Update", 1, "and also my number"),
+    ],
+    want: [["bargeIn"], ["commit", "I need to change it.", 0, "model"], ["bargeIn"]],
+  },
+  {
+    rule: 3,
+    name: "once per turnIndex, not once per quiet spell: speaking, idle, speaking again inside one turn is still one barge-in",
+    steps: [set(SPEAKING), ev("StartOfTurn", 4, "stop"), set({ aiSpeaking: false }), set(SPEAKING), ev("Update", 4, "stop it right now")],
+    want: [["bargeIn"]],
+  },
+  {
+    rule: 3,
+    name: "EagerEndOfTurn never barges in: it makes no call while speaking",
+    state: SPEAKING,
+    steps: [ev("EagerEndOfTurn", 0, "I need to change that")],
+    want: [],
+  },
+  {
+    rule: 3,
+    name: "TurnResumed never barges in: it only cancels",
+    state: SPEAKING,
+    steps: [ev("TurnResumed", 0, "I need to change that now")],
+    want: [["cancelSpeculation", "resumed"]],
+  },
+  {
+    rule: 3,
+    name: "a substantial EndOfTurn that never barged in does so, once, before it commits",
+    state: SPEAKING,
+    steps: [ev("EndOfTurn", 0, "I need to change that.")],
+    want: [["bargeIn"], ["commit", "I need to change that.", 0, "model"]],
+  },
+  {
+    rule: 3,
+    name: "an interrupt word is recognised after trimming (at its EndOfTurn)",
+    state: SPEAKING,
+    steps: [ev("StartOfTurn", 0, "  stop "), ev("EndOfTurn", 0, "  stop ")],
+    want: [["bargeIn"], ["commit", "stop", 0, "model"]],
+  },
+  ...INTERRUPTS.map((said) => ({
+    rule: 3,
+    name: `interrupt phrase ${JSON.stringify(said)} does not barge in at StartOfTurn: under 3 words it is judged at its EndOfTurn (R12a′)`,
+    state: SPEAKING,
+    steps: [ev("StartOfTurn", 0, said), ev("Update", 0, said)],
+    want: [],
+  })),
+  ...NOT_INTERRUPTS.map((said) => ({
+    rule: 3,
+    name: `${JSON.stringify(said)} is not an interruption`,
+    state: SPEAKING,
+    steps: [ev("StartOfTurn", 0, said), ev("Update", 0, said)],
+    want: [],
+  })),
+
+  // ---- Rule 4: EagerEndOfTurn starts a draft ----
+  { rule: 4, name: "an idle line with general input: EagerEndOfTurn starts a draft", steps: [ev("EagerEndOfTurn", 7, "book me in")], want: [["speculate", "book me in", 7]] },
+  { rule: 4, name: "no draft while the AI is speaking", state: SPEAKING, steps: [ev("EagerEndOfTurn", 7, "book me in")], want: [] },
+  { rule: 4, name: "no draft while the AI is still processing the previous turn", state: PROCESSING, steps: [ev("EagerEndOfTurn", 7, "book me in")], want: [] },
+  { rule: 4, name: "no draft while the AI is both speaking and processing", state: BUSY, steps: [ev("EagerEndOfTurn", 7, "book me in")], want: [] },
+  ...STRUCTURED.map(([type, said]) => ({
+    rule: 4,
+    name: `no draft while the AI expects "${type}" input`,
+    state: { expectedInputType: type },
+    steps: [ev("EagerEndOfTurn", 7, said)],
+    want: [],
+  })),
+  {
+    rule: 4,
+    name: "a missing expectedInputType means general, as in CallSession",
+    state: { expectedInputType: undefined },
+    steps: [ev("EagerEndOfTurn", 7, "book me in")],
+    want: [["speculate", "book me in", 7]],
+  },
+  {
+    rule: 4,
+    name: "speculation off: EagerEndOfTurn makes no call at all",
+    speculationEnabled: false,
+    steps: [ev("EagerEndOfTurn", 7, "book me in")],
+    want: [],
+  },
+  {
+    rule: 4,
+    name: "the session state is read when the event arrives, not captured at construction",
+    steps: [ev("EagerEndOfTurn", 0, "book me in"), set(SPEAKING), ev("EagerEndOfTurn", 1, "yes please")],
+    want: [["speculate", "book me in", 0], ["cancelSpeculation", "new-turn"]],
+  },
+
+  // ---- Rule 5: TurnResumed cancels ----
+  {
+    rule: 5,
+    name: "TurnResumed cancels the draft",
+    steps: [ev("EagerEndOfTurn", 0, "book me in"), ev("TurnResumed", 0, "book me in on")],
+    want: [["speculate", "book me in", 0], ["cancelSpeculation", "resumed"]],
+  },
+  {
+    rule: 5,
+    name: "TurnResumed asks for the cancel even with no draft of ours (the session treats it as a no-op)",
+    steps: [ev("TurnResumed", 0, "book me in on")],
+    want: [["cancelSpeculation", "resumed"]],
+  },
+  {
+    rule: 5,
+    name: "a draft cancelled by TurnResumed is forgotten: the next turn does not cancel it again",
+    steps: [ev("EagerEndOfTurn", 0, "book me in"), ev("TurnResumed", 0, "book me in on"), ev("StartOfTurn", 1, "hi")],
+    want: [["speculate", "book me in", 0], ["cancelSpeculation", "resumed"]],
+  },
+  {
+    rule: 5,
+    name: "after TurnResumed, the next EagerEndOfTurn of the same turn drafts again",
+    steps: [ev("EagerEndOfTurn", 0, "book me in"), ev("TurnResumed", 0, "book me in on"), ev("EagerEndOfTurn", 0, "book me in on friday")],
+    want: [["speculate", "book me in", 0], ["cancelSpeculation", "resumed"], ["speculate", "book me in on friday", 0]],
+  },
+  { rule: 5, name: "speculation off: TurnResumed makes no call", speculationEnabled: false, steps: [ev("TurnResumed", 0, "book me in on")], want: [] },
+
+  // ---- Rule 6: EndOfTurn: echo drop, structured buffering, commit ----
+  {
+    rule: 6,
+    name: "speaking + a one-word backchannel: dropped (R12a′), and the draft cancelled",
+    state: SPEAKING,
+    steps: [ev("EndOfTurn", 3, "Okay.")],
+    want: [["dropEcho", "Okay.", "backchannel"], ["cancelSpeculation", "backchannel"]],
+  },
+  {
+    rule: 6,
+    name: "speaking + a two-word backchannel: dropped (boundary)",
+    state: SPEAKING,
+    steps: [ev("EndOfTurn", 3, "Thank you.")],
+    want: [["dropEcho", "Thank you.", "backchannel"], ["cancelSpeculation", "backchannel"]],
+  },
+  {
+    rule: 6,
+    name: "speaking + 3 words: not echo, so it barges in and then commits (boundary)",
+    state: SPEAKING,
+    steps: [ev("EndOfTurn", 3, "Thank you so")],
+    want: [["bargeIn"], ["commit", "Thank you so", 3, "model"]],
+  },
+  {
+    rule: 6,
+    name: "speaking and processing + a backchannel: dropped",
+    state: BUSY,
+    steps: [ev("EndOfTurn", 3, "Yes.")],
+    want: [["dropEcho", "Yes.", "backchannel"], ["cancelSpeculation", "backchannel"]],
+  },
+  {
+    rule: 6,
+    name: "the echo rule is for a speaking AI only: an idle line commits 1 word",
+    steps: [ev("EndOfTurn", 3, "Okay.")],
+    want: [["commit", "Okay.", 3, "model"]],
+  },
+  {
+    rule: 6,
+    name: "processing: a backchannel is dropped too (R12a′)",
+    state: PROCESSING,
+    steps: [ev("EndOfTurn", 3, "Yes.")],
+    want: [["dropEcho", "Yes.", "backchannel"], ["cancelSpeculation", "backchannel"]],
+  },
+  {
+    rule: 6,
+    name: "processing: a short content answer to a busy AI still commits (CallSession queues it)",
+    state: PROCESSING,
+    steps: [ev("EndOfTurn", 3, "Tuesday.")],
+    want: [["commit", "Tuesday.", 3, "model"]],
+  },
+  {
+    rule: 6,
+    name: "a processing-only 3+ word final barges in once (aborting the turn in flight), then commits",
+    state: PROCESSING,
+    steps: [ev("EndOfTurn", 3, "yes that works for me")],
+    want: [["bargeIn"], ["commit", "yes that works for me", 3, "model"]],
+  },
+  {
+    rule: 6,
+    name: "no second barge-in in the same turn: an Update already barged in, so the final only commits",
+    state: SPEAKING,
+    steps: [ev("Update", 3, "I need to change"), ev("EndOfTurn", 3, "I need to change it.")],
+    want: [["bargeIn"], ["commit", "I need to change it.", 3, "model"]],
+  },
+  {
+    rule: 6,
+    name: "no second barge-in in the same turn, processing-only",
+    state: PROCESSING,
+    steps: [ev("Update", 3, "actually can you"), ev("EndOfTurn", 3, "actually can you book me in")],
+    want: [["bargeIn"], ["commit", "actually can you book me in", 3, "model"]],
+  },
+  {
+    rule: 6,
+    name: "the barge-in at EndOfTurn reuses rule 3's test, it is not unconditional: 2 words while processing do not barge in",
+    state: PROCESSING,
+    steps: [ev("EndOfTurn", 3, "Yes please.")],
+    want: [["commit", "Yes please.", 3, "model"]],
+  },
+  {
+    rule: 6,
+    name: "an idle line has nothing to stop: a long final just commits",
+    steps: [ev("EndOfTurn", 3, "I would like to book a table for four")],
+    want: [["commit", "I would like to book a table for four", 3, "model"]],
+  },
+  {
+    rule: 6,
+    name: "an interrupt word is exempt from the echo drop, also after trimming: it barges in, then commits",
+    state: SPEAKING,
+    steps: [ev("EndOfTurn", 3, "  Stop. ")],
+    want: [["bargeIn"], ["commit", "Stop.", 3, "model"]],
+  },
+  ...INTERRUPTS.map((said) => ({
+    rule: 6,
+    name: `speaking: interrupt phrase ${JSON.stringify(said)} is not dropped: it barges in, then commits`,
+    state: SPEAKING,
+    steps: [ev("EndOfTurn", 9, said)],
+    want: [["bargeIn"], ["commit", said, 9, "model"]],
+  })),
+  ...NOT_INTERRUPTS.map((said) => ({
+    rule: 6,
+    name: `speaking: ${JSON.stringify(said)} is neither an interrupt phrase nor a backchannel: answered (R12a′), with no barge-in`,
+    state: SPEAKING,
+    steps: [ev("EndOfTurn", 9, said)],
+    want: [["commit", said, 9, "model"]],
+  })),
+  ...STRUCTURED.map(([type, said]) => ({
+    rule: 6,
+    name: `expectedInputType "${type}": cancel the draft, then hand the words to bufferStructured`,
+    state: { expectedInputType: type },
+    steps: [ev("EndOfTurn", 4, said)],
+    want: [["cancelSpeculation", "structured"], ["bufferStructured", said]],
+  })),
+  {
+    rule: 6,
+    name: "a short structured final while the AI speaks is buffered: only backchannels and echo are dropped",
+    state: { aiSpeaking: true, expectedInputType: "phone" },
+    steps: [ev("EndOfTurn", 4, "zero four")],
+    want: [["cancelSpeculation", "structured"], ["bufferStructured", "zero four"]],
+  },
+  {
+    rule: 6,
+    name: "a 3+ word structured final while the AI speaks is not echo: it barges in, then is buffered as structured input",
+    state: { aiSpeaking: true, expectedInputType: "phone" },
+    steps: [ev("EndOfTurn", 4, "zero four one two")],
+    want: [["bargeIn"], ["cancelSpeculation", "structured"], ["bufferStructured", "zero four one two"]],
+  },
+  {
+    rule: 6,
+    name: "a 3+ word structured final while processing barges in too",
+    state: { processing: true, expectedInputType: "phone" },
+    steps: [ev("EndOfTurn", 4, "zero four one two")],
+    want: [["bargeIn"], ["cancelSpeculation", "structured"], ["bufferStructured", "zero four one two"]],
+  },
+  {
+    rule: 6,
+    name: "a short structured final while processing does not barge in",
+    state: { processing: true, expectedInputType: "phone" },
+    steps: [ev("EndOfTurn", 4, "zero four")],
+    want: [["cancelSpeculation", "structured"], ["bufferStructured", "zero four"]],
+  },
+  {
+    rule: 6,
+    name: "structured input cancels a draft made before the expected type changed",
+    steps: [ev("EagerEndOfTurn", 1, "zero four one"), set({ expectedInputType: "phone" }), ev("EndOfTurn", 1, "zero four one")],
+    want: [["speculate", "zero four one", 1], ["cancelSpeculation", "structured"], ["bufferStructured", "zero four one"]],
+  },
+  {
+    rule: 6,
+    name: "a backchannel drop cancels a draft made before the AI started speaking",
+    steps: [ev("EagerEndOfTurn", 1, "yes"), set(SPEAKING), ev("EndOfTurn", 1, "yes")],
+    want: [["speculate", "yes", 1], ["dropEcho", "yes", "backchannel"], ["cancelSpeculation", "backchannel"]],
+  },
+  {
+    rule: 6,
+    name: "speculation off: structured input is buffered with no cancel",
+    speculationEnabled: false,
+    state: { expectedInputType: "phone" },
+    steps: [ev("EndOfTurn", 4, "zero four one two")],
+    want: [["bufferStructured", "zero four one two"]],
+  },
+  {
+    rule: 6,
+    name: "a general EndOfTurn commits with its turnIndex and trigger",
+    steps: [ev("EndOfTurn", 12, "book me in", "model")],
+    want: [["commit", "book me in", 12, "model"]],
+  },
+  ...["manual", "timeout", "some-future-trigger"].map((trigger) => ({
+    rule: 6,
+    name: `the commit carries trigger ${JSON.stringify(trigger)} unchanged (an open enum)`,
+    steps: [ev("EndOfTurn", 12, "book me in", trigger)],
+    want: [["commit", "book me in", 12, trigger]],
+  })),
+  {
+    rule: 6,
+    name: "an EndOfTurn without a trigger commits with null",
+    steps: [{ event: "EndOfTurn", turnIndex: 12, transcript: "book me in" }],
+    want: [["commit", "book me in", 12, null]],
+  },
+  {
+    rule: 6,
+    name: "a commit hands the matching draft over: the engine does not cancel it",
+    steps: [ev("EagerEndOfTurn", 0, "book me in"), ev("EndOfTurn", 0, "book me in")],
+    want: [["speculate", "book me in", 0], ["commit", "book me in", 0, "model"]],
+  },
+  {
+    rule: 6,
+    name: "a commit hands the draft over for good: the next turn does not cancel it (that would abort the reply being generated)",
+    steps: [ev("EagerEndOfTurn", 0, "book me in"), ev("EndOfTurn", 0, "book me in"), ev("StartOfTurn", 1, "hi")],
+    want: [["speculate", "book me in", 0], ["commit", "book me in", 0, "model"]],
+  },
+  {
+    rule: 6,
+    name: "actions get the trimmed transcript, and eager and final get the identical string (isAdoptable compares with ===)",
+    steps: [ev("EagerEndOfTurn", 0, " book me in "), ev("EndOfTurn", 0, "book me in  ")],
+    want: [["speculate", "book me in", 0], ["commit", "book me in", 0, "model"]],
+  },
+];
+
+describe("spec 4.6, rule by rule", () => {
+  for (const row of RULES) {
+    it(`rule ${row.rule}: ${row.name}`, () => {
+      const h = harness({ state: row.state, speculationEnabled: row.speculationEnabled });
+      h.feed(...row.steps);
+      assert.deepEqual(h.calls, row.want);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 2. What the table cannot express
+// ---------------------------------------------------------------------------
+
+describe("a turn is handled once", () => {
+  it("a late duplicate EndOfTurn does not commit twice", () => {
+    const h = harness();
+    h.feed(ev("EndOfTurn", 3, "book me in on friday"), ev("EndOfTurn", 3, "book me in on friday"));
+    assert.deepEqual(h.calls, [["commit", "book me in on friday", 3, "model"]]);
+  });
+
+  it("... nor drop the same backchannel twice", () => {
+    const h = harness({ state: SPEAKING });
+    h.feed(ev("EndOfTurn", 3, "okay"), ev("EndOfTurn", 3, "okay"));
+    assert.deepEqual(h.calls, [["dropEcho", "okay", "backchannel"], ["cancelSpeculation", "backchannel"]]);
+  });
+
+  it("... nor buffer structured input twice (a phone number would be doubled)", () => {
+    const h = harness({ state: { expectedInputType: "phone" } });
+    h.feed(ev("EndOfTurn", 3, "zero four one two"), ev("EndOfTurn", 3, "zero four one two"));
+    assert.deepEqual(h.calls, [["cancelSpeculation", "structured"], ["bufferStructured", "zero four one two"]]);
+  });
+
+  it("a second EndOfTurn of the same turn with different words is stale too: the first one wins", () => {
+    const h = harness();
+    h.feed(ev("EndOfTurn", 3, "yes"), ev("EndOfTurn", 3, "no"));
+    assert.deepEqual(h.calls, [["commit", "yes", 3, "model"]]);
+  });
+
+  it("an EndOfTurn for an earlier turn than one that already ended is stale", () => {
+    const h = harness();
+    h.feed(ev("EndOfTurn", 5, "yes please"), ev("EndOfTurn", 4, "no thanks"));
+    assert.deepEqual(h.calls, [["commit", "yes please", 5, "model"]]);
+  });
+
+  it("the next turn is not affected by the one that ended", () => {
+    const h = harness();
+    h.feed(ev("EndOfTurn", 5, "yes please"), ev("EndOfTurn", 6, "no thanks"));
+    assert.deepEqual(h.calls, [["commit", "yes please", 5, "model"], ["commit", "no thanks", 6, "model"]]);
+  });
+
+  it("late events of an ended turn do nothing: a straggler cannot cut off the AI's reply to that very turn", () => {
+    const h = harness();
+    h.feed(
+      ev("EndOfTurn", 5, "book me in on friday"),
+      set(PROCESSING),
+      ev("StartOfTurn", 5, "book me in on"),
+      ev("Update", 5, "book me in on friday please"),
+      set({ processing: false }),
+      ev("EagerEndOfTurn", 5, "book me in on friday"),
+      ev("TurnResumed", 5, "book me in on friday please"),
+    );
+    assert.deepEqual(h.calls, [["commit", "book me in on friday", 5, "model"]]);
+  });
+});
+
+describe("barge-in timing", () => {
+  it("fires on the first Update that reaches 3 words: not before, not after", () => {
+    const h = harness({ state: SPEAKING });
+    const callsAfterEach = [];
+    for (const step of [
+      ev("StartOfTurn", 0, "Yeah."),
+      ev("Update", 0, "Yeah. Morning"),
+      ev("Update", 0, "Yeah. Morning is good"),
+      ev("Update", 0, "Yeah. Morning is good."),
+    ]) {
+      h.feed(step);
+      callsAfterEach.push(h.calls.length);
+    }
+    assert.deepEqual(callsAfterEach, [0, 0, 1, 1]);
+    assert.deepEqual(h.calls, [["bargeIn"]]);
+  });
+});
+
+describe("speculation off", () => {
+  it("never calls speculate or cancelSpeculation on any path, and does not need them", () => {
+    const h = harness({ speculationEnabled: false, actions: { speculate: undefined, cancelSpeculation: undefined } });
+    h.feed(
+      ev("EagerEndOfTurn", 0, "book me in"),
+      ev("TurnResumed", 0, "book me in on"),
+      ev("EagerEndOfTurn", 0, "book me in on friday"),
+      ev("EndOfTurn", 0, "book me in on friday"),
+      ev("StartOfTurn", 1, "yes"),
+      set(SPEAKING),
+      ev("EndOfTurn", 1, "yes"),
+      set({ aiSpeaking: false, expectedInputType: "phone" }),
+      ev("EndOfTurn", 2, "zero four one two"),
+      set({ expectedInputType: "general" }),
+      ev("StartOfTurn", 3, "wait"),
+    );
+    h.engine.reset();
+    assert.deepEqual(h.calls, [
+      ["commit", "book me in on friday", 0, "model"],
+      ["dropEcho", "yes", "backchannel"],
+      ["bufferStructured", "zero four one two"],
+    ]);
+  });
+
+  it("is on by default", () => {
+    const calls = [];
+    const record = (name) => (...args) => calls.push([name, ...args]);
+    const engine = createFastTurnEngine({
+      getState: () => ({ ...IDLE }),
+      actions: Object.fromEntries(ACTION_NAMES.map((name) => [name, record(name)])),
+    });
+    engine.onTurnInfo(ev("EagerEndOfTurn", 0, "book me in"));
+    assert.deepEqual(calls, [["speculate", "book me in", 0]]);
+  });
+});
+
+describe("an action that throws", () => {
+  it("surfaces to the caller, and a duplicate EndOfTurn does not retry the commit", () => {
+    let attempts = 0;
+    const h = harness({
+      actions: {
+        commit() {
+          attempts += 1;
+          throw new Error("boom");
+        },
+      },
+    });
+    assert.throws(() => h.feed(ev("EndOfTurn", 3, "book me in")), /boom/);
+    h.feed(ev("EndOfTurn", 3, "book me in"));
+    assert.equal(attempts, 1);
+  });
+
+  it("a barge-in that throws is not retried by the next Update of the same turn", () => {
+    let attempts = 0;
+    const h = harness({
+      state: SPEAKING,
+      actions: {
+        bargeIn() {
+          attempts += 1;
+          throw new Error("boom");
+        },
+      },
+    });
+    assert.throws(() => h.feed(ev("Update", 4, "stop it right now")), /boom/);
+    h.feed(ev("Update", 4, "stop it right now please"));
+    assert.equal(attempts, 1);
+  });
+
+  it("a barge-in that throws at EndOfTurn does not cost the caller their turn: the commit still runs and the error still surfaces", () => {
+    const h = harness({
+      state: SPEAKING,
+      actions: {
+        bargeIn() {
+          throw new Error("boom");
+        },
+      },
+    });
+    assert.throws(() => h.feed(ev("EndOfTurn", 3, "I need to change that")), /boom/);
+    assert.deepEqual(h.calls, [["commit", "I need to change that", 3, "model"]]);
+  });
+
+  it("... and so does a structured final", () => {
+    const h = harness({
+      state: { aiSpeaking: true, expectedInputType: "phone" },
+      actions: {
+        bargeIn() {
+          throw new Error("boom");
+        },
+      },
+    });
+    assert.throws(() => h.feed(ev("EndOfTurn", 3, "zero four one two")), /boom/);
+    assert.deepEqual(h.calls, [["cancelSpeculation", "structured"], ["bufferStructured", "zero four one two"]]);
+  });
+
+  it("a speculate that throws may have left a draft: the engine still cancels it when the turn moves on", () => {
+    const h = harness({
+      actions: {
+        speculate() {
+          throw new Error("boom");
+        },
+      },
+    });
+    assert.throws(() => h.feed(ev("EagerEndOfTurn", 1, "book me in")), /boom/);
+    h.feed(ev("StartOfTurn", 2, "hi"));
+    assert.deepEqual(h.calls, [["cancelSpeculation", "new-turn"]]);
+  });
+});
+
+describe("reset()", () => {
+  it("makes the turn indexes of a new Flux connection (they restart at 0) new turns again", () => {
+    const h = harness();
+    h.feed(ev("EndOfTurn", 0, "hello there"));
+    h.engine.reset();
+    h.feed(ev("EndOfTurn", 0, "hello again"));
+    assert.deepEqual(h.calls, [["commit", "hello there", 0, "model"], ["commit", "hello again", 0, "model"]]);
+  });
+
+  it("re-arms barge-in for a turn index it had already used", () => {
+    const h = harness({ state: SPEAKING });
+    h.feed(ev("StartOfTurn", 0, "stop it now"));
+    h.engine.reset();
+    h.feed(ev("StartOfTurn", 0, "stop it now"));
+    assert.deepEqual(h.calls, [["bargeIn"], ["bargeIn"]]);
+  });
+
+  it("cancels a draft it still holds, once", () => {
+    const h = harness();
+    h.feed(ev("EagerEndOfTurn", 1, "book me in"));
+    h.engine.reset();
+    h.engine.reset();
+    h.feed(ev("StartOfTurn", 2, "hi"));
+    assert.deepEqual(h.calls, [["speculate", "book me in", 1], ["cancelSpeculation", "reset"]]);
+  });
+
+  it("makes no call when it holds no draft", () => {
+    const h = harness();
+    h.feed(ev("EndOfTurn", 0, "hello there"));
+    h.engine.reset();
+    assert.deepEqual(h.calls, [["commit", "hello there", 0, "model"]]);
+  });
+});
+
+describe("wiring contracts", () => {
+  it("onTurnInfo and reset work detached from the engine (they are handed around as callbacks)", () => {
+    const calls = [];
+    const engine = createFastTurnEngine({
+      getState: () => ({ ...IDLE }),
+      actions: Object.fromEntries(ACTION_NAMES.map((name) => [name, (...args) => calls.push([name, ...args])])),
+    });
+    const { onTurnInfo, reset } = engine;
+    onTurnInfo(ev("EagerEndOfTurn", 0, "book me in"));
+    reset();
+    assert.deepEqual(calls, [["speculate", "book me in", 0], ["cancelSpeculation", "reset"]]);
+  });
+
+  it("calls the actions as methods of the object it was given, so a class instance works", () => {
+    class Recorder {
+      constructor() {
+        this.calls = [];
+      }
+      speculate(...args) {
+        this.calls.push(["speculate", ...args]);
+      }
+      cancelSpeculation(...args) {
+        this.calls.push(["cancelSpeculation", ...args]);
+      }
+      commit(...args) {
+        this.calls.push(["commit", ...args]);
+      }
+      bargeIn(...args) {
+        this.calls.push(["bargeIn", ...args]);
+      }
+      dropEcho(...args) {
+        this.calls.push(["dropEcho", ...args]);
+      }
+      bufferStructured(...args) {
+        this.calls.push(["bufferStructured", ...args]);
+      }
+    }
+    const recorder = new Recorder();
+    const live = { ...IDLE };
+    const engine = createFastTurnEngine({ getState: () => ({ ...live }), actions: recorder });
+    // One pass that reaches all six actions.
+    engine.onTurnInfo(ev("EagerEndOfTurn", 0, "book me in"));
+    live.aiSpeaking = true;
+    engine.onTurnInfo(ev("StartOfTurn", 1, "stop"));
+    engine.onTurnInfo(ev("EndOfTurn", 1, "stop"));
+    engine.onTurnInfo(ev("EndOfTurn", 2, "okay"));
+    live.aiSpeaking = false;
+    live.expectedInputType = "phone";
+    engine.onTurnInfo(ev("EndOfTurn", 3, "zero four one two"));
+    assert.deepEqual(recorder.calls, [
+      ["speculate", "book me in", 0],
+      ["cancelSpeculation", "new-turn"],
+      ["bargeIn"],
+      ["commit", "stop", 1, "model"],
+      ["dropEcho", "okay", "backchannel"],
+      ["cancelSpeculation", "backchannel"],
+      ["cancelSpeculation", "structured"],
+      ["bufferStructured", "zero four one two"],
+    ]);
+  });
+
+  it("ignores events it cannot read, without throwing, and they leave a held draft alone", () => {
+    // A draft is held and the AI is busy, so any event that WAS read would cancel the
+    // draft (it is for another turn) or barge in (4 words).
+    const h = harness();
+    h.feed(ev("EagerEndOfTurn", 1, "book me in"), set(BUSY));
+    const unreadable = [
+      undefined,
+      null,
+      5,
+      "Update",
+      {},
+      { event: "Update", transcript: "a b c d" },
+      { event: "Update", turnIndex: "2", transcript: "a b c d" },
+      { event: "Update", turnIndex: Number.NaN, transcript: "a b c d" },
+      { event: "Update", turnIndex: 2.5, transcript: "a b c d" },
+      { event: "Connected", turnIndex: 2, transcript: "a b c d" },
+      { event: "Update", turnIndex: 2, transcript: undefined },
+      { event: "Update", turnIndex: 2, transcript: 42 },
+      { event: "EndOfTurn", turnIndex: 2, transcript: null },
+    ];
+    for (const evt of unreadable) assert.doesNotThrow(() => h.engine.onTurnInfo(evt));
+    assert.deepEqual(h.calls, [["speculate", "book me in", 1]]);
+  });
+});
+
+describe("construction", () => {
+  const getState = () => ({ ...IDLE });
+  const noop = () => {};
+  const allActions = () => ({ speculate: noop, cancelSpeculation: noop, commit: noop, bargeIn: noop, dropEcho: noop, bufferStructured: noop });
+
+  it("rejects missing options and a getState that is not a function", () => {
+    assert.throws(() => createFastTurnEngine(), { name: "TypeError", message: /getState/ });
+    assert.throws(() => createFastTurnEngine({ actions: allActions() }), { name: "TypeError", message: /getState/ });
+    assert.throws(() => createFastTurnEngine({ getState: {}, actions: allActions() }), { name: "TypeError", message: /getState/ });
+  });
+
+  it("rejects missing actions", () => {
+    assert.throws(() => createFastTurnEngine({ getState }), { name: "TypeError", message: /actions/ });
+  });
+
+  for (const name of ACTION_NAMES) {
+    it(`rejects a missing actions.${name}, so a typo fails at construction and not in the middle of a call`, () => {
+      const actions = allActions();
+      delete actions[name];
+      assert.throws(() => createFastTurnEngine({ getState, actions }), { name: "TypeError", message: new RegExp(`actions\\.${name}\\b`) });
+    });
+  }
+
+  it("does not need speculate or cancelSpeculation when speculation is off", () => {
+    const actions = allActions();
+    delete actions.speculate;
+    delete actions.cancelSpeculation;
+    assert.doesNotThrow(() => createFastTurnEngine({ getState, actions, speculationEnabled: false }));
+  });
+
+  it("rejects a speculationEnabled that is not a boolean", () => {
+    for (const bad of ["yes", 1, null, 0.4]) {
+      assert.throws(() => createFastTurnEngine({ getState, actions: allActions(), speculationEnabled: bad }), { name: "TypeError", message: /speculationEnabled/ });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. The speakerphone echo filter
+// ---------------------------------------------------------------------------
+
+// On a speakerphone the AI's own voice comes back through the caller's mic and Flux
+// transcribes it, and a 3-word echo must not stop the AI mid-sentence. The session says
+// what the AI has said (`aiSpeakingText`: everything sent to TTS since the player last
+// went idle); the engine decides whether the caller's words are those.
+const GREETING = "Thanks for calling Copperline Plumbing, this is Sam. How can I help you today?";
+const OFFER = "I have Friday at ten available. Does that work for you?";
+const ECHOING = { aiSpeaking: true, aiSpeakingText: GREETING };
+const OFFERING = { aiSpeaking: true, aiSpeakingText: OFFER };
+
+const ECHO_ROWS = [
+  {
+    name: "the AI's own greeting coming back through the mic does not barge in, however long it runs",
+    state: ECHOING,
+    steps: [
+      ev("StartOfTurn", 0, "Thanks"),
+      ev("Update", 0, "Thanks for"),
+      ev("Update", 0, "Thanks for calling"),
+      ev("Update", 0, "Thanks for calling Copperline"),
+      ev("Update", 0, "Thanks for calling Copperline Plumbing this is"),
+      ev("Update", 0, "Thanks for calling Copperline Plumbing this is Sam"),
+    ],
+    want: [],
+  },
+  {
+    name: "the same words barge in when the session supplies no text to compare with (fail open)",
+    state: { aiSpeaking: true },
+    steps: [ev("StartOfTurn", 0, "Thanks"), ev("Update", 0, "Thanks for"), ev("Update", 0, "Thanks for calling")],
+    want: [["bargeIn"]],
+  },
+  ...["", "   ", undefined, null, 42].map((text) => ({
+    name: `${JSON.stringify(text) ?? "undefined"} as aiSpeakingText fails open: the words barge in`,
+    state: { aiSpeaking: true, aiSpeakingText: text },
+    steps: [ev("Update", 0, "Thanks for calling")],
+    want: [["bargeIn"]],
+  })),
+  {
+    name: "a caller who reads the AI's offer back and adds words of their own barges in",
+    state: OFFERING,
+    steps: [ev("Update", 1, "Friday at ten no make it eleven")],
+    want: [["bargeIn"]],
+  },
+  {
+    name: "reading the offer back and nothing else looks like echo and does not barge in (the filter's known trade-off)",
+    state: OFFERING,
+    steps: [ev("Update", 1, "Friday at ten")],
+    want: [],
+  },
+  {
+    name: "a processing-only state has no audio to echo, so it is never filtered",
+    state: { processing: true, aiSpeakingText: OFFER },
+    steps: [ev("Update", 1, "Friday at ten")],
+    want: [["bargeIn"]],
+  },
+  {
+    name: "speaking and processing: audio is playing, so the filter applies",
+    state: { aiSpeaking: true, processing: true, aiSpeakingText: OFFER },
+    steps: [ev("Update", 1, "Friday at ten")],
+    want: [],
+  },
+  {
+    name: "a short interrupt is never judged by overlap: Wait. against an AI saying please wait (at its EndOfTurn)",
+    state: { aiSpeaking: true, aiSpeakingText: "Please wait while I check that for you." },
+    steps: [ev("StartOfTurn", 0, "Wait."), ev("EndOfTurn", 0, "Wait.")],
+    want: [["bargeIn"], ["commit", "Wait.", 0, "model"]],
+  },
+  {
+    name: "... nor Hold on. against an AI saying hold on",
+    state: { aiSpeaking: true, aiSpeakingText: "Hold on a moment while I look that up." },
+    steps: [ev("StartOfTurn", 0, "Hold on."), ev("EndOfTurn", 0, "Hold on.")],
+    want: [["bargeIn"], ["commit", "Hold on.", 0, "model"]],
+  },
+  {
+    name: "two words heard are never judged as a barge-in candidate; as a final, the 3 words they normalise to are (Hello 10:30): echo-like, dropped (R13)",
+    state: { aiSpeaking: true, aiSpeakingText: "Hello 10:30 on Friday works." },
+    steps: [ev("StartOfTurn", 0, "Hello 10:30"), ev("EndOfTurn", 0, "Hello 10:30")],
+    want: [["dropEcho", "Hello 10:30", "echo-like"], ["cancelSpeculation", "echo"]],
+  },
+  {
+    name: "an echo-like final does not barge in, and is dropped (R13): the AI would answer itself",
+    state: ECHOING,
+    steps: [ev("EndOfTurn", 2, "Thanks for calling Copperline Plumbing.")],
+    want: [["dropEcho", "Thanks for calling Copperline Plumbing.", "echo-like"], ["cancelSpeculation", "echo"]],
+  },
+  {
+    name: "a final of the caller's own words barges in, then commits, with the AI's text present",
+    state: ECHOING,
+    steps: [ev("EndOfTurn", 2, "Actually I need a plumber tomorrow")],
+    want: [["bargeIn"], ["commit", "Actually I need a plumber tomorrow", 2, "model"]],
+  },
+  {
+    name: "2 words are too few to judge as echo: not a backchannel, so answered, with no barge-in",
+    state: ECHOING,
+    steps: [ev("EndOfTurn", 2, "Thanks for.")],
+    want: [["commit", "Thanks for.", 2, "model"]],
+  },
+  {
+    name: "an echo-like structured final does not barge in either, and is dropped: the AI reading digits back is not the caller's number",
+    state: { aiSpeaking: true, expectedInputType: "phone", aiSpeakingText: "Your number is zero four one two three four. Is that right?" },
+    steps: [ev("EndOfTurn", 4, "zero four one two three four")],
+    want: [["dropEcho", "zero four one two three four", "echo-like"], ["cancelSpeculation", "echo"]],
+  },
+];
+
+describe("speakerphone echo filter in barge-in", () => {
+  for (const row of ECHO_ROWS) {
+    it(row.name, () => {
+      const h = harness({ state: row.state });
+      h.feed(...row.steps);
+      assert.deepEqual(h.calls, row.want);
+    });
+  }
+
+  it("a candidate suppressed as echo barges in, once, as soon as later Updates add words of its own", () => {
+    const h = harness({ state: OFFERING });
+    const callsAfterEach = [];
+    for (const transcript of ["Friday", "Friday at", "Friday at ten", "Friday at ten no", "Friday at ten no make", "Friday at ten no make it eleven"]) {
+      h.feed(ev("Update", 1, transcript));
+      callsAfterEach.push(h.calls.length);
+    }
+    assert.deepEqual(callsAfterEach, [0, 0, 0, 1, 1, 1]);
+    h.feed(ev("EndOfTurn", 1, "Friday at ten no make it eleven."));
+    assert.deepEqual(h.calls, [["bargeIn"], ["commit", "Friday at ten no make it eleven.", 1, "model"]]);
+  });
+});
+
+describe("isLikelyEcho", () => {
+  const NATO = "alpha bravo charlie delta echo foxtrot golf hotel";
+  const echoes = [
+    ["a fragment of the AI's sentence", "thanks for calling", "Thanks for calling Copperline Plumbing, this is Sam.", true],
+    ["case and punctuation do not matter", "THANKS!! for, calling...", "thanks for calling", true],
+    ["digits in the AI's text, words in the transcript", "friday at ten", "I have Friday at 10 available.", true],
+    ["words in the AI's text, digits in the transcript", "friday at 10", "Does Friday at ten work?", true],
+    ["10:30 a.m. against ten thirty AM", "ten thirty am on friday", "How about 10:30 a.m. on Friday?", true],
+    ["10 o'clock against ten o'clock", "ten o'clock tomorrow", "Does 10 o'clock tomorrow work?", true],
+    ["3 p.m. against three pm", "three pm on monday", "How about 3 p.m. on Monday?", true],
+    ["exactly 80% of the words (4 of 5) with a run of 3", "alpha bravo charlie xray delta", NATO, true],
+    ["exactly 80% again (8 of 10)", "alpha bravo charlie delta echo foxtrot golf hotel kilo lima", NATO, true],
+    ["a run of exactly 3 is enough", "alpha bravo charlie xray golf", NATO, true],
+  ];
+  const humans = [
+    ["just under 80% (7 of 9)", "alpha bravo charlie delta echo foxtrot golf kilo lima", NATO, false],
+    ["60% (3 of 5)", "your appointment is no good", "Your appointment is booked for Friday.", false],
+    ["the AI's sentence plus words of their own", "thanks for calling and also", "Thanks for calling.", false],
+    ["one word: wait", "wait", "Please wait while I check.", false],
+    ["two words: hold on", "hold on", "Hold on a moment.", false],
+    ["10:30 alone is only 2 normalised words", "10:30", "Does 10:30 work?", false],
+    ["all words present but scattered, no run", "echo alpha delta", NATO, false],
+    ["the AI's words in a different order", "calling for thanks", "Thanks for calling.", false],
+    ["a run of only 2 (80% of the words, but no run of 3)", "alpha bravo xray delta echo", NATO, false],
+  ];
+  for (const [name, candidate, aiText, expected] of [...echoes, ...humans]) {
+    it(`${expected ? "is echo" : "is not echo"}: ${name}`, () => {
+      assert.equal(isLikelyEcho(candidate, aiText), expected);
+    });
+  }
+
+  it("fails open when there is no AI text to compare with", () => {
+    for (const aiText of ["", "   ", "...", undefined, null, 42, {}]) {
+      assert.equal(isLikelyEcho("friday at ten", aiText), false);
+    }
+  });
+
+  it("is never echo when the candidate is not text", () => {
+    for (const candidate of [undefined, null, 42, {}, ""]) {
+      assert.equal(isLikelyEcho(candidate, "Friday at ten"), false);
+    }
+  });
+});
+
+describe("speechTokens", () => {
+  const curlyApostrophe = String.fromCharCode(0x2019);
+  const eAcute = String.fromCharCode(0xe9);
+  const cases = [
+    ["Is 10 AM okay?", ["is", "ten", "am", "okay"]],
+    ["10 a.m.", ["ten", "am"]],
+    ["10 A.M. on Friday", ["ten", "am", "on", "friday"]],
+    ["10am", ["ten", "am"]],
+    ["10 AM", ["ten", "am"]],
+    ["3 p.m.", ["three", "pm"]],
+    ["3 PM", ["three", "pm"]],
+    ["3:15 P.M.", ["three", "fifteen", "pm"]],
+    ["10:30pm", ["ten", "thirty", "pm"]],
+    ["9:30", ["nine", "thirty"]],
+    ["9:00", ["nine"]],
+    ["9:05", ["nine", "oh", "five"]],
+    ["10:45", ["ten", "forty", "five"]],
+    ["10 o'clock", ["ten", "oclock"]],
+    ["O'CLOCK", ["oclock"]],
+    [`o${curlyApostrophe}clock`, ["oclock"]],
+    ["don't", ["dont"]],
+    ["'quoted'", ["quoted"]],
+    ["twenty-five", ["twenty", "five"]],
+    ["25", ["twenty", "five"]],
+    ["Hello, world!!", ["hello", "world"]],
+    ["$12.50", ["twelve", "fifty"]],
+    ["2025", ["2025"]],
+    ["0412 345 678", ["0412", "345", "678"]],
+    ["Jos" + eAcute, ["jos" + eAcute]],
+    ["", []],
+    ["   ", []],
+    ["...", []],
+  ];
+  for (const [text, tokens] of cases) {
+    it(`${JSON.stringify(text)} -> ${JSON.stringify(tokens)}`, () => {
+      assert.deepEqual(speechTokens(text), tokens);
+    });
+  }
+
+  // Digits and their words must meet in the middle for every number a receptionist says.
+  const numbers = [
+    ["0", "zero"], ["1", "one"], ["2", "two"], ["3", "three"], ["4", "four"], ["5", "five"], ["6", "six"], ["7", "seven"], ["8", "eight"], ["9", "nine"],
+    ["10", "ten"], ["11", "eleven"], ["12", "twelve"], ["13", "thirteen"], ["14", "fourteen"], ["15", "fifteen"], ["16", "sixteen"], ["17", "seventeen"],
+    ["18", "eighteen"], ["19", "nineteen"], ["20", "twenty"], ["21", "twenty one"], ["30", "thirty"], ["40", "forty"], ["50", "fifty"], ["60", "sixty"],
+    ["70", "seventy"], ["80", "eighty"], ["90", "ninety"], ["99", "ninety nine"], ["05", "five"],
+  ];
+  for (const [digits, words] of numbers) {
+    it(`${digits} and "${words}" give the same tokens`, () => {
+      assert.deepEqual(speechTokens(digits), words.split(" "));
+      assert.deepEqual(speechTokens(words), words.split(" "));
+    });
+  }
+
+  it("anything that is not a string has no tokens", () => {
+    for (const notText of [undefined, null, 42, {}, []]) assert.deepEqual(speechTokens(notText), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. INTERRUPT_RE and wordCount
+// ---------------------------------------------------------------------------
+
+describe("INTERRUPT_RE", () => {
+  it("is exactly the classic echo regex: same source, same flags", () => {
+    assert.equal(INTERRUPT_RE.source, String.raw`^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse me|hello|hey)\b`);
+    assert.equal(INTERRUPT_RE.flags, "i");
+  });
+
+  for (const said of [...INTERRUPTS, "STOP", "no, that's wrong", "Hello there"]) {
+    it(`matches ${JSON.stringify(said)}`, () => {
+      assert.equal(INTERRUPT_RE.test(said), true);
+    });
+  }
+
+  for (const said of NOT_INTERRUPTS) {
+    it(`does not match ${JSON.stringify(said)}`, () => {
+      assert.equal(INTERRUPT_RE.test(said), false);
+    });
+  }
+});
+
+describe("wordCount", () => {
+  const cases = [
+    ["", 0],
+    ["   ", 0],
+    ["\n\t", 0],
+    ["hello", 1],
+    ["  hello  ", 1],
+    ["a b", 2],
+    ["a  b", 2],
+    ["a\tb\nc d", 4],
+    ["one" + String.fromCharCode(160) + "two", 2], // a no-break space is whitespace to \s, as in the classic split
+    ["Yeah. Morning is good.", 4],
+    ["zero four one two", 4],
+  ];
+  for (const [text, expected] of cases) {
+    it(`counts ${JSON.stringify(text)} as ${expected}`, () => {
+      assert.equal(wordCount(text), expected);
+    });
+  }
+
+  it("counts anything that is not a string as 0", () => {
+    for (const notText of [undefined, null, 5, {}, []]) assert.equal(wordCount(notText), 0);
+  });
+});
+
+// The classic path (server.js) cannot import the engine's copy, so nothing but this
+// test keeps the two rules the same. If one fails: change BOTH places, deliberately.
+describe("parity with the classic echo rule in server.js", () => {
+  const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+
+  it("every INTERRUPT_RE copy in server.js is the engine's regex", () => {
+    const copies = [...server.matchAll(/const (INTERRUPT_RE\w*) = (\/.+\/[a-z]*);/g)];
+    assert.ok(copies.length >= 1, "no INTERRUPT_RE literal found in server.js: the classic echo rule moved, update this pin");
+    for (const [, name, literal] of copies) {
+      const closing = literal.lastIndexOf("/");
+      assert.equal(literal.slice(1, closing), INTERRUPT_RE.source, `${name} in server.js has drifted from lib/fast-turns.js`);
+      assert.equal(literal.slice(closing + 1), INTERRUPT_RE.flags, `${name} flags in server.js have drifted from lib/fast-turns.js`);
+    }
+  });
+
+  it("the classic rule drops 2 words or fewer, the threshold the rule table pins for the engine", () => {
+    const thresholds = [...server.matchAll(/\.split\(\/\\s\+\/\)\.length <= (\d+) && !INTERRUPT_RE\w*\.test\(/g)];
+    assert.ok(thresholds.length >= 1, "no classic word-count check found in server.js: the classic echo rule moved, update this pin");
+    for (const [, limit] of thresholds) assert.equal(limit, "2", "the classic echo threshold changed: change ECHO_MAX_WORDS in lib/fast-turns.js and the 2/3-word rows above");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. Recorded Flux streams (flux-aura-api.md A.11) through the whole engine
+// ---------------------------------------------------------------------------
+
+describe("recorded Flux streams", () => {
+  const T1 = "Yeah. Morning is good. Maybe ten AM is good.";
+  const T2 = "Yeah. Morning is good. Maybe ten AM is good. No. I said ten AM.";
+  const T3 = "No. I said ten AM.";
+
+  it("run 2: eager, resumed, eager, end: one draft cancelled and one committed", () => {
+    const h = harness();
+    h.feed(
+      ev("Update", 0, ""),
+      ev("StartOfTurn", 0, "Yeah."),
+      ev("Update", 0, "Yeah. Morning"),
+      ev("Update", 0, "Yeah. Morning is good"),
+      ev("Update", 0, "Yeah. Morning is good."),
+      ev("Update", 0, "Yeah. Morning is good. Maybe ten AM is good"),
+      ev("Update", 0, T1),
+      ev("EagerEndOfTurn", 0, T1),
+      ev("Update", 0, T1),
+      ev("Update", 0, T1),
+      ev("TurnResumed", 0, "Yeah. Morning is good. Maybe ten AM is good. No"),
+      ev("Update", 0, "Yeah. Morning is good. Maybe ten AM is good. No."),
+      ev("Update", 0, "Yeah. Morning is good. Maybe ten AM is good. No. I said"),
+      ev("Update", 0, "Yeah. Morning is good. Maybe ten AM is good. No. I said ten"),
+      ev("Update", 0, T2),
+      ev("EagerEndOfTurn", 0, T2),
+      ev("Update", 0, T2),
+      ev("EndOfTurn", 0, T2, "model"),
+      ev("Update", 1, ""),
+    );
+    assert.deepEqual(h.calls, [
+      ["speculate", T1, 0],
+      ["cancelSpeculation", "resumed"],
+      ["speculate", T2, 0],
+      ["commit", T2, 0, "model"],
+    ]);
+  });
+
+  it("run 1: two turns, the caller talks over the AI's reply to the first", () => {
+    const h = harness();
+    h.feed(
+      ev("StartOfTurn", 0, "Yeah."),
+      ev("Update", 0, "Yeah. Morning is good"),
+      ev("EagerEndOfTurn", 0, T1),
+      ev("Update", 0, T1),
+      ev("EndOfTurn", 0, T1, "model"),
+      // The AI is now working on turn 0 ...
+      set(PROCESSING),
+      ev("Update", 1, ""),
+      ev("StartOfTurn", 1, "No."),
+      ev("Update", 1, "No. I said"),
+      ev("Update", 1, "No. I said ten"),
+      ev("Update", 1, T3),
+      // ... the barge-in aborted it, so the line is quiet again.
+      set({ processing: false }),
+      ev("EagerEndOfTurn", 1, T3),
+      ev("Update", 1, T3),
+      ev("EndOfTurn", 1, T3, "model"),
+    );
+    assert.deepEqual(h.calls, [
+      ["speculate", T1, 0],
+      ["commit", T1, 0, "model"],
+      ["bargeIn"],
+      ["speculate", T3, 1],
+      ["commit", T3, 1, "model"],
+    ]);
+  });
+
+  it("a back-channel while the AI speaks is dropped, then a real interruption barges in and is answered", () => {
+    const h = harness({ state: SPEAKING });
+    h.feed(
+      ev("StartOfTurn", 3, "Yeah."),
+      ev("Update", 3, "Yeah."),
+      ev("EagerEndOfTurn", 3, "Yeah."),
+      ev("EndOfTurn", 3, "Yeah."),
+      ev("StartOfTurn", 4, "Actually"),
+      ev("Update", 4, "Actually I want"),
+      set({ aiSpeaking: false }),
+      ev("Update", 4, "Actually I want Friday instead"),
+      ev("EagerEndOfTurn", 4, "Actually I want Friday instead."),
+      ev("EndOfTurn", 4, "Actually I want Friday instead."),
+    );
+    assert.deepEqual(h.calls, [
+      ["dropEcho", "Yeah.", "backchannel"],
+      ["cancelSpeculation", "backchannel"],
+      ["bargeIn"],
+      ["speculate", "Actually I want Friday instead.", 4],
+      ["commit", "Actually I want Friday instead.", 4, "model"],
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Purity
+// ---------------------------------------------------------------------------
+
+/** A script that reaches every branch of the engine. */
+function runEveryBranch(h) {
+  h.feed(
+    ev("StartOfTurn", 0, "Yeah."),
+    ev("EagerEndOfTurn", 0, "Yeah. Morning is good."),
+    ev("TurnResumed", 0, "Yeah. Morning is good. No"),
+    ev("EagerEndOfTurn", 0, "Yeah. Morning is good. No."),
+    ev("EndOfTurn", 0, "Yeah. Morning is good. No."),
+    set(PROCESSING),
+    ev("Update", 1, "No wait a second"),
+    set({ processing: false, aiSpeaking: true, aiSpeakingText: "Thanks for calling Copperline Plumbing." }),
+    ev("EndOfTurn", 1, "Okay."),
+    ev("EndOfTurn", 2, "Thanks for calling Copperline Plumbing."),
+    set({ aiSpeaking: false, aiSpeakingText: "", expectedInputType: "phone" }),
+    ev("EndOfTurn", 3, "zero four one two"),
+    set({ expectedInputType: "general" }),
+    ev("EagerEndOfTurn", 4, "book me in"),
+    ev("StartOfTurn", 5, "hello"),
+    ev("EndOfTurn", 5, "hello"),
+    ev("EndOfTurn", 5, "hello"),
+    ev("EagerEndOfTurn", 6, "yes please"),
+  );
+  h.engine.reset();
+}
+
+describe("purity", () => {
+  it("the script used below reaches every action and every cancel reason", () => {
+    const h = harness();
+    runEveryBranch(h);
+    assert.deepEqual(new Set(h.calls.map(([name]) => name)), new Set(ACTION_NAMES));
+    assert.deepEqual(new Set(h.calls.filter(([name]) => name === "cancelSpeculation").map(([, reason]) => reason)), new Set(["resumed", "new-turn", "echo", "backchannel", "structured", "reset"]));
+  });
+
+  it("touches no clock, timer, randomness or console while it runs", () => {
+    const targets = [
+      [globalThis, "setTimeout"],
+      [globalThis, "setInterval"],
+      [globalThis, "setImmediate"],
+      [globalThis, "queueMicrotask"],
+      [Date, "now"],
+      [Math, "random"],
+      [console, "log"],
+      [console, "info"],
+      [console, "warn"],
+      [console, "error"],
+      [console, "debug"],
+    ];
+    const saved = targets.map(([target, key]) => [target, key, target[key]]);
+    const touched = [];
+    for (const [target, key] of targets) {
+      target[key] = () => {
+        touched.push(key);
+      };
+    }
+    try {
+      runEveryBranch(harness());
+    } finally {
+      for (const [target, key, original] of saved) target[key] = original;
+    }
+    assert.deepEqual(touched, []);
+  });
+
+  it("imports nothing and names no global with side effects", () => {
+    const source = fs.readFileSync(path.join(__dirname, "..", "lib", "fast-turns.js"), "utf8");
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    for (const forbidden of [/\brequire\b/, /\bimport\b/, /\bprocess\b/, /\bconsole\b/, /\bSentry\b/, /\bsetTimeout\b/, /\bsetInterval\b/, /\bsetImmediate\b/, /\bDate\b/, /\bperformance\b/, /\bfetch\b/, /Math\.random/]) {
+      assert.doesNotMatch(code, forbidden);
+    }
+  });
+});
+
+it("isLikelyEcho: a restated phrase with a number the AI never said is a correction, not an echo", () => {
+  assert.equal(isLikelyEcho("Friday at ten fifteen AM", "I have Friday at ten thirty AM available."), false);
+  assert.equal(isLikelyEcho("Friday the 17th at 11:30 AM", "How about Friday the 17th at 10:30 AM?"), false);
+});
+
+it("isLikelyEcho: the AI's own sentence with the same numbers is still an echo", () => {
+  assert.equal(isLikelyEcho("Friday at ten thirty AM available", "I have Friday at ten thirty AM available."), true);
+  assert.equal(isLikelyEcho("Friday the 17th at 10:30 AM", "How about Friday the 17th at 10:30 AM?"), true);
+});
+
+// ---------------------------------------------------------------------------
+// 7. Short turns, backchannels and echo (Task 5 review: rulings R12a′ and R13)
+// ---------------------------------------------------------------------------
+
+// What the fast path's session runs. A short candidate is judged when its turn ends;
+// a backchannel while the AI is busy is not a turn; the AI's own echo is not a turn.
+const FAST = (state) => harness({ state });
+
+describe("short turns, backchannels and echo (R12a′, R13)", () => {
+  for (const [label, state] of [["processing", PROCESSING], ["speaking", SPEAKING]]) {
+    it(`"No worries" while ${label}: no barge-in on its "No", and the final is dropped as a backchannel`, () => {
+      const h = FAST(state);
+      h.feed(ev("StartOfTurn", 0, "No"), ev("Update", 0, "No worries"));
+      assert.deepEqual(h.calls, [], "the bare No of No worries never barges in");
+      h.feed(ev("EndOfTurn", 0, "No worries."));
+      assert.deepEqual(h.calls, [["dropEcho", "No worries.", "backchannel"], ["cancelSpeculation", "backchannel"]]);
+    });
+  }
+
+  for (const [label, state] of [["speaking", SPEAKING], ["processing", PROCESSING]]) {
+    it(`"No, wait" while ${label}: judged at the end of the turn, then barge-in and commit`, () => {
+      const h = FAST(state);
+      h.feed(ev("StartOfTurn", 0, "No"), ev("Update", 0, "No, wait"));
+      assert.deepEqual(h.calls, []);
+      h.feed(ev("EndOfTurn", 0, "No, wait."));
+      assert.deepEqual(h.calls, [["bargeIn"], ["commit", "No, wait.", 0, "model"]]);
+    });
+
+    it(`"stop" while ${label}: barge-in and commit at the end of the turn`, () => {
+      const h = FAST(state);
+      h.feed(ev("StartOfTurn", 0, "Stop"));
+      assert.deepEqual(h.calls, []);
+      h.feed(ev("EndOfTurn", 0, "Stop."));
+      assert.deepEqual(h.calls, [["bargeIn"], ["commit", "Stop.", 0, "model"]]);
+    });
+  }
+
+  it("every one of the classic interrupt words still barges in, at the end of its turn", () => {
+    for (const said of INTERRUPTS) {
+      const h = FAST(SPEAKING);
+      h.feed(ev("StartOfTurn", 0, said), ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["bargeIn"], ["commit", said, 0, "model"]], said);
+    }
+  });
+
+  it("3 or more words still barge in early, on the Update", () => {
+    const h = FAST(SPEAKING);
+    h.feed(ev("Update", 0, "wait a second"));
+    assert.deepEqual(h.calls, [["bargeIn"]]);
+    h.feed(ev("EndOfTurn", 0, "wait a second please"));
+    assert.deepEqual(h.calls, [["bargeIn"], ["commit", "wait a second please", 0, "model"]]);
+  });
+
+  it("a short content final while the AI speaks is answered (the turn waits for the AI, server.js): no barge-in, no echo drop", () => {
+    for (const said of ["Tuesday.", "Ten thirty", "Nope.", "Okay, wait", "Yes please"]) {
+      const h = FAST(SPEAKING);
+      h.feed(ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["commit", said, 0, "model"]], said);
+    }
+  });
+
+  it("phone test F6: \"Sounds perfect.\" split off \"Yeah.\" while the AI thinks is dropped, not answered later on its own", () => {
+    const h = FAST(PROCESSING);
+    h.feed(ev("EndOfTurn", 0, "Sounds perfect."));
+    assert.deepEqual(h.calls, [["dropEcho", "Sounds perfect.", "backchannel"], ["cancelSpeculation", "backchannel"]]);
+  });
+
+  it("a backchannel while the AI is idle is an answer: committed", () => {
+    for (const said of ["Okay.", "Yes.", "No worries.", "Thanks!", "Sounds perfect."]) {
+      const h = FAST(IDLE);
+      h.feed(ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["commit", said, 0, "model"]], said);
+    }
+  });
+
+  it("a backchannel while busy is dropped on the structured path too (never buffered)", () => {
+    const h = FAST({ ...PROCESSING, expectedInputType: "phone" });
+    h.feed(ev("EndOfTurn", 0, "yeah"));
+    assert.deepEqual(h.calls, [["dropEcho", "yeah", "backchannel"], ["cancelSpeculation", "backchannel"]]);
+    const idle = FAST({ expectedInputType: "phone" });
+    idle.feed(ev("EndOfTurn", 0, "yeah"));
+    assert.deepEqual(idle.calls, [["cancelSpeculation", "structured"], ["bufferStructured", "yeah"]], "idle: buffered as before");
+  });
+
+  it("an echo-like final while the AI speaks is dropped, not answered (R13)", () => {
+    const h = FAST(OFFERING);
+    h.feed(ev("EndOfTurn", 0, "I have Friday at ten available."));
+    assert.deepEqual(h.calls, [["dropEcho", "I have Friday at ten available.", "echo-like"], ["cancelSpeculation", "echo"]]);
+  });
+
+  it("an echo-like final with a number the AI never said is a correction: barge-in and commit", () => {
+    const h = FAST(OFFERING);
+    h.feed(ev("EndOfTurn", 0, "Friday at ten fifteen available"));
+    assert.deepEqual(h.calls, [["bargeIn"], ["commit", "Friday at ten fifteen available", 0, "model"]]);
+  });
+
+  it("the echo drop needs the AI's audio: while only processing, the same words barge in and commit", () => {
+    const h = FAST({ processing: true, aiSpeakingText: OFFER });
+    h.feed(ev("EndOfTurn", 0, "I have Friday at ten available."));
+    assert.deepEqual(h.calls, [["bargeIn"], ["commit", "I have Friday at ten available.", 0, "model"]]);
+  });
+
+  it("a dropped final ends its turn: a duplicate EndOfTurn is ignored", () => {
+    const h = FAST(SPEAKING);
+    h.feed(ev("EndOfTurn", 0, "Okay."), ev("EndOfTurn", 0, "Okay."));
+    assert.deepEqual(h.calls, [["dropEcho", "Okay.", "backchannel"], ["cancelSpeculation", "backchannel"]]);
+  });
+
+});
+
+describe("isBackchannel", () => {
+  it("the ruled phrases, whatever their case and punctuation", () => {
+    for (const said of ["okay", "OK.", "Ok!", "Yeah.", "yep", "Yes.", "Sure.", "Right.", "Alright.", "All right.", "Cool.", "Great!", "Perfect.", "Thanks.", "Thank you.", "Mm-hmm.", "Mhm.", "Uh-huh.", "No worries.", "No problem!"]) {
+      assert.equal(isBackchannel(said), true, said);
+    }
+  });
+
+  it("two backchannels in a row are one", () => {
+    for (const said of ["Okay, thanks.", "Yeah, sure.", "Okay, great.", "Okay, mm-hmm"]) assert.equal(isBackchannel(said), true, said);
+  });
+
+  it("anything with a word of content, an interrupt, or more than two words is not", () => {
+    for (const said of ["Yes please.", "No.", "No, wait.", "Okay, wait", "Tuesday", "Okay thank you", "thanks so much", "Nope", "Stop", "", "  ", "okayyy"]) {
+      assert.equal(isBackchannel(said), false, JSON.stringify(said));
+    }
+  });
+
+  it("phone test F6: \"Sounds perfect.\" and the other short approvals are backchannels too", () => {
+    for (const said of ["Sounds perfect.", "Sounds good!", "Sounds great.", "Sounds lovely.", "That's great.", "That's perfect.", "That's good.", "Lovely.", "Good.", "Got it.", "Gotcha.", "Too easy.", "Okay, lovely.", "Awesome!", "Brilliant.", "Excellent.", "Beautiful.", "Wonderful.", "Fantastic."]) {
+      assert.equal(isBackchannel(said), true, said);
+    }
+  });
+
+  it("gate review (F6): no backchannel is the hang-up check's done-signal after \"anything else?\" (dropped while busy, a goodbye would be lost)", () => {
+    const { callerIsDone } = require("../lib/booking-guards");
+    const preexisting = new Set(["no worries", "no problem"]); // R12a′, before F6: PLAIN_NO also reads them as done
+    for (const phrase of BACKCHANNEL_PHRASES) {
+      if (preexisting.has(phrase)) continue;
+      const said = phrase.replace(/^that s /, "That's ") + ".";
+      assert.equal(callerIsDone([{ role: "assistant", content: "Is there anything else I can help with?" }, { role: "user", content: said }]), false, said);
+    }
+  });
+
+  it("test review (F6): every BACKCHANNEL_PHRASES entry is a backchannel as a caller says it", () => {
+    for (const phrase of BACKCHANNEL_PHRASES) {
+      const said = phrase.replace(/^that s /, "That's ") + ".";
+      assert.equal(isBackchannel(said), true, said);
+    }
+  });
+
+  it("…but not a closer, a polite decline, a confirmation, or anything with content", () => {
+    // Closers are DONE_IF_ASKED (booking-guards): dropped while the AI is busy, a goodbye would be lost.
+    for (const said of ["Cheers.", "All good.", "No dramas.", "That's all.", "That's it.", "That's all, thanks", "That's okay.", "That's alright.", "That's fine.", "That's right.", "That's correct.", "That's", "Sounds wrong.", "That's Tuesday", "Good morning"]) {
+      assert.equal(isBackchannel(said), false, JSON.stringify(said));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. An answer at the end of a question (fix round 2, R14)
+// ---------------------------------------------------------------------------
+
+// The AI is still saying its question when the caller answers it: the reply ends in a
+// question, and only its tail (1.2 s) is still to play (R14′).
+const ASKING = { aiSpeaking: true, aiSpeakingText: "Sure, Tuesday works. Shall I book 10 AM?", aiRemainingMs: 1_200, questionAudioStartAt: 1_000 };
+
+// R14″ (fix round 4): the caller must also have begun speaking after the question's audio
+// started (+500 ms: Flux's StartOfTurn lags speech onset). These tests state that much: the
+// question started at 1 000, and the caller's events arrive at 5 000.
+const QUESTION_STARTED = { questionAudioStartAt: 1_000 };
+/** FAST, its events stamped as server.js stamps them (receivedAt): here well after the question started. */
+const HEARD = (state) => {
+  const h = FAST(state);
+  const feed = h.feed;
+  h.feed = (...steps) => feed(...steps.map((step) => ("set" in step || "receivedAt" in step ? step : { ...step, receivedAt: 5_000 })));
+  return h;
+};
+
+describe("a short final while the AI asks a question is its answer (R14)", () => {
+  it('"Yes" (and other backchannel words) over "…Shall I book 10 AM?" is committed: not dropped, not a barge-in', () => {
+    for (const said of ["Yes.", "Yes", "Okay.", "Yeah, sure.", "Sure.", "Perfect!"]) {
+      const h = HEARD(ASKING);
+      h.feed(ev("StartOfTurn", 0, said), ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["commit", said, 0, "model"]], said);
+    }
+  });
+
+  it("content words alike: \"ten\", \"Michael\", \"Yes please\"", () => {
+    for (const said of ["Ten.", "Michael.", "Yes please.", "Ten thirty"]) {
+      const h = HEARD(ASKING);
+      h.feed(ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["commit", said, 0, "model"]], said);
+    }
+  });
+
+  it("the question mark counts past trailing whitespace and closing quotes", () => {
+    for (const text of ["Shall I book 10 AM?  ", 'She asked "shall I book 10 AM?"', "Shall I book 10 AM?' \n", "Shall I book 10 AM?\u201D", "Shall I book 10 AM?\u2019", "Shall I book 10 AM?\u00BB"]) {
+      const h = HEARD({ aiSpeaking: true, aiSpeakingText: text, aiRemainingMs: 1_200, ...QUESTION_STARTED });
+      h.feed(ev("EndOfTurn", 0, "Yes."));
+      assert.deepEqual(h.calls, [["commit", "Yes.", 0, "model"]], JSON.stringify(text));
+    }
+  });
+
+  it('"Okay" over a statement is still dropped (R12a′), and so is one after a question the AI has gone past', () => {
+    for (const text of ["One moment, let me check that.", "Is Tuesday good? Let me check.", "Booked for 10 AM!", ""]) {
+      const h = HEARD({ aiSpeaking: true, aiSpeakingText: text, aiRemainingMs: 1_200, ...QUESTION_STARTED });
+      h.feed(ev("EndOfTurn", 0, "Okay."));
+      assert.deepEqual(h.calls, [["dropEcho", "Okay.", "backchannel"], ["cancelSpeculation", "backchannel"]], JSON.stringify(text));
+    }
+  });
+
+  it('"Yes" while processing (the AI not speaking) is still dropped, whatever the text', () => {
+    const h = HEARD({ processing: true, aiSpeakingText: "Shall I book 10 AM?", aiRemainingMs: 1_200, ...QUESTION_STARTED });
+    h.feed(ev("EndOfTurn", 0, "Yes."));
+    assert.deepEqual(h.calls, [["dropEcho", "Yes.", "backchannel"], ["cancelSpeculation", "backchannel"]]);
+  });
+
+  it("an interrupt word behaves as before: barge-in at the end of its turn, then commit", () => {
+    for (const said of INTERRUPTS) {
+      const h = HEARD(ASKING);
+      h.feed(ev("StartOfTurn", 0, said));
+      assert.deepEqual(h.calls, [], said);
+      h.feed(ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["bargeIn"], ["commit", said, 0, "model"]], said);
+    }
+  });
+
+  it('a backchannel that starts with "No" ("No worries") is answered, never a barge-in on the question', () => {
+    const h = HEARD(ASKING);
+    h.feed(ev("StartOfTurn", 0, "No"), ev("Update", 0, "No worries"), ev("EndOfTurn", 0, "No worries."));
+    assert.deepEqual(h.calls, [["commit", "No worries.", 0, "model"]]);
+  });
+
+  it("3 or more words are judged as before: the question's own words coming back are dropped (R13), the caller's barge in", () => {
+    const echo = HEARD(ASKING);
+    echo.feed(ev("EndOfTurn", 0, "Shall I book 10 AM?"));
+    assert.deepEqual(echo.calls, [["dropEcho", "Shall I book 10 AM?", "echo-like"], ["cancelSpeculation", "echo"]]);
+    const real = HEARD(ASKING);
+    real.feed(ev("Update", 0, "yes book it"));
+    assert.deepEqual(real.calls, [["bargeIn"]]);
+    real.feed(ev("EndOfTurn", 0, "yes book it please"));
+    assert.deepEqual(real.calls, [["bargeIn"], ["commit", "yes book it please", 0, "model"]]);
+  });
+
+  it("on the structured path the answer is buffered", () => {
+    const h = HEARD({ ...ASKING, expectedInputType: "phone" });
+    h.feed(ev("EndOfTurn", 0, "yeah"));
+    assert.deepEqual(h.calls, [["cancelSpeculation", "structured"], ["bufferStructured", "yeah"]]);
+  });
+
+});
+
+describe("endsWithQuestion", () => {
+  it("a question mark at the end, past whitespace and closing quotes", () => {
+    for (const text of ["Shall I book 10 AM?", "  ok?  ", 'AM?"', "AM?'", "AM?\u201D", "AM?\u2019", "AM?\u00BB", "AM?\"' \n", "?"]) {
+      assert.equal(endsWithQuestion(text), true, JSON.stringify(text));
+    }
+  });
+
+  it("anything else is not", () => {
+    for (const text of ["", "   ", "Booked.", "Is it Tuesday? Let me check.", "AM?!", "AM? (ten)", "AM\u201D", undefined, null, 42]) {
+      assert.equal(endsWithQuestion(text), false, JSON.stringify(text));
+    }
+  });
+});
+
+describe("the answer must land in the tail of the question (R14′)", () => {
+  const REPLY = "We have Tuesday at ten or Wednesday at two. Which suits you better?";
+  const DROPPED = (said) => [["dropEcho", said, "backchannel"], ["cancelSpeculation", "backchannel"]];
+
+  it('"Okay" over the first sentence of a reply that ends in a question (4 s still to play) is dropped', () => {
+    const h = HEARD({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 4_000, ...QUESTION_STARTED });
+    h.feed(ev("StartOfTurn", 0, "Okay"), ev("EndOfTurn", 0, "Okay."));
+    assert.deepEqual(h.calls, DROPPED("Okay."));
+  });
+
+  it('"Yes" over its tail (1.2 s still to play) is committed', () => {
+    const h = HEARD({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 1_200, ...QUESTION_STARTED });
+    h.feed(ev("StartOfTurn", 0, "Yes"), ev("EndOfTurn", 0, "Yes."));
+    assert.deepEqual(h.calls, [["commit", "Yes.", 0, "model"]]);
+  });
+
+  it('"Yes" while what is still to play is unknown (REST audio: the greeting, the disclosure) or large is dropped', () => {
+    const greeting = "This call is recorded. Thanks for calling Copperline Plumbing, how can I help?";
+    for (const aiRemainingMs of [null, undefined, Number.NaN, "1200", 6_000]) {
+      const h = HEARD({ aiSpeaking: true, aiSpeakingText: greeting, aiRemainingMs, ...QUESTION_STARTED });
+      h.feed(ev("EndOfTurn", 0, "Yes."));
+      assert.deepEqual(h.calls, DROPPED("Yes."), String(aiRemainingMs));
+    }
+  });
+
+  it("the tail is 2 s: exactly 2000 ms still to play is accepted, 2001 is dropped", () => {
+    const at = HEARD({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 2_000, ...QUESTION_STARTED });
+    at.feed(ev("EndOfTurn", 0, "Yes."));
+    assert.deepEqual(at.calls, [["commit", "Yes.", 0, "model"]]);
+    const past = HEARD({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 2_001, ...QUESTION_STARTED });
+    past.feed(ev("EndOfTurn", 0, "Yes."));
+    assert.deepEqual(past.calls, DROPPED("Yes."));
+    const zero = HEARD({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 0, ...QUESTION_STARTED });
+    zero.feed(ev("EndOfTurn", 0, "Yes."));
+    assert.deepEqual(zero.calls, [["commit", "Yes.", 0, "model"]], "its last frame is out and playing");
+  });
+
+  it("interrupt words are unchanged, in the tail or not: barge-in at the end of the turn, then commit", () => {
+    for (const aiRemainingMs of [1_200, 4_000, null]) {
+      for (const said of INTERRUPTS) {
+        const h = HEARD({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs, ...QUESTION_STARTED });
+        h.feed(ev("StartOfTurn", 0, said), ev("EndOfTurn", 0, said));
+        assert.deepEqual(h.calls, [["bargeIn"], ["commit", said, 0, "model"]], `${said} at ${aiRemainingMs}`);
+      }
+    }
+  });
+
+  it("content words outside the tail are answered as before (R12a′): only backchannels are dropped there", () => {
+    const h = HEARD({ aiSpeaking: true, aiSpeakingText: REPLY, aiRemainingMs: 4_000, ...QUESTION_STARTED });
+    h.feed(ev("EndOfTurn", 0, "Tuesday."));
+    assert.deepEqual(h.calls, [["commit", "Tuesday.", 0, "model"]]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Fix round 4: an answer must start after the question does (R14″), and a declined
+//    barge-in is not spent (Minor #1)
+// ---------------------------------------------------------------------------
+
+describe("the answer must start after the question does (R14″)", () => {
+  // The question's audio started at 10 000 (server.js: questionAudioStartAt); Flux's StartOfTurn
+  // lags the caller's first sound by about 500 ms, so a turn heard to start at 10 500 or later
+  // began after the question did.
+  const Q = { aiSpeaking: true, aiSpeakingText: "We have Tuesday at ten. Shall I book it?", aiRemainingMs: 1_000, questionAudioStartAt: 10_000 };
+  const COMMITTED = [["commit", "Yes.", 0, "model"]];
+  const DROPPED = [["dropEcho", "Yes.", "backchannel"], ["cancelSpeculation", "backchannel"]];
+  /** "Yes" whose StartOfTurn arrives at `startAt` (its EndOfTurn 700 ms later). */
+  const yesAt = (startAt, state = Q) => {
+    const h = FAST(state);
+    h.feed({ ...ev("StartOfTurn", 0, "Yes"), receivedAt: startAt }, { ...ev("EndOfTurn", 0, "Yes."), receivedAt: startAt + 700 });
+    return h.calls;
+  };
+
+  it("exactly +500 ms after the question's audio started is accepted; +499 is dropped", () => {
+    assert.deepEqual(yesAt(10_500), COMMITTED);
+    assert.deepEqual(yesAt(10_499), DROPPED);
+    assert.deepEqual(yesAt(12_000), COMMITTED);
+  });
+
+  it("the turn starts at its StartOfTurn, even an empty one; without one, at its first words", () => {
+    const early = FAST(Q); // an empty StartOfTurn before the question: late words do not move it
+    early.feed({ ...ev("StartOfTurn", 0, ""), receivedAt: 10_100 }, { ...ev("Update", 0, "Yes"), receivedAt: 10_900 }, { ...ev("EndOfTurn", 0, "Yes."), receivedAt: 11_200 });
+    assert.deepEqual(early.calls, DROPPED);
+    const words = FAST(Q); // no StartOfTurn: an empty Update does not start it, the first words do
+    words.feed({ ...ev("Update", 0, ""), receivedAt: 10_000 }, { ...ev("Update", 0, "Yes"), receivedAt: 10_600 }, { ...ev("EndOfTurn", 0, "Yes."), receivedAt: 11_000 });
+    assert.deepEqual(words.calls, COMMITTED);
+    const only = FAST(Q); // nothing but its EndOfTurn
+    only.feed({ ...ev("EndOfTurn", 0, "Yes."), receivedAt: 10_400 });
+    assert.deepEqual(only.calls, DROPPED);
+  });
+
+  it("a later StartOfTurn of the same turn does not move its start", () => {
+    const h = FAST(Q);
+    h.feed({ ...ev("StartOfTurn", 0, "Yes"), receivedAt: 10_100 }, { ...ev("StartOfTurn", 0, "Yes"), receivedAt: 10_900 }, { ...ev("EndOfTurn", 0, "Yes."), receivedAt: 11_200 });
+    assert.deepEqual(h.calls, DROPPED);
+  });
+
+  it("each turn has its own start", () => {
+    const h = FAST(Q);
+    h.feed({ ...ev("StartOfTurn", 0, "Okay"), receivedAt: 10_100 }, { ...ev("EndOfTurn", 0, "Okay."), receivedAt: 10_600 });
+    h.feed({ ...ev("StartOfTurn", 1, "Yes"), receivedAt: 10_700 }, { ...ev("EndOfTurn", 1, "Yes."), receivedAt: 11_100 });
+    assert.deepEqual(h.calls, [["dropEcho", "Okay.", "backchannel"], ["cancelSpeculation", "backchannel"], ["commit", "Yes.", 1, "model"]]);
+  });
+
+  it("reset() forgets the turn starts (a new Flux connection numbers its turns from 0 again)", () => {
+    const h = FAST(Q);
+    h.feed({ ...ev("StartOfTurn", 0, "Yes"), receivedAt: 10_100 });
+    h.engine.reset();
+    h.feed({ ...ev("StartOfTurn", 0, "Yes"), receivedAt: 10_800 }, { ...ev("EndOfTurn", 0, "Yes."), receivedAt: 11_100 });
+    assert.deepEqual(h.calls.filter((c) => c[0] !== "cancelSpeculation"), COMMITTED);
+  });
+
+  it("unknown times mean drop: events without receivedAt, or no questionAudioStartAt", () => {
+    const unstamped = FAST(Q);
+    unstamped.feed(ev("StartOfTurn", 0, "Yes"), ev("EndOfTurn", 0, "Yes."));
+    assert.deepEqual(unstamped.calls, DROPPED);
+    for (const questionAudioStartAt of [null, undefined, Number.NaN]) {
+      assert.deepEqual(yesAt(20_000, { ...Q, questionAudioStartAt }), DROPPED, String(questionAudioStartAt));
+    }
+  });
+
+  it("interrupt words are unchanged, whenever the turn started", () => {
+    for (const startAt of [10_100, 12_000]) {
+      const h = FAST(Q);
+      h.feed({ ...ev("StartOfTurn", 0, "Stop"), receivedAt: startAt }, { ...ev("EndOfTurn", 0, "Stop."), receivedAt: startAt + 500 });
+      assert.deepEqual(h.calls, [["bargeIn"], ["commit", "Stop.", 0, "model"]], String(startAt));
+    }
+  });
+
+  // The re-review probe (scratchpad/t5rr/tools/probe-r14-eot-lag.js), with the real player:
+  // "We have Tuesday at ten." (1.6 s, all of it already in the player when the question is
+  // sent at 300 ms), then "Shall I book it?" (1.1 s), so the question plays from 1 600 ms. The
+  // EndOfTurn lags the caller's last word by 400-900 ms, so at the EndOfTurn the AI is in its
+  // question's tail either way: only when the caller BEGAN tells an "okay" to the first
+  // sentence from an answer to the question.
+  const { createFastPlayer } = require("../lib/fast-player");
+  function probe({ said, onsetAt, endsAt, eotLagMs }) {
+    let clock = 0;
+    const player = createFastPlayer({ sendJson: () => {}, streamSid: "MZ", now: () => clock });
+    const calls = [];
+    const engine = createFastTurnEngine({
+      speculationEnabled: false,
+      getState: () => ({
+        aiSpeaking: player.isPlaying(), processing: false, expectedInputType: "general",
+        aiSpeakingText: "We have Tuesday at ten. Shall I book it?",
+        aiRemainingMs: player.remainingMs(clock),
+        questionAudioStartAt: 1_600, // server.js at the question's speak: 300 + the 1 300 ms still queued
+      }),
+      actions: {
+        commit: (t) => calls.push(["commit", t]),
+        bargeIn: () => calls.push(["bargeIn"]),
+        dropEcho: (t, r) => calls.push(["dropEcho", t, r]),
+        bufferStructured: (t) => calls.push(["bufferStructured", t]),
+      },
+    });
+    player.push(Buffer.alloc(1_600 * 8, 0x7e));
+    clock = 300;
+    player.push(Buffer.alloc(1_100 * 8, 0x7e));
+    player.endUtterance();
+    clock = onsetAt + 500; // Flux's StartOfTurn, ~500 ms after the first sound
+    engine.onTurnInfo({ event: "StartOfTurn", turnIndex: 0, transcript: said, receivedAt: clock });
+    clock = endsAt + eotLagMs;
+    const remaining = player.remainingMs(clock);
+    engine.onTurnInfo({ event: "EndOfTurn", turnIndex: 0, transcript: `${said}.`, trigger: "model", receivedAt: clock });
+    return { remaining, calls };
+  }
+
+  it('the probe: an "Okay." that ended 200-500 ms before the question started is dropped, though at its EndOfTurn the AI is in the tail', () => {
+    for (const [endsAt, eotLagMs] of [[1_400, 600], [1_100, 900], [1_400, 400]]) {
+      const { remaining, calls } = probe({ said: "Okay", onsetAt: endsAt - 300, endsAt, eotLagMs });
+      assert.ok(remaining <= 2_000, `R14′ alone would have taken it: ${remaining} ms left`);
+      assert.deepEqual(calls, [["dropEcho", "Okay.", "backchannel"]], `ended at ${endsAt}, EndOfTurn +${eotLagMs}`);
+    }
+  });
+
+  it('the probe: a "Yes" begun during the question is committed', () => {
+    const { calls } = probe({ said: "Yes", onsetAt: 1_700, endsAt: 2_000, eotLagMs: 600 });
+    assert.deepEqual(calls, [["commit", "Yes."]]);
+  });
+});
+
+describe("a barge-in the session declines is not spent (fix round 4, Minor #1)", () => {
+  {
+    it("bargeIn() returning false leaves the turn free to barge in again; anything else spends it", () => {
+      const asked = [];
+      let decline = true;
+      const h = harness({ state: SPEAKING, actions: { bargeIn: () => { asked.push(decline); return decline ? false : undefined; } } });
+      h.feed(ev("Update", 0, "hi I'm calling about my booking"));
+      h.feed(ev("Update", 0, "hi I'm calling about my booking for Tuesday"));
+      assert.deepEqual(asked, [true, true], "declined: asked again on the next Update");
+      decline = false;
+      h.feed(ev("Update", 0, "hi I'm calling about my booking for Tuesday and"));
+      h.feed(ev("Update", 0, "hi I'm calling about my booking for Tuesday and I need"), ev("EndOfTurn", 0, "hi I'm calling about my booking for Tuesday and I need to move it"));
+      assert.deepEqual(asked, [true, true, false], "done: spent for the rest of the turn");
+      assert.deepEqual(h.calls, [["commit", "hi I'm calling about my booking for Tuesday and I need to move it", 0, "model"]]);
+    });
+  }
+
+  it("declined at the EndOfTurn: the final is still answered", () => {
+    const h = harness({ state: SPEAKING, actions: { bargeIn: () => false } });
+    h.feed(ev("EndOfTurn", 0, "wait a second please"));
+    assert.deepEqual(h.calls, [["commit", "wait a second please", 0, "model"]]);
+  });
+
+  it("a bargeIn() that throws still spends it (the bookkeeping comes first: at most once)", () => {
+    let asked = 0;
+    const h = harness({ state: SPEAKING, actions: { bargeIn: () => { asked += 1; throw new Error("boom"); } } });
+    assert.throws(() => h.feed(ev("Update", 0, "wait a second please")), /boom/);
+    h.feed(ev("Update", 0, "wait a second please now"));
+    assert.equal(asked, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. The gate: the turn Flux has open (M4a), and an answer to a long question
+//     committed once the AI goes idle (M5 i)
+// ---------------------------------------------------------------------------
+
+describe("openTurn(): the turn Flux has open (gate M4a)", () => {
+  it("none before a turn starts; a started turn with no words yet; then its latest words", () => {
+    const h = FAST(IDLE);
+    assert.equal(h.engine.openTurn(), null);
+    h.feed(ev("StartOfTurn", 0, ""));
+    assert.deepEqual(h.engine.openTurn(), { turnIndex: 0, transcript: "" });
+    h.feed(ev("Update", 0, "I'd like"), ev("Update", 0, "I'd like to book"));
+    assert.deepEqual(h.engine.openTurn(), { turnIndex: 0, transcript: "I'd like to book" });
+  });
+
+  it("an event with no words never erases the words the turn already has", () => {
+    const h = FAST(IDLE);
+    h.feed(ev("StartOfTurn", 0, ""), ev("Update", 0, "I'd like to book"), ev("Update", 0, ""), ev("EagerEndOfTurn", 0, "  "));
+    assert.deepEqual(h.engine.openTurn(), { turnIndex: 0, transcript: "I'd like to book" });
+  });
+
+  it("an Update with words opens it too (no StartOfTurn seen); an empty one alone does not", () => {
+    const h = FAST(IDLE);
+    h.feed(ev("Update", 0, ""));
+    assert.equal(h.engine.openTurn(), null);
+    h.feed(ev("Update", 0, "hello"));
+    assert.deepEqual(h.engine.openTurn(), { turnIndex: 0, transcript: "hello" });
+  });
+
+  it("an ended turn is not open, and the next one starts afresh; reset() forgets", () => {
+    const h = FAST(IDLE);
+    h.feed(ev("Update", 0, "hello there"), ev("EndOfTurn", 0, "Hello there."));
+    assert.equal(h.engine.openTurn(), null);
+    h.feed(ev("StartOfTurn", 1, ""));
+    assert.deepEqual(h.engine.openTurn(), { turnIndex: 1, transcript: "" });
+    h.engine.reset();
+    assert.equal(h.engine.openTurn(), null);
+  });
+});
+
+describe("onAiIdle(): a short answer to a long question is committed once the AI goes idle (gate M5 i)", () => {
+  // The question started at 10 000; its audio still had 3 s to play when "Yes" ended
+  // (R14′ wants the tail), but "Yes" began after the question did (R14″).
+  const LONG_Q = { aiSpeaking: true, aiSpeakingText: "Would you like me to book you in for Tuesday at ten?", aiRemainingMs: 3_000, questionAudioStartAt: 10_000 };
+  const IDLE_AFTER = { aiSpeakingText: LONG_Q.aiSpeakingText, questionAudioStartAt: 10_000 };
+  const DROPPED = [["dropEcho", "Yes.", "backchannel"], ["cancelSpeculation", "backchannel"]];
+  function droppedYes(startAt = 10_800) {
+    const h = FAST(LONG_Q);
+    h.feed({ ...ev("StartOfTurn", 0, "Yes"), receivedAt: startAt }, { ...ev("EndOfTurn", 0, "Yes."), receivedAt: startAt + 600 });
+    assert.deepEqual(h.calls, DROPPED, "R14′: not in the tail yet");
+    return h;
+  }
+
+  it("begun after the question started: committed when the AI goes idle (trigger deferred), once", () => {
+    const h = droppedYes();
+    assert.equal(h.engine.onAiIdle(IDLE_AFTER), true);
+    assert.deepEqual(h.calls.slice(2), [["commit", "Yes.", 0, "deferred"]]);
+    assert.equal(h.engine.onAiIdle(IDLE_AFTER), false, "forgotten once committed");
+  });
+
+  it("begun before the question started (+500 ms): not an answer to it", () => {
+    const h = droppedYes(10_499);
+    assert.equal(h.engine.onAiIdle(IDLE_AFTER), false);
+    assert.equal(h.calls.length, 2);
+  });
+
+  it("not after a newer turn started, nor when the AI's last words were no question, nor with no question time", () => {
+    const newer = droppedYes();
+    newer.feed({ ...ev("StartOfTurn", 1, "And"), receivedAt: 11_900 });
+    assert.equal(newer.engine.onAiIdle(IDLE_AFTER), false);
+    const statement = droppedYes();
+    assert.equal(statement.engine.onAiIdle({ aiSpeakingText: "Let me check that.", questionAudioStartAt: 10_000 }), false);
+    const unknown = droppedYes();
+    assert.equal(unknown.engine.onAiIdle({ aiSpeakingText: LONG_Q.aiSpeakingText, questionAudioStartAt: null }), false);
+    for (const h of [newer, statement, unknown]) assert.deepEqual(h.calls, DROPPED);
+  });
+
+  it("an idle with no question in it forgets the dropped final: a later idle does not commit it", () => {
+    const h = droppedYes();
+    assert.equal(h.engine.onAiIdle({ aiSpeakingText: "One moment.", questionAudioStartAt: null }), false);
+    assert.equal(h.engine.onAiIdle(IDLE_AFTER), false);
+  });
+
+  it("reset() forgets it", () => {
+    const h = droppedYes();
+    h.engine.reset();
+    assert.equal(h.engine.onAiIdle(IDLE_AFTER), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Phone test F2: the fast path's own interrupt words ("Sorry?" over a long reply)
+// ---------------------------------------------------------------------------
+
+describe("the fast path's own interrupt words (phone test F2)", () => {
+  // The owner's first call: "Sorry." over a reply like this one waited for it to finish.
+  const LONG_REPLY = "I'm sorry, I can't make that change, because the details don't match the booking on file. I can take a message so Dave can ring you back and sort out the 10:30 time. Would you like me to do that?";
+  const LONG = { aiSpeaking: true, aiSpeakingText: LONG_REPLY, aiRemainingMs: 9_000, questionAudioStartAt: 4_000 };
+  // One phrase per alternative, each two words or fewer: the interrupt rule, not the word count, lets it through.
+  const FAST_INTERRUPTS = ["Sorry?", "Sorry.", "Sorry what?", "Pardon?", "What?", "Huh?", "Repeat that.", "Say that again?"];
+  // Near misses: the word must be the first, and whole.
+  const NOT_FAST_INTERRUPTS = ["Whatever.", "Sorted.", "Huge.", "Repeat", "Okay, sorry", "Pardonne"];
+
+  it("is a list of its own: INTERRUPT_RE, the classic copy, is unchanged", () => {
+    assert.equal(FAST_INTERRUPT_RE.source, String.raw`^(sorry|pardon|what|huh|say that again|repeat that)\b`);
+    assert.equal(FAST_INTERRUPT_RE.flags, "i");
+    for (const said of FAST_INTERRUPTS) assert.equal(INTERRUPT_RE.test(said), false, said);
+    for (const said of NOT_FAST_INTERRUPTS) assert.equal(FAST_INTERRUPT_RE.test(said), false, said);
+  });
+
+  it('"Sorry?" over a long reply: barge-in at the end of its turn, then it is answered', () => {
+    const h = HEARD(LONG);
+    h.feed(ev("StartOfTurn", 0, "Sorry"), ev("Update", 0, "Sorry?"));
+    assert.deepEqual(h.calls, [], "a short candidate is judged at its EndOfTurn (R12a′)");
+    h.feed(ev("EndOfTurn", 0, "Sorry?"));
+    assert.deepEqual(h.calls, [["bargeIn"], ["commit", "Sorry?", 0, "model"]]);
+  });
+
+  it("every one of them barges in, then is answered: while the AI speaks, thinks, or both", () => {
+    for (const state of [LONG, PROCESSING, BUSY]) {
+      for (const said of FAST_INTERRUPTS) {
+        const h = HEARD(state);
+        h.feed(ev("StartOfTurn", 0, said), ev("EndOfTurn", 0, said));
+        assert.deepEqual(h.calls, [["bargeIn"], ["commit", said, 0, "model"]], `${said} ${JSON.stringify(state)}`);
+      }
+    }
+  });
+
+  it("in the tail of a question too: it cuts the question, then is answered (R14″ lets interrupt words barge in)", () => {
+    for (const said of FAST_INTERRUPTS) {
+      const h = HEARD(ASKING);
+      h.feed(ev("StartOfTurn", 0, said), ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["bargeIn"], ["commit", said, 0, "model"]], said);
+    }
+  });
+
+  it('"Sorry" is never dropped: no backchannel, and too short to judge as echo, even when the AI said sorry', () => {
+    for (const said of ["Sorry", "Sorry.", "Sorry?", "Sorry, sorry", "Sorry, yeah"]) assert.equal(isBackchannel(said), false, said);
+    assert.equal(isLikelyEcho("Sorry.", LONG_REPLY), false);
+    const h = HEARD({ aiSpeaking: true, aiSpeakingText: "Sorry about that, let me check.", aiRemainingMs: 1_500, questionAudioStartAt: null });
+    h.feed(ev("EndOfTurn", 0, "Sorry."));
+    assert.deepEqual(h.calls, [["bargeIn"], ["commit", "Sorry.", 0, "model"]]);
+    assert.ok(!h.calls.some((c) => c[0] === "dropEcho"));
+  });
+
+  it("with the AI idle it is just a turn: committed, nothing to barge in on", () => {
+    const h = HEARD(IDLE);
+    h.feed(ev("EndOfTurn", 0, "Sorry?"));
+    assert.deepEqual(h.calls, [["commit", "Sorry?", 0, "model"]]);
+  });
+
+  it("near misses are short content as before: answered after the AI, no barge-in", () => {
+    for (const said of NOT_FAST_INTERRUPTS) {
+      const h = HEARD(LONG);
+      h.feed(ev("EndOfTurn", 0, said));
+      assert.deepEqual(h.calls, [["commit", said, 0, "model"]], said);
+    }
+  });
+});

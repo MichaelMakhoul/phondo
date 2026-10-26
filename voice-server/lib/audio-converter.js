@@ -181,6 +181,7 @@ function geminiToTwilio(geminiBase64) {
 }
 
 module.exports = {
+  encodeMulawSample,
   mulawToPcm16,
   pcm16ToMulaw,
   upsample8kTo16k,
