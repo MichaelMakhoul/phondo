@@ -79,19 +79,19 @@ describe("contactCustomer", () => {
     expect(sendCancellationSMS).not.toHaveBeenCalled();
   });
 
-  it("a cancel texts the cancellation message for that booking, to the normalised number, in the org's zone, past the hourly cap", async () => {
+  it("a cancel texts the cancellation message for that booking, to the normalised number, in the org's zone, as owner-requested", async () => {
     vi.mocked(sendCancellationSMS).mockResolvedValue({ sent: true, status: "sent" } as any);
     expect(await contactCustomer(req({ phone: "0414 141 883" }), CAN)).toEqual({ method: "text", status: "sent" });
     // The owner asked for it: the cap for automated texts doesn't hold it back (the
     // booking's confirmation may have gone out minutes ago, about the old time).
-    expect(sendCancellationSMS).toHaveBeenCalledWith(ORG, "+61414141883", START, "Australia/Sydney", APPT, { skipRateLimit: true });
+    expect(sendCancellationSMS).toHaveBeenCalledWith(ORG, "+61414141883", START, "Australia/Sydney", APPT, { ownerRequested: true });
     expect(sendAppointmentConfirmationSMS).not.toHaveBeenCalled();
   });
 
-  it("a move texts the new time's confirmation for the NEW leg, past the hourly cap", async () => {
+  it("a move texts the new time for the NEW leg as a MOVE (never 'confirmed for', which reads as the old booking), owner-requested", async () => {
     vi.mocked(sendAppointmentConfirmationSMS).mockResolvedValue({ sent: true, status: "sent" } as any);
     expect(await contactCustomer(req({ kind: "moved" }), CAN)).toEqual({ method: "text", status: "sent" });
-    expect(sendAppointmentConfirmationSMS).toHaveBeenCalledWith(ORG, "+61414141883", START, "Australia/Sydney", undefined, APPT, { skipRateLimit: true });
+    expect(sendAppointmentConfirmationSMS).toHaveBeenCalledWith(ORG, "+61414141883", START, "Australia/Sydney", undefined, APPT, { ownerRequested: true, moved: true });
     expect(sendCancellationSMS).not.toHaveBeenCalled();
   });
 

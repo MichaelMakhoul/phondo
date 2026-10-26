@@ -709,7 +709,9 @@ describe("SCRUM-597: every change asks whether to let the customer know", () => 
       outcome: "needs_confirmation", contact_options: ["none"], contact_note: "Texting customers isn't available yet.", customer_notified: false,
     });
     expect(r.message).toContain("cancel Jane Smith's job on Friday, October 16 at 10:00 AM");
-    expect(r.message).toContain("You can't let Jane Smith know yourself (Texting customers isn't available yet): say so in a few words and offer to read out their number after the change.");
+    // Worded so the model can't repeat it as if the OWNER couldn't contact the customer.
+    expect(r.message).toContain('Telling Jane Smith isn\'t possible from here (Texting customers isn\'t available yet): say so in a few words (for example "I can\'t text them") and offer to read out their number after the change.');
+    expect(r.message).not.toMatch(/You can't let/);
     expect(r.message).toContain('confirmed=true and notify_customer "none"');
     expect(cancelSingleAppointment).not.toHaveBeenCalled();
   });
@@ -775,7 +777,7 @@ describe("SCRUM-597: every change asks whether to let the customer know", () => 
     process.env.CALLER_SMS_ENABLED = "true";
     vi.mocked(sendCancellationSMS).mockResolvedValue({ sent: true, status: "sent" } as any);
     const r = await handleOwnerCancelAppointment(ORG, { appointment_id: APPT, confirmed: true, notify_customer: "text" }, ctx);
-    expect(sendCancellationSMS).toHaveBeenCalledWith(ORG, "+61412345678", new Date(BEFORE.start_time), TZ, APPT, { skipRateLimit: true });
+    expect(sendCancellationSMS).toHaveBeenCalledWith(ORG, "+61412345678", new Date(BEFORE.start_time), TZ, APPT, { ownerRequested: true });
     expect(vi.mocked(cancelSingleAppointment).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(sendCancellationSMS).mock.invocationCallOrder[0]);
     expect(r.data).toMatchObject({ outcome: "cancelled", customer_contact: { method: "text", status: "sent" }, customer_notified: true });
     expect(r.message).toContain("Cancelled Jane Smith's job on Friday, October 16 at 10:00 AM. I've texted Jane Smith to let them know.");
@@ -785,7 +787,7 @@ describe("SCRUM-597: every change asks whether to let the customer know", () => 
     process.env.CALLER_SMS_ENABLED = "true";
     vi.mocked(sendAppointmentConfirmationSMS).mockResolvedValue({ sent: true, status: "sent" } as any);
     const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME, confirmed: true, notify_customer: "text" }, ctx);
-    expect(sendAppointmentConfirmationSMS).toHaveBeenCalledWith(ORG, "+61412345678", new Date("2026-10-16T22:00:00.000Z"), TZ, undefined, NEW_LEG, { skipRateLimit: true });
+    expect(sendAppointmentConfirmationSMS).toHaveBeenCalledWith(ORG, "+61412345678", new Date("2026-10-16T22:00:00.000Z"), TZ, undefined, NEW_LEG, { ownerRequested: true, moved: true });
     expect(vi.mocked(performRescheduleLeg).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(sendAppointmentConfirmationSMS).mock.invocationCallOrder[0]);
     expect(sendCancellationSMS).not.toHaveBeenCalled(); // a move never says "cancelled"
     expect(r.data).toMatchObject({ outcome: "rescheduled", customer_contact: { method: "text", status: "sent" }, customer_notified: true });

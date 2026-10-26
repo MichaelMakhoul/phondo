@@ -42,7 +42,9 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-const events = (rows: Array<[string, string]>) => ({ data: rows.map(([appointment_id, event_type]) => ({ appointment_id, event_type })), error: null });
+const EVENT_AT = "2026-10-26T04:33:55Z";
+const events = (rows: Array<[string, string]>) => ({ data: rows.map(([appointment_id, event_type]) => ({ appointment_id, event_type, created_at: EVENT_AT })), error: null });
+const ATTEMPT = "2026-10-26T04:33:56Z"; // the change's own text, a second after its audit row
 
 describe("buildOwnerRecap", () => {
   it("no events on the call: [] after one org- and call-scoped read of the audit trail", async () => {
@@ -103,8 +105,8 @@ describe("buildOwnerRecap", () => {
       queues.appointments = [{ data: [{ id: A, attendee_name: "Bob", start_time: "2026-10-26T01:30:00Z", rescheduled_from_id: null }], error: null }];
       queues.appointment_confirmations = [{ data: [
         // A confirmation-intent row for the same booking never answers for its cancellation.
-        { appointment_id: A, idempotency_key: `${A}:sms:confirmation:2026-10-26T01:30:00.000Z`, status: "sent" },
-        { appointment_id: A, idempotency_key: `${A}:sms:cancellation:2026-10-26T01:30:00.000Z`, status },
+        { appointment_id: A, idempotency_key: `${A}:sms:confirmation:2026-10-26T01:30:00.000Z`, status: "sent", last_attempt_at: ATTEMPT },
+        { appointment_id: A, idempotency_key: `${A}:sms:cancellation:2026-10-26T01:30:00.000Z`, status, last_attempt_at: ATTEMPT },
       ], error: null }];
       const [item] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }))!;
       expect(item, status).toMatchObject(told);
@@ -118,9 +120,9 @@ describe("buildOwnerRecap", () => {
       { data: [{ id: OLD, start_time: "2026-10-27T22:00:00Z" }], error: null },
     ];
     queues.appointment_confirmations = [{ data: [
-      { appointment_id: OLD, idempotency_key: `${OLD}:sms:confirmation:x`, status: "sent" },
-      { appointment_id: NEW, idempotency_key: `${NEW}:email:confirmation:x`, status: "sent" },
-      { appointment_id: NEW, idempotency_key: `${NEW}:sms:cancellation:x`, status: "sent" },
+      { appointment_id: OLD, idempotency_key: `${OLD}:sms:confirmation:x`, status: "sent", last_attempt_at: ATTEMPT },
+      { appointment_id: NEW, idempotency_key: `${NEW}:email:confirmation:x`, status: "sent", last_attempt_at: ATTEMPT },
+      { appointment_id: NEW, idempotency_key: `${NEW}:sms:cancellation:x`, status: "sent", last_attempt_at: ATTEMPT },
     ], error: null }];
     const [item] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }))!;
     expect(item.told).toBe("not_told");
@@ -129,7 +131,7 @@ describe("buildOwnerRecap", () => {
       { data: [{ id: NEW, attendee_name: "Jane", start_time: "2026-10-29T03:00:00Z", rescheduled_from_id: OLD }], error: null },
       { data: [{ id: OLD, start_time: "2026-10-27T22:00:00Z" }], error: null },
     ];
-    queues.appointment_confirmations = [{ data: [{ appointment_id: NEW, idempotency_key: `${NEW}:sms:confirmation:x`, status: "sent" }], error: null }];
+    queues.appointment_confirmations = [{ data: [{ appointment_id: NEW, idempotency_key: `${NEW}:sms:confirmation:x`, status: "sent", last_attempt_at: ATTEMPT }], error: null }];
     const [texted] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }))!;
     expect(texted.told).toBe("texted");
   });
@@ -165,5 +167,22 @@ describe("buildOwnerRecap", () => {
       expect(await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }), failAt).toBeNull();
     }
     expect(console.error).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe("SCRUM-597 (silent round 2): a change's text is attempted right after it", () => {
+  it("a text attempted before the change (an earlier cancellation of a reinstated booking) is never its text; within the skew it is", async () => {
+    for (const [attemptAt, told] of [
+      ["2026-10-26T04:20:00Z", "not_told"], // 14 minutes before the change: an older text
+      ["2026-10-26T04:33:20Z", "texted"], // 35 s before (clock skew): counts
+      ["2026-10-26T04:34:10Z", "texted"], // after the change
+    ] as const) {
+      queues.appointment_events = [events([[A, "cancelled"]])];
+      queues.appointments = [{ data: [{ id: A, attendee_name: "Bob", start_time: "2026-10-26T01:30:00Z", rescheduled_from_id: null }], error: null }];
+      queues.appointment_confirmations = [{ data: [{ appointment_id: A, idempotency_key: `${A}:sms:cancellation:x`, status: "sent", last_attempt_at: attemptAt }], error: null }];
+      const [item] = (await buildOwnerRecap(fake(), { organizationId: ORG, callId: CALL, timezone: TZ, since: SINCE }))!;
+      expect(item.told, attemptAt).toBe(told);
+    }
+    expect(calls("appointment_confirmations").find(([m]) => m === "select")?.[1]).toEqual(["appointment_id, idempotency_key, status, last_attempt_at"]);
   });
 });

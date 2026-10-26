@@ -197,3 +197,16 @@ describe("toNumberingPlanE164 (what sendCallerSMS classifies)", () => {
     expect(numberingPlanLineType(toNumberingPlanE164("415-555-1234"))).toBeNull();
   });
 });
+
+describe("the AU trunk zero after +61 (types lens round 2)", () => {
+  it("'+61 (0) 412 345 678' and '+610412345678' are the mobile +61412345678; a 1300 number stays non-mobile", () => {
+    expect(toNumberingPlanE164("+61 (0) 412 345 678")).toBe("+61412345678");
+    expect(toNumberingPlanE164("+610412345678")).toBe("+61412345678");
+    expect(toNumberingPlanE164("+61 (0)2 9555 1234")).toBe("+61295551234");
+    expect(numberingPlanLineType(toNumberingPlanE164("+61 (0) 412 345 678"))).toBe("mobile");
+    expect(numberingPlanLineType(toNumberingPlanE164("+61 1300 123 456"))).toBe("other");
+  });
+  it("the owner path reads it as a textable mobile too", async () => {
+    expect(await getTextCapability(ORG, "+61 (0) 412 345 678", "AU", ON)).toEqual({ canText: true, phone: "+61412345678" });
+  });
+});

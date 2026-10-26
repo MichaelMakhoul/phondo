@@ -65,3 +65,21 @@ describe("useVoiceTest: one live session per tab, and bookings_changed", () => {
     expect(hook).toMatch(/case "bookings_changed":\s*\/\/[^\n]*\n\s*announceBookingsChanged\(\);\s*break;/);
   });
 });
+
+// SCRUM-597 round 2 (silent + code lenses): a start() stopped while connecting gives up.
+describe("useVoiceTest: a start stopped mid-way gives up", () => {
+  const hook = readFileSync(join(process.cwd(), "src/lib/voice-test/use-voice-test.ts"), "utf-8");
+  const start = hook.slice(hook.indexOf("const start = useCallback(async () => {"), hook.indexOf("}, [assistantId, tokenUrl"));
+  it("cleanup() bumps the start generation; start() takes its number after its own cleanup and claim", () => {
+    const cleanupFn = hook.slice(hook.indexOf("function cleanup() {"));
+    expect(cleanupFn.slice(0, 300)).toContain("startGenRef.current += 1;");
+    expect(start.indexOf("const gen = startGenRef.current;")).toBeGreaterThan(start.indexOf("claimVoiceSession(sessionHandleRef.current);"));
+  });
+  it("checks after the token, the microphone (releasing it) and the worklet, and a superseded start's error is no error", () => {
+    expect(start).toMatch(/const \{ token, wsUrl \} = await tokenRes\.json\(\);\s*if \(superseded\(\)\) return;/);
+    expect(start).toMatch(/if \(superseded\(\)\) \{[^}]*stream\.getTracks\(\)\.forEach\(\(t\) => t\.stop\(\)\);\s*return;\s*\}\s*mediaStreamRef\.current = stream;/);
+    expect(start).toMatch(/await ctx\.audioWorklet\.addModule\([^)]*\);\s*if \(superseded\(\)\) return;/);
+    expect(start).toMatch(/\} catch \(err\) \{\s*(\/\/[^\n]*\n\s*)*if \(superseded\(\)\) return;/);
+    expect(start.indexOf("superseded()")).toBeLessThan(start.indexOf("new WebSocket("));
+  });
+});

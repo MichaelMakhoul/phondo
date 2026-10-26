@@ -200,7 +200,7 @@ describe("OwnerAssistantBubble (client)", () => {
 
   it("expanded: the short 'changes are real' line, then the shared controls, transcript and error", () => {
     expect(bubbleSource.replace(/\s+/g, " ")).toContain(
-      "Changes are real: it reads every change back, asks whether to tell the customer, and waits for your yes. Sessions last up to 8 minutes.",
+      "Changes are real: it reads every change back and waits for your yes, then tells you whether the customer was told. Sessions last up to 8 minutes.",
     );
     expect(bubbleCode).toMatch(/<OwnerAssistantControls session=\{session\} compact \/>/);
     expect(bubbleCode).toMatch(/<OwnerAssistantTranscript transcript=\{session\.transcript\}/);
@@ -303,5 +303,12 @@ describe("SCRUM-597 review: the page behind the bubble, and the copy", () => {
     expect(sessionUiCode).toContain("Press Start talking and allow the microphone when your browser asks.");
     expect(sessionUiCode).not.toContain("Click below");
     expect(sessionUiCode).toContain("we&apos;ll email you a list of exactly what changed.");
+  });
+});
+
+describe("SCRUM-597 round 2: the open calendar panel refreshes too", () => {
+  it("an open appointment panel refetches when the assistant changes a booking", () => {
+    const panel = read("src/app/(dashboard)/calendar/appointment-detail-panel.tsx");
+    expect(panel).toMatch(/useEffect\(\(\) => onBookingsChanged\(\(\) => \{\s*if \(open && viewId\) void fetchAppointment\(\);\s*\}\), \[open, viewId, fetchAppointment\]\);/);
   });
 });

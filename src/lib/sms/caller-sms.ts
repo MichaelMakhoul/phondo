@@ -247,6 +247,38 @@ async function isRateLimited(
   return (count ?? 0) > 0;
 }
 
+/** SCRUM-597: appointment texts the owner may send one number in an hour. */
+const OWNER_TEXTS_PER_HOUR = 3;
+
+/**
+ * SCRUM-597: the looser cap for owner-requested texts — at most OWNER_TEXTS_PER_HOUR
+ * appointment texts (confirmations and cancellations together) sent to this number
+ * from this org in the last hour. Fails closed, like isRateLimited.
+ */
+async function isOwnerRequestedRateLimited(phone: string, orgId: string): Promise<boolean> {
+  const supabase = createAdminClient();
+  const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const { count, error } = await (supabase as any)
+    .from("caller_sms_log")
+    .select("id", { count: "exact", head: true })
+    .eq("caller_phone", phone)
+    .eq("organization_id", orgId)
+    .eq("status", "sent")
+    .in("message_type", ["appointment_confirmation", "appointment_cancellation"])
+    .gte("created_at", since);
+  if (error) {
+    console.error("[CallerSMS] Owner-text rate limit check failed — blocking send to be safe:", { orgId, error });
+    Sentry.withScope((scope) => {
+      scope.setTag("service", "caller-sms");
+      setReasonTag(scope, SENTRY_REASONS.RATE_LIMIT_CHECK_FAILED);
+      scope.setExtras({ orgId, code: error.code });
+      Sentry.captureException(error);
+    });
+    return true; // Fail closed: treat as rate limited
+  }
+  return (count ?? 0) >= OWNER_TEXTS_PER_HOUR;
+}
+
 async function logSMSSend(params: {
   orgId: string;
   callerPhone: string;
@@ -512,10 +544,13 @@ async function sendCallerSMS(params: {
   messageBody: string;
   isSpam?: boolean;
   appointment?: AppointmentContext;
-  /** SCRUM-597: the business owner asked for this text (the hourly cap is for automated ones). */
-  skipRateLimit?: boolean;
+  /**
+   * SCRUM-597: the business owner asked for this text, about a change they just made.
+   * The one-per-hour cap is for automated texts; this gets a looser per-number cap.
+   */
+  ownerRequested?: boolean;
 }): Promise<SMSSendResult> {
-  const { orgId, callerPhone, messageType, messageBody, isSpam, appointment, skipRateLimit } = params;
+  const { orgId, callerPhone, messageType, messageBody, isSpam, appointment, ownerRequested } = params;
 
   // SCRUM-264: global pause (see CALLER_SMS_ENABLED above). Still record a skipped
   // row so the dashboard shows the intended confirmation, just not sent.
@@ -665,9 +700,14 @@ async function sendCallerSMS(params: {
     return { sent: false, status: "blocked_optout", reason: "caller_opted_out" };
   }
 
-  // 6. Rate limit check — not for a text the business owner asked for (SCRUM-597):
-  // the booking's own confirmation may have gone out minutes ago, about the old time.
-  if (!skipRateLimit && (await isRateLimited(callerPhone, messageType, orgId))) {
+  // 6. Rate limit check. SCRUM-597: a text the business owner asked for isn't held to
+  // the one-per-hour cap for automated texts — the booking's own confirmation may have
+  // gone out minutes ago, about the old time — but gets a looser per-number cap, so a
+  // looping model or a misused owner session can't flood one customer.
+  const rateLimited = ownerRequested === true
+    ? await isOwnerRequestedRateLimited(callerPhone, orgId)
+    : await isRateLimited(callerPhone, messageType, orgId);
+  if (rateLimited) {
     await logSMSSend({
       orgId,
       callerPhone,
@@ -819,8 +859,10 @@ export async function sendAppointmentConfirmationSMS(
   // When provided, a row is written to appointment_confirmations so the
   // Twilio status webhook can update delivery state.
   appointmentId?: string,
-  // SCRUM-597: a text the business owner asked for skips the hourly cap.
-  options?: { skipRateLimit?: boolean }
+  // SCRUM-597: ownerRequested — the owner asked for it (a looser cap than the hourly
+  // one); moved — the booking was moved, so the text says so instead of "confirmed"
+  // (a customer must not read it as the old booking re-confirmed).
+  options?: { ownerRequested?: boolean; moved?: boolean }
 ): Promise<SMSSendResult> {
   const supabase = createAdminClient();
 
@@ -847,7 +889,9 @@ export async function sendAppointmentConfirmationSMS(
     timeZone: tz,
   });
 
-  let message = `Your appointment at ${businessName} is confirmed for ${dateStr} at ${timeStr}.`;
+  let message = options?.moved === true
+    ? `Your appointment at ${businessName} has been moved to ${dateStr} at ${timeStr}.`
+    : `Your appointment at ${businessName} is confirmed for ${dateStr} at ${timeStr}.`;
   if (businessPhone) {
     message += ` To reschedule, call ${businessPhone}.`;
   }
@@ -866,7 +910,7 @@ export async function sendAppointmentConfirmationSMS(
           intent: "confirmation",
         }
       : undefined,
-    skipRateLimit: options?.skipRateLimit === true,
+    ownerRequested: options?.ownerRequested === true,
   });
 }
 
@@ -885,8 +929,8 @@ export async function sendCancellationSMS(
   startTime: Date,
   timezone?: string,
   appointmentId?: string,
-  // SCRUM-597: a text the business owner asked for skips the hourly cap.
-  options?: { skipRateLimit?: boolean }
+  // SCRUM-597: the owner asked for it — a looser cap than the hourly one.
+  options?: { ownerRequested?: boolean }
 ): Promise<SMSSendResult> {
   const supabase = createAdminClient();
 
@@ -932,6 +976,6 @@ export async function sendCancellationSMS(
           intent: "cancellation",
         }
       : undefined,
-    skipRateLimit: options?.skipRateLimit === true,
+    ownerRequested: options?.ownerRequested === true,
   });
 }

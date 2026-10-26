@@ -103,11 +103,12 @@ export interface ContactDeps extends TextCapabilityDeps {
 
 /**
  * The owner asked for this text about a change they just made, so the automated
- * one-per-hour cap (meant for texts nobody asked for) doesn't hold it back: the
+ * one-per-hour cap (meant for texts nobody asked for) doesn't hold it back — the
  * booking's original confirmation may have gone out minutes ago, about the old time.
- * Opt-outs, the org's toggle and the plan still apply.
+ * It gets a looser per-number cap instead; opt-outs, the org's toggle and the plan
+ * still apply.
  */
-const OWNER_REQUESTED = { skipRateLimit: true } as const;
+const OWNER_REQUESTED = { ownerRequested: true } as const;
 
 /**
  * Carry out the owner's choice after the change has been written. Never throws:
@@ -125,7 +126,7 @@ export async function contactCustomer(req: ContactRequest, deps: ContactDeps = {
     const result =
       req.kind === "cancelled"
         ? await (deps.sendCancellation ?? sendCancellationSMS)(req.orgId, text.phone, req.startTime, req.timezone, req.appointmentId, OWNER_REQUESTED)
-        : await (deps.sendConfirmation ?? sendAppointmentConfirmationSMS)(req.orgId, text.phone, req.startTime, req.timezone, undefined, req.appointmentId, OWNER_REQUESTED);
+        : await (deps.sendConfirmation ?? sendAppointmentConfirmationSMS)(req.orgId, text.phone, req.startTime, req.timezone, undefined, req.appointmentId, { ...OWNER_REQUESTED, moved: true });
     if (result?.sent) return { method: "text", status: "sent" };
     return { method: "text", status: "not_sent", reason: result?.reason || result?.status || "not_sent" };
   } catch (err) {

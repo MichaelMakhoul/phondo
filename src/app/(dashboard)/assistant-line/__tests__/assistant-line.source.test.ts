@@ -103,8 +103,9 @@ describe("the talk panel (client)", () => {
     expect(panelSource).toMatch(/if \(loadFailed\) \{\s*return \(\s*<PageShell>\s*<LoadFailedAlert \/>/);
   });
 
-  it("says plainly that changes are real, that it asks about telling the customer, and how long a session lasts", () => {
-    expect(panelSource).toMatch(/reads every change back, asks whether to let the customer know, and waits for your yes\./); // SCRUM-597
+  it("says plainly that changes are real, that it says whether the customer was told, and how long a session lasts", () => {
+    // SCRUM-597: true with texts off too (it can only say it couldn't tell them then).
+    expect(panelSource).toMatch(/reads every change back and waits for your yes, then tells you whether the customer was told\./);
     expect(panelSource).not.toMatch(/Customers aren&apos;t told automatically/);
     expect(panelSource).toMatch(/Each session lasts up to 8 minutes\./);
   });

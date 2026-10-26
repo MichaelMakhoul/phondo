@@ -39,6 +39,11 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
   // The handle is stable; it reaches the latest stop() through stopRef.
   const stopRef = useRef<() => void>(() => {});
   const sessionHandleRef = useRef<VoiceSessionHandle>({ stop: () => stopRef.current() });
+  // SCRUM-597: bumped by every cleanup(). A start() still awaiting its token, the
+  // microphone prompt or the worklet compares its own number after each await and
+  // gives up if it was stopped meanwhile — or a session stopped while connecting (by
+  // the owner, or by another session claiming the tab) would go live anyway.
+  const startGenRef = useRef(0);
   const updateStatus = useCallback((newStatus: VoiceTestStatus) => {
     statusRef.current = newStatus;
     setStatus(newStatus);
@@ -117,6 +122,8 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
     // SCRUM-597: one live voice session per tab — starting this one ends any other
     // (the owner's bubble, a receptionist test call, the demo).
     claimVoiceSession(sessionHandleRef.current);
+    const gen = startGenRef.current;
+    const superseded = () => gen !== startGenRef.current;
 
     updateStatus("connecting");
     setError(null);
@@ -138,6 +145,7 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
       }
 
       const { token, wsUrl } = await tokenRes.json();
+      if (superseded()) return;
 
       if (!token || !wsUrl) {
         throw new Error("Failed to initialize call — please try again");
@@ -151,6 +159,11 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
           autoGainControl: true,
         },
       });
+      if (superseded()) {
+        // Stopped while the microphone prompt was up: release the mic we just got.
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
       mediaStreamRef.current = stream;
 
       // 3. Set up AudioContext and worklet for mulaw encoding
@@ -160,6 +173,7 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
       playbackDecoderRef.current = createMulawPlaybackDecoder(ctx.sampleRate);
 
       await ctx.audioWorklet.addModule("/audio-worklets/mulaw-encoder-processor.js");
+      if (superseded()) return; // cleanup() already closed the context and the mic
       const workletNode = new AudioWorkletNode(ctx, "mulaw-encoder-processor");
       workletNodeRef.current = workletNode;
 
@@ -330,6 +344,8 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
         cleanup();
       };
     } catch (err) {
+      // A start stopped mid-way (e.g. its context closed under addModule) is no error.
+      if (superseded()) return;
       console.error("Failed to start test call:", err);
       setError(err instanceof Error ? err.message : "Failed to start test call");
       updateStatus("error");
@@ -377,8 +393,9 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
   }, []);
 
   function cleanup() {
-    // SCRUM-597: this session no longer holds the tab.
+    // SCRUM-597: this session no longer holds the tab, and a start() still in flight gives up.
     releaseVoiceSession(sessionHandleRef.current);
+    startGenRef.current += 1;
 
     // Stop any scheduled/playing audio
     flushPlayback();

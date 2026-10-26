@@ -90,7 +90,7 @@ function OwnerTalk() {
           ))}
         </ul>
         <p className="mt-3 text-xs text-muted-foreground">
-          Changes are real: it reads every change back, asks whether to let the customer know, and waits for your yes.
+          Changes are real: it reads every change back and waits for your yes, then tells you whether the customer was told.
           Each session lasts up to 8 minutes.
         </p>
       </div>

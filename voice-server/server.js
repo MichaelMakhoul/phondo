@@ -6799,7 +6799,6 @@ const testSessionCaps = createTestSessionCaps({
 const ownerWebSessions = createOwnerWebSessions();
 const ownerTokenLedger = createOwnerTokenLedger();
 
-/** SCRUM-596: what an owner session in the browser needs to end like an owner phone call. */
 /**
  * SCRUM-597: a browser owner session just changed a booking (a successful owner
  * write): tell the page, so the dashboard open behind the bubble refreshes its diary
@@ -6813,6 +6812,7 @@ function notifyBookingsChanged(ws, name, result) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "bookings_changed" }));
 }
 
+/** SCRUM-596: what an owner session in the browser needs to end like an owner phone call. */
 function ownerWebFinishDeps() {
   return {
     settleOwnerToolRuns,

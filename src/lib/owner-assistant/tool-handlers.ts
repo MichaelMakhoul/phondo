@@ -439,7 +439,7 @@ function readBackMessage(change: string, customer: string, contact: ContactOptio
   const ways = contactWays(contact);
   if (!ways) {
     const why = contact.note ? ` (${contact.note.replace(/[.!?]+$/, "")})` : "";
-    return `Read this back and get a clear yes before changing anything: ${change}. You can't let ${customer} know yourself${why}: say so in a few words and offer to read out their number after the change. If the owner confirms, call ${tool} again with confirmed=true and notify_customer "none".`;
+    return `Read this back and get a clear yes before changing anything: ${change}. Telling ${customer} isn't possible from here${why}: say so in a few words (for example "I can't text them") and offer to read out their number after the change. If the owner confirms, call ${tool} again with confirmed=true and notify_customer "none".`;
   }
   const note = contact.note ? ` ${contact.note}` : "";
   return `Read this back and get a clear yes before changing anything: ${change}. In the same question, ask whether to let ${customer} know: by ${ways}, or not tell them.${note} If the owner confirms, call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;

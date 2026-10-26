@@ -25,15 +25,21 @@ describe("website ↔ voice server: the customer-contact contract", () => {
     }
   });
 
-  it("the voice server's call summary cuts every customer sentence the handlers write, and takes the outcome from data", () => {
-    const change = "Cancelled Dr. J. Smith's job on Friday, October 16 at 3:00 PM.";
-    const results: Array<[CustomerContactResult, string]> = [
-      [{ method: "text", status: "sent" }, " — customer texted"],
+  // Keyed by status: a new status (SCRUM-598's "calling") fails to compile here until
+  // its sample and the voice server's wording for it are added (types lens round 2).
+  const SAMPLES: { [S in CustomerContactResult["status"]]: Array<[Extract<CustomerContactResult, { status: S }>, string]> } = {
+    sent: [[{ method: "text", status: "sent" }, " — customer texted"]],
+    not_sent: [
       [{ method: "text", status: "not_sent", reason: "texts_paused" }, " — customer not texted"],
       [{ method: "text", status: "not_sent", reason: "rate_limited" }, " — customer not texted"],
-      [{ method: "call", status: "not_available", reason: "calls_unavailable" }, " — customer not told"],
-      [{ method: "none", status: "not_requested" }, " — customer not told"],
-    ];
+    ],
+    not_available: [[{ method: "call", status: "not_available", reason: "calls_unavailable" }, " — customer not told"]],
+    not_requested: [[{ method: "none", status: "not_requested" }, " — customer not told"]],
+  };
+
+  it("the voice server's call summary cuts every customer sentence the handlers write, and takes the outcome from data", () => {
+    const change = "Cancelled Dr. J. Smith's job on Friday, October 16 at 3:00 PM.";
+    const results = Object.values(SAMPLES).flat() as Array<[CustomerContactResult, string]>;
     for (const [result, tail] of results) {
       const message = change + contactOutcomeSentence(result, "Dr. J. Smith");
       const data = { outcome: "cancelled", customer_contact: result };

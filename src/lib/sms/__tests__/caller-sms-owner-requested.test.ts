@@ -1,13 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// SCRUM-597 (silent lens G1): a text the business owner asks for — about a change
-// they just made — skips the automated one-per-hour cap. Otherwise a move made
-// minutes after the booking's own confirmation would be held back, and the owner
-// told the customer "already knows" when they only have the OLD time. Automated
-// texts keep the cap. Everything else (opt-out, the org's toggle, plan) still applies.
+// SCRUM-597: a text the business owner asks for — about a change they just made —
+// isn't held to the automated one-per-hour cap (a move minutes after the booking's own
+// confirmation would be held back, the customer left with only the OLD time). It gets
+// a looser per-number cap instead (security round 2): at most 3 appointment texts an
+// hour, confirmations and cancellations together, so a looping model or a misused
+// owner session can't flood one customer. A move's text says it MOVED.
 
-const twilioCreate = vi.fn(async () => ({ sid: "SM-test" }));
-const db = { rateLimitCount: 1, inserts: [] as Array<{ table: string; row: unknown }>, upserts: [] as Array<Record<string, unknown>> };
+const twilioCreate = vi.fn(async (_m: { body: string }) => ({ sid: "SM-test" }));
+const db = {
+  automatedCount: 1, // sent texts of this message type to this number in the hour
+  ownerCount: 1, // sent appointment texts (both types) to this number in the hour
+  logFilters: [] as Array<Array<[string, unknown[]]>>,
+  upserts: [] as Array<Record<string, unknown>>,
+};
 
 vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn(), captureMessage: vi.fn(), withScope: vi.fn() }));
 vi.mock("@/lib/notifications/notification-service", () => ({
@@ -18,8 +24,9 @@ vi.mock("@/lib/twilio/client", () => ({ getTwilioClient: () => ({ messages: { cr
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
     from: (table: string) => {
+      const filters: Array<[string, unknown[]]> = [];
       const b: any = {};
-      for (const m of ["select", "eq", "gte", "in", "order", "limit"]) b[m] = () => b;
+      for (const m of ["select", "eq", "gte", "in", "order", "limit"]) b[m] = (...a: unknown[]) => { filters.push([m, a]); return b; };
       b.maybeSingle = async () => {
         if (table === "organizations") return { data: { send_customer_confirmations: true, sms_sender: null }, error: null };
         if (table === "phone_numbers") return { data: { phone_number: "+61257015064", telephony_provider: "twilio" }, error: null };
@@ -29,10 +36,15 @@ vi.mock("@/lib/supabase/admin", () => ({
         table === "organizations"
           ? { data: { business_name: "Copperline Plumbing", business_phone: "+61257015064", timezone: "Australia/Sydney" }, error: null }
           : { data: null, error: null };
-      // The rate-limit count query (caller_sms_log, head + count) resolves via then.
-      b.then = (resolve: (v: unknown) => unknown) =>
-        Promise.resolve(table === "caller_sms_log" ? { count: db.rateLimitCount, error: null } : { data: null, error: null }).then(resolve);
-      b.insert = async (row: unknown) => { db.inserts.push({ table, row }); return { error: null }; };
+      b.then = (resolve: (v: unknown) => unknown) => {
+        if (table === "caller_sms_log") {
+          db.logFilters.push(filters);
+          const owner = filters.some(([m]) => m === "in");
+          return Promise.resolve({ count: owner ? db.ownerCount : db.automatedCount, error: null }).then(resolve);
+        }
+        return Promise.resolve({ data: null, error: null }).then(resolve);
+      };
+      b.insert = async () => ({ error: null });
       b.upsert = async (row: Record<string, unknown>) => { db.upserts.push(row); return { error: null }; };
       return b;
     },
@@ -51,8 +63,9 @@ async function load() {
 
 beforeEach(() => {
   twilioCreate.mockClear();
-  db.rateLimitCount = 1; // a text already went to this number within the hour
-  db.inserts = [];
+  db.automatedCount = 1;
+  db.ownerCount = 1;
+  db.logFilters = [];
   db.upserts = [];
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -71,22 +84,45 @@ describe("the hourly cap and owner-requested texts", () => {
     expect(db.upserts.at(-1)?.status).toBe("skipped_cap");
   });
 
-  it("the same cancellation text asked for by the owner goes out", async () => {
+  it("the same text asked for by the owner goes out — the owner cap counts both appointment types to this number", async () => {
     const { sendCancellationSMS } = await load();
-    expect(await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, { skipRateLimit: true })).toEqual({ sent: true, status: "sent" });
+    expect(await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, { ownerRequested: true })).toEqual({ sent: true, status: "sent" });
+    expect(twilioCreate).toHaveBeenCalledTimes(1);
+    const ownerQuery = db.logFilters.at(-1)!;
+    expect(ownerQuery).toContainEqual(["eq", ["caller_phone", "+61414141883"]]);
+    expect(ownerQuery).toContainEqual(["eq", ["organization_id", ORG]]);
+    expect(ownerQuery).toContainEqual(["eq", ["status", "sent"]]);
+    expect(ownerQuery).toContainEqual(["in", ["message_type", ["appointment_confirmation", "appointment_cancellation"]]]);
+    expect(ownerQuery.some(([m, a]) => m === "gte" && a[0] === "created_at")).toBe(true);
+  });
+
+  it("the owner cap: 2 sent this hour → a third goes; 3 sent → held back (a looping model can't flood one customer)", async () => {
+    const { sendCancellationSMS } = await load();
+    db.ownerCount = 2;
+    expect((await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, { ownerRequested: true })).sent).toBe(true);
+    db.ownerCount = 3;
+    expect(await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, { ownerRequested: true })).toEqual({ sent: false, status: "blocked_ratelimit", reason: "rate_limited" });
     expect(twilioCreate).toHaveBeenCalledTimes(1);
   });
 
-  it("a new-time confirmation asked for by the owner goes out, minutes after the booking's own confirmation; an automated one doesn't", async () => {
+  it("a move asked for by the owner goes out minutes after the booking's own confirmation, worded as a move", async () => {
     const { sendAppointmentConfirmationSMS } = await load();
     expect((await sendAppointmentConfirmationSMS(ORG, "+61414141883", START, "Australia/Sydney", undefined, APPT)).reason).toBe("rate_limited");
-    expect(await sendAppointmentConfirmationSMS(ORG, "+61414141883", START, "Australia/Sydney", undefined, APPT, { skipRateLimit: true })).toEqual({ sent: true, status: "sent" });
+    expect(await sendAppointmentConfirmationSMS(ORG, "+61414141883", START, "Australia/Sydney", undefined, APPT, { ownerRequested: true, moved: true })).toEqual({ sent: true, status: "sent" });
     expect(twilioCreate).toHaveBeenCalledTimes(1);
+    expect(twilioCreate.mock.calls[0][0].body).toMatch(/^Your appointment at Copperline Plumbing has been moved to Saturday, October 17 at 10:00 AM\./);
   });
 
-  it("only the exact boolean true skips it", async () => {
+  it("without 'moved' the text is the plain confirmation, as before", async () => {
+    const { sendAppointmentConfirmationSMS } = await load();
+    db.automatedCount = 0;
+    await sendAppointmentConfirmationSMS(ORG, "+61414141883", START, "Australia/Sydney", undefined, APPT);
+    expect(twilioCreate.mock.calls[0][0].body).toMatch(/^Your appointment at Copperline Plumbing is confirmed for Saturday, October 17 at 10:00 AM\./);
+  });
+
+  it("only the exact boolean true counts as owner-requested", async () => {
     const { sendCancellationSMS } = await load();
-    expect((await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, { skipRateLimit: "yes" as any })).reason).toBe("rate_limited");
+    expect((await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, { ownerRequested: "yes" as any })).reason).toBe("rate_limited");
     expect((await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, {})).reason).toBe("rate_limited");
   });
 });

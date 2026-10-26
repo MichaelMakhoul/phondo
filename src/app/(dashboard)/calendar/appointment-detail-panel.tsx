@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { onBookingsChanged } from "@/lib/voice-test/events";
 import {
   Sheet,
   SheetContent,
@@ -188,6 +189,12 @@ export function AppointmentDetailPanel({
   useEffect(() => {
     if (open && viewId) fetchAppointment();
   }, [open, viewId, fetchAppointment]);
+
+  // SCRUM-597: the owner's assistant changed a booking — an open panel shows it now,
+  // not the old time until it's reopened.
+  useEffect(() => onBookingsChanged(() => {
+    if (open && viewId) void fetchAppointment();
+  }), [open, viewId, fetchAppointment]);
 
   // SCRUM-397: enter full edit mode — load the practitioner/service options and seed
   // the form (and the diff snapshot) from the current appointment. The synthetic

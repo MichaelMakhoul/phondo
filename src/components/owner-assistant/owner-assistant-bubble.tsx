@@ -128,7 +128,7 @@ export function OwnerAssistantBubble() {
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
             <p className="text-sm">Ask about your bookings and messages, or move or cancel a job.</p>
             <p className="text-xs text-muted-foreground">
-              Changes are real: it reads every change back, asks whether to tell the customer, and waits for your yes. Sessions last up to 8 minutes.
+              Changes are real: it reads every change back and waits for your yes, then tells you whether the customer was told. Sessions last up to 8 minutes.
             </p>
             <OwnerAssistantControls session={session} compact />
             <OwnerAssistantTranscript transcript={session.transcript} headingLevel="h3" listClassName="max-h-60" />

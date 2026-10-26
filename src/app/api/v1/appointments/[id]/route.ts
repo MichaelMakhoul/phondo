@@ -346,7 +346,10 @@ async function rescheduleViaLeg(
             new Date(inserted.start_time),
             undefined,
             undefined,
-            inserted.id
+            inserted.id,
+            // SCRUM-597: a move says it moved — never "confirmed for", which reads as
+            // the old booking re-confirmed.
+            { moved: true }
           );
           if (smsResult && smsResult.sent === false) {
             console.warn("[appointments PATCH] reschedule SMS not delivered", {

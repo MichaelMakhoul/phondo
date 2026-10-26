@@ -34,9 +34,19 @@ export function numberingPlanLineType(e164: string | null | undefined): LineType
  */
 export function toNumberingPlanE164(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
-  const compact = raw.replace(/[\s().-]/g, "");
+  const cleaned = dropAuTrunkZero(raw);
+  const compact = cleaned.replace(/[\s().-]/g, "");
   if (isE164(compact)) return compact;
-  return parsePhoneToE164(raw, "AU");
+  return parsePhoneToE164(cleaned, "AU");
+}
+
+/**
+ * "+61 (0) 412 345 678" / "+610412345678" → "+61 412 345 678": the trunk 0 some
+ * people keep after the country code. No AU national number starts with 0, so a 0
+ * right after +61 is always that trunk digit.
+ */
+function dropAuTrunkZero(raw: string): string {
+  return raw.replace(/^(\s*\+\s*61)[\s().-]*0/, "$1");
 }
 
 /** Why a customer can't be texted (the order checks run in). */
@@ -107,7 +117,7 @@ export async function getTextCapability(
   if (!smsEnabled) return { canText: false, reason: "texts_paused", phone: null };
 
   const supported: SupportedCountry | null = country === "AU" || country === "US" ? country : null;
-  const phone = supported ? parsePhoneToE164(rawPhone, supported) : null;
+  const phone = supported && typeof rawPhone === "string" ? parsePhoneToE164(dropAuTrunkZero(rawPhone), supported) : null;
   if (!phone) return { canText: false, reason: "no_number", phone: null };
 
   let line: LineType | "error" | null = numberingPlanLineType(phone);

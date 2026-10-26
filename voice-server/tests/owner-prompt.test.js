@@ -244,7 +244,9 @@ describe("buildOwnerPrompt — the customer is never promised a notification", (
     assert.ok(p.includes('IN THE SAME QUESTION ask whether to let the customer know — offering only the ways in data.contact_options ("by text", "by call", or "not tell them").'));
     assert.ok(p.includes('If data.contact_options is only "none", there is nothing to choose: say in a few words why (data.contact_note) and that you can read out their number afterwards.'));
     assert.ok(p.includes('("don\'t tell them" is "none")'));
-    assert.ok(p.includes('A bare "leave it" or "no" could mean "don\'t make the change": ask which they mean, never guess.'));
+    // Clarified through a fresh read-back (a question of the model's own would be a second turn the gate refuses).
+    assert.ok(p.includes('A bare "leave it" or "no" could mean "don\'t make the change": never guess — call the same tool again WITHOUT confirmed and ask which they mean as that read-back'));
+    assert.ok(p.includes("so their answer can confirm."));
     assert.ok(p.includes('- "needs_confirmation": nothing changed.'));
   });
   it("a yes without the answer on the customer goes through the tool (it hands back the question), never a question of its own — the gate counts one turn", () => {

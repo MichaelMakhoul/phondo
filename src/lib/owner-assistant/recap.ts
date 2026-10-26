@@ -26,6 +26,10 @@ export type OwnerRecapItem = {
 } & RecapTold;
 
 const NAME_MAX = 80;
+/** A change's text goes out right after its write and audit row; allow for clock skew. */
+const TEXT_AFTER_EVENT_SKEW_MS = 60_000;
+/** The audit events a recap lists, and what each one says. */
+const CHANGE_BY_EVENT: Readonly<Record<string, RecapChange>> = { cancelled: "cancelled", rescheduled: "moved", created: "booked" };
 
 /** appointment_confirmations.status → what the recap says about the customer. */
 function toldFromStatus(status: unknown): RecapTold {
@@ -90,7 +94,7 @@ export async function buildOwnerRecap(
     console.error("[OwnerRecap] appointment_events read failed:", { organizationId, callId, error: eventsError });
     return null;
   }
-  const rows = (events ?? []) as Array<{ appointment_id: string; event_type: string }>;
+  const rows = (events ?? []) as Array<{ appointment_id: string; event_type: string; created_at: string }>;
   if (rows.length === 0) return [];
 
   const ids = [...new Set(rows.map((e) => e.appointment_id))];
@@ -122,7 +126,7 @@ export async function buildOwnerRecap(
 
   const { data: texts, error: textsError } = await supabase
     .from("appointment_confirmations")
-    .select("appointment_id, idempotency_key, status")
+    .select("appointment_id, idempotency_key, status, last_attempt_at")
     .eq("organization_id", organizationId)
     .in("appointment_id", ids)
     .gte("last_attempt_at", since.toISOString());
@@ -130,11 +134,21 @@ export async function buildOwnerRecap(
     console.error("[OwnerRecap] appointment_confirmations read failed:", { organizationId, callId, error: textsError });
     return null;
   }
-  const textFor = (appointmentId: string, intent: "cancellation" | "confirmation") =>
-    (texts ?? []).find((t: any) => {
+  // A change's own text is attempted right after it (the contact runs after the write
+  // and its audit row): an attempt from before the change — an earlier cancellation of
+  // a booking reinstated since — is never its text.
+  const textFor = (appointmentId: string, intent: "cancellation" | "confirmation", eventAt: string) => {
+    const notBefore = new Date(eventAt).getTime() - TEXT_AFTER_EVENT_SKEW_MS;
+    return (texts ?? []).find((t: any) => {
       const key = parseConfirmationIdempotencyKey(t.idempotency_key);
-      return t.appointment_id === appointmentId && key?.channel === "sms" && key.intent === intent;
+      return (
+        t.appointment_id === appointmentId &&
+        key?.channel === "sms" &&
+        key.intent === intent &&
+        !(new Date(t.last_attempt_at).getTime() < notBefore)
+      );
     });
+  };
 
   const items: OwnerRecapItem[] = [];
   for (const e of rows) {
@@ -147,8 +161,9 @@ export async function buildOwnerRecap(
     }
     const customer = sanitizeCustomerText(appt.attendee_name, NAME_MAX) ?? "A customer";
     const when = formatWhen(new Date(appt.start_time), timezone);
-    const change: RecapChange = e.event_type === "cancelled" ? "cancelled" : e.event_type === "rescheduled" ? "moved" : "booked";
-    const text = textFor(appt.id, change === "cancelled" ? "cancellation" : "confirmation");
+    const change = CHANGE_BY_EVENT[e.event_type];
+    if (!change) continue; // the query only asks for these three
+    const text = textFor(appt.id, change === "cancelled" ? "cancellation" : "confirmation", e.created_at);
     const told: RecapTold = text ? toldFromStatus(text.status) : { told: "not_told" };
     const prior = change === "moved" && appt.rescheduled_from_id ? priorById.get(appt.rescheduled_from_id) : undefined;
     items.push({
