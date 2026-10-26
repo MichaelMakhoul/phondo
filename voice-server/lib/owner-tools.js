@@ -24,6 +24,17 @@ const OWNER_ALLOWED_TOOL_NAMES = new Set([...OWNER_TOOL_NAMES, ...OWNER_SHARED_T
  */
 const OWNER_SUCCESS_OUTCOMES = new Set(["rescheduled", "cancelled"]);
 
+/**
+ * SCRUM-597: the owner's answer on letting the customer know, sent with the
+ * confirm. PR B changes nothing without one of the three; "none" = don't tell them.
+ */
+const NOTIFY_CUSTOMER_PARAM = Object.freeze({
+  type: "string",
+  enum: ["text", "call", "none"],
+  description:
+    "With confirmed=true: the owner's answer on letting the customer know — one of data.contact_options from the read-back (\"none\" means don't tell them). Without it nothing changes.",
+});
+
 const ownerToolDefinitions = [
   {
     type: "function",
@@ -58,7 +69,7 @@ const ownerToolDefinitions = [
     function: {
       name: "owner_reschedule_appointment",
       description:
-        "Move ONE existing job to a new time, in two calls. First call WITHOUT confirmed: nothing changes, and data.outcome is needs_confirmation with the read-back — the job's current and new times in data.from and data.to. Read that back to the owner and get a clear yes, THEN call again with confirmed=true. The result's data.outcome is rescheduled | needs_confirmation | not_found | slot_taken | invalid_time | rate_limited | external_calendar — only 'rescheduled' means it happened; after it, use data.new_appointment_id for any further change to that job. The customer is NOT notified.",
+        "Move ONE existing job to a new time, in two calls. First call WITHOUT confirmed: nothing changes, and data.outcome is needs_confirmation with the read-back — the job's current and new times in data.from and data.to, and data.contact_options (how the customer can be told). Read that back to the owner, ask in the same question whether to let the customer know (offer only data.contact_options), and get a clear yes, THEN call again with confirmed=true and notify_customer set to their answer. The result's data.outcome is rescheduled | needs_confirmation | not_found | slot_taken | invalid_time | rate_limited | external_calendar — only 'rescheduled' means it happened; after it, use data.new_appointment_id for any further change to that job. data.customer_contact says whether the customer was actually told.",
       parameters: {
         type: "object",
         properties: {
@@ -71,6 +82,7 @@ const ownerToolDefinitions = [
             type: "boolean",
             description: "The boolean true ONLY after the owner clearly said yes to your read-back. Leave it out to get the read-back to give.",
           },
+          notify_customer: NOTIFY_CUSTOMER_PARAM,
         },
         required: ["appointment_id", "new_datetime"],
       },
@@ -81,7 +93,7 @@ const ownerToolDefinitions = [
     function: {
       name: "owner_cancel_appointment",
       description:
-        "Cancel ONE existing job, in two calls. First call WITHOUT confirmed: nothing changes, and data.outcome is needs_confirmation with the read-back — the job's time in data.when. Read that back to the owner and get a clear yes, THEN call again with confirmed=true. The result's data.outcome is cancelled | needs_confirmation | not_found | rate_limited | external_calendar — only 'cancelled' means it happened. The customer is NOT notified.",
+        "Cancel ONE existing job, in two calls. First call WITHOUT confirmed: nothing changes, and data.outcome is needs_confirmation with the read-back — the job's time in data.when, and data.contact_options (how the customer can be told). Read that back to the owner, ask in the same question whether to let the customer know (offer only data.contact_options), and get a clear yes, THEN call again with confirmed=true and notify_customer set to their answer. The result's data.outcome is cancelled | needs_confirmation | not_found | rate_limited | external_calendar — only 'cancelled' means it happened. data.customer_contact says whether the customer was actually told.",
       parameters: {
         type: "object",
         properties: {
@@ -91,6 +103,7 @@ const ownerToolDefinitions = [
             description: "The boolean true ONLY after the owner clearly said yes to your read-back. Leave it out to get the read-back to give.",
           },
           reason: { type: "string", description: "Optional short reason, in the owner's words." },
+          notify_customer: NOTIFY_CUSTOMER_PARAM,
         },
         required: ["appointment_id"],
       },

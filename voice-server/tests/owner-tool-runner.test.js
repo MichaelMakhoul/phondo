@@ -1403,3 +1403,59 @@ describe("buildOwnerCallSummary", () => {
     assert.equal(buildOwnerCallSummary(s.toolCallAudit), "Owner call: Checked tomorrow's jobs; Moved Dr. Jane Smith from Thursday, October 15 at 2:00 PM to Friday, October 16 at 9:00 AM.");
   });
 });
+
+// ─── SCRUM-597: what happened to the customer ─────────────────────────────────
+describe("SCRUM-597: the customer-contact sentence, the stored summary and the in-flight notice", () => {
+  const contact = (customer_contact) => ({ outcome: "cancelled", customer_notified: customer_contact.status === "sent", customer_contact });
+  const cancelCall = (id) => ({ id, name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true, notify_customer: "text" } });
+  it("cuts the change before each new customer sentence, keeping full stops in names", () => {
+    const change = "Cancelled Dr. J. Smith's job on Friday, October 16 at 3:00 PM.";
+    for (const tail of [
+      " I've texted Dr. J. Smith to let them know.",
+      " I couldn't text Dr. J. Smith: their number is a landline. I can read you their number if you want to let them know.",
+      " I can't call customers yet, so Dr. J. Smith hasn't been told. I can read you their number if you want to let them know.",
+      " As you asked, Dr. J. Smith hasn't been told.",
+    ]) {
+      assert.equal(describeOwnerToolCall("owner_cancel_appointment", {}, change + tail, true), change, tail);
+    }
+  });
+  it("appends what happened to the customer from data.customer_contact — never from the prose", () => {
+    const msg = "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM. I've texted Bob Lee to let them know.";
+    assert.equal(describeOwnerToolCall("owner_cancel_appointment", {}, msg, true, contact({ method: "text", status: "sent" })), "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM — customer texted");
+    assert.equal(describeOwnerToolCall("owner_cancel_appointment", {}, msg, true, contact({ method: "text", status: "not_sent", reason: "texts_paused" })), "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM — customer not texted", "the prose says texted; the data wins");
+    assert.equal(describeOwnerToolCall("owner_cancel_appointment", {}, msg, true, contact({ method: "none", status: "not_requested" })), "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM — customer not told");
+    assert.equal(describeOwnerToolCall("owner_reschedule_appointment", {}, "", true, { outcome: "rescheduled", customer_contact: { method: "call", status: "not_available" } }), "Moved a job — customer not told");
+    assert.equal(describeOwnerToolCall("owner_cancel_appointment", {}, msg, true, { outcome: "cancelled" }), "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM.", "no customer_contact: as before");
+    assert.equal(describeOwnerToolCall("owner_cancel_appointment", {}, msg, true, { outcome: "cancelled", customer_contact: "sent" }), "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM.", "a non-object customer_contact is ignored");
+  });
+  it("the stored summary carries the customer outcome per change", () => {
+    const audit = [
+      { name: "owner_list_appointments", successful: true, ownerDetail: "Checked today's jobs" },
+      { name: "owner_cancel_appointment", successful: true, ownerDetail: describeOwnerToolCall("owner_cancel_appointment", {}, "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM. As you asked, Bob Lee hasn't been told.", true, contact({ method: "none", status: "not_requested" })) },
+    ];
+    assert.equal(buildOwnerCallSummary(audit), "Owner call: Checked today's jobs; Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM — customer not told.");
+  });
+  it("a confirmed write cancelled after it went out: the notice says whether the customer was texted, from the data", async () => {
+    for (const [customer_contact, expected] of [
+      [{ method: "text", status: "sent" }, "the customer WAS texted"],
+      [{ method: "text", status: "not_sent", reason: "landline" }, "the customer was NOT told"],
+      [{ method: "none", status: "not_requested" }, "the customer was NOT told"],
+    ]) {
+      const s = makeSession();
+      armConfirmed(s, "owner_cancel_appointment|a1");
+      const told = [];
+      let release;
+      const deps = { executeToolCall: () => new Promise((resolve) => { release = resolve; }), scheduleCache: { invalidate: () => {} }, sendText: (text) => told.push(text) };
+      await captureConsole(async () => {
+        const run = runOwnerToolCall(s, cancelCall("g-1"), deps);
+        await flush();
+        noteCancelledOwnerToolCalls(s, ["g-1"]);
+        release({ success: true, message: "Cancelled Bob Lee's job on Friday, October 16 at 3:00 PM. I've texted Bob Lee to let them know.", data: contact(customer_contact) });
+        await run;
+      });
+      assert.equal(told.length, 1);
+      assert.ok(told[0].includes(expected), `${JSON.stringify(customer_contact)} → ${told[0]}`);
+      assert.ok(!told[0].includes("Bob Lee"), "never PR B's prose in a user-turn message");
+    }
+  });
+});

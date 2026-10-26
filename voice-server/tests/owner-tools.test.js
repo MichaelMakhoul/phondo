@@ -23,8 +23,22 @@ describe("owner tool declarations", () => {
     // tool-call/route.ts plucks exactly these from `arguments` — a renamed key
     // would arrive as undefined and the job would never move.
     assert.deepEqual(Object.keys(byName.owner_list_appointments.parameters.properties).sort(), ["date", "range"]);
-    assert.deepEqual(Object.keys(byName.owner_reschedule_appointment.parameters.properties).sort(), ["appointment_id", "confirmed", "new_datetime"]);
-    assert.deepEqual(Object.keys(byName.owner_cancel_appointment.parameters.properties).sort(), ["appointment_id", "confirmed", "reason"]);
+    assert.deepEqual(Object.keys(byName.owner_reschedule_appointment.parameters.properties).sort(), ["appointment_id", "confirmed", "new_datetime", "notify_customer"]);
+    assert.deepEqual(Object.keys(byName.owner_cancel_appointment.parameters.properties).sort(), ["appointment_id", "confirmed", "notify_customer", "reason"]);
+  });
+  it("SCRUM-597: notify_customer is the enum PR B parses (text | call | none), optional, on both writes", () => {
+    for (const tool of [byName.owner_reschedule_appointment, byName.owner_cancel_appointment]) {
+      const n = tool.parameters.properties.notify_customer;
+      assert.equal(n.type, "string");
+      assert.deepEqual(n.enum, ["text", "call", "none"]);
+      assert.ok(n.description.includes("one of data.contact_options"));
+      assert.ok(n.description.includes("Without it nothing changes."));
+      assert.ok(!tool.parameters.required.includes("notify_customer"), "the read-back call goes without it");
+      assert.ok(tool.description.includes("data.contact_options"));
+      assert.ok(tool.description.includes("notify_customer set to their answer"));
+      assert.ok(tool.description.includes("data.customer_contact says whether the customer was actually told."));
+      assert.ok(!/customer is NOT notified/i.test(tool.description), "the old fixed claim is gone");
+    }
   });
   it("new_datetime asks for org-local wall time with no seconds, offset or Z (PR B honours an offset, so a stray Z moves the job)", () => {
     assert.equal(
