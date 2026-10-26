@@ -1181,3 +1181,32 @@ describe("SCRUM-598 (test lens, rounds 1-3): window, retry and sweep edges", () 
     assert.ok(has(q, "in", "status", ["queued", "ringing", "in-progress"]), JSON.stringify(q.filters));
   });
 });
+
+describe("SCRUM-598 (test lens, round 4): the setup stamp's wait and the sweep's count", () => {
+  it("markSetupFailed gives up after 2 s by default — the customer is on a silent line", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    try {
+      const never = fakeSupabase(() => new Promise(() => {}));
+      let settled = "pending";
+      cc.markSetupFailed(never, { callId: CALL_ID, organizationId: ORG }, "no-call-context").then((v) => { settled = v; });
+      mock.timers.tick(1999);
+      await new Promise((r) => setImmediate(r));
+      assert.equal(settled, "pending", "still waiting just under 2 s");
+      mock.timers.tick(1);
+      await new Promise((r) => setImmediate(r));
+      assert.equal(settled, false, "gave up at 2 s");
+    } finally {
+      mock.timers.reset();
+    }
+  });
+
+  it("a junk row whose close didn't land isn't counted as closed, and raises no alert", async () => {
+    const OLD = new Date(NOW - cc.STUCK_AFTER_MS - 60_000).toISOString();
+    const junk = { id: "j1", organization_id: ORG, assistant_id: ASSISTANT, vapi_call_id: "sh_bad", caller_phone: PHONE, status: "queued", created_at: OLD, metadata: { call_type: "customer_notify", notify: { purpose: "confirm" } } };
+    const sb = fakeSupabase((q) => (q.op === "select" ? { data: [junk], error: null } : q.op === "update" ? { data: [], error: null } : undefined));
+    const before = alerts().length;
+    const r = await cc.sweepStuckCustomerCalls({ supabase: sb, now: () => NOW, hasLiveSession: () => false, fetchTwilioCall: async () => null, notifyCallCompleted: async () => {} });
+    assert.deepEqual(r, { swept: 0, checked: 1, closed: 0 });
+    assert.equal(alerts().length, before, "nothing was closed: nothing to raise");
+  });
+});
