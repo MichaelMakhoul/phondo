@@ -1551,11 +1551,13 @@ async function sameCallBookingById(
 }
 
 /**
- * What a repeated booking's customer was told. A text that went out with the first
- * attempt is reported, and never sent twice. When none did (none was tried — the first
- * attempt stopped before it — or it was held back or failed), the owner's choice now is
- * carried out, with every check the send path makes. Null when it can't be told — the
- * log can't be read, or a send may still be under way — so nothing is said as fact.
+ * What a repeated booking's customer was told. A text the first attempt sent — or may
+ * have sent: caller-sms logs "failed" on a Twilio timeout too, when Twilio may have
+ * taken it — is reported, and never sent twice. When none can have gone (none was
+ * tried — the first attempt stopped before it — or it was held back: skipped_*,
+ * opted_out), the owner's choice now is carried out, with every check the send path
+ * makes. Null when it can't be told — the log can't be read, or holds only its
+ * "pending" default — so nothing is said as fact.
  */
 async function repeatBookingContact(
   supabase: any,
@@ -1581,8 +1583,10 @@ async function repeatBookingContact(
     return null;
   }
   if (data?.status === "sent" || data?.status === "delivered") return { method: "text", status: "sent" };
-  // Sent but not delivered: sending again would not reach them either.
-  if (data?.status === "undelivered") return { method: "text", status: "not_sent", reason: "undelivered" };
+  // Sent but not delivered (it would not reach them again either), or "failed" — which
+  // may have left Twilio (combined lens r3): reported, never sent again.
+  if (data?.status === "undelivered" || data?.status === "failed") return { method: "text", status: "not_sent", reason: data.status };
+  // The column's default; caller-sms writes an outcome, never "pending": can't tell.
   if (data?.status === "pending") return null;
   return contactCustomer({
     orgId: req.organizationId,

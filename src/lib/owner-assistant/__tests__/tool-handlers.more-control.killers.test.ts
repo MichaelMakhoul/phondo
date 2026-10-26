@@ -409,3 +409,132 @@ describe("test lens round 2 — a repeated block hands back the title it was STO
     });
   });
 });
+
+// ─── Test lens round 3 (dcc8fffa): a repeated booking is handed back AS STORED ───
+describe("test lens round 3 — a repeated booking over the PostgREST-like fake (only the selected columns come back)", () => {
+  const KEY = `${NEW_ID}:sms:confirmation:2026-10-15T23:00:00.000Z`;
+  const STORED = {
+    id: NEW_ID, organization_id: ORG, call_id: CALL, start_time: "2026-10-15T23:00:00.000Z", status: "confirmed",
+    attendee_first_name: "Jane", attendee_name: "Jane Smith", attendee_phone: "+61412345678", confirmation_code: "654321",
+    service_type_id: null, notes: null,
+  };
+  beforeEach(() => {
+    nextId = 1;
+    tables = {
+      organizations: [{ id: ORG, timezone: TZ, country: "AU" }],
+      appointment_events: [{ id: "ev-1", organization_id: ORG, appointment_id: NEW_ID, event_type: "created", call_id: CALL }],
+    };
+    vi.mocked(createAdminClient).mockReturnValue(postgrestAdmin() as any);
+  });
+
+  it("B01 + B11 + B12 + B19 + C02: a surname respelled on the retry is handed back under the name it was BOOKED with — message, text line and data", async () => {
+    tables.appointments = [STORED];
+    tables.appointment_confirmations = [{ organization_id: ORG, idempotency_key: KEY, status: "sent" }];
+    const r = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_name: "Jane Smyth", confirmed: true, notify_customer: "text" }, ctx);
+    expect(handleBookAppointment).not.toHaveBeenCalled();
+    expect(r.message).toBe(`Jane Smith is already booked for ${WHEN} — that's the booking from a moment ago. I've texted Jane Smith to let them know.`);
+    expect(r.data).toMatchObject({ outcome: "booked", customer_name: "Jane Smith", appointment_id: NEW_ID, confirmation_code: "654321" });
+  });
+
+  it("B10: when the text log can't tell, the 'couldn't check' line names the booked customer too", async () => {
+    tables.appointments = [STORED];
+    tables.appointment_confirmations = [{ organization_id: ORG, idempotency_key: KEY, status: "pending" }];
+    const r = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_name: "Jane Smyth", confirmed: true, notify_customer: "text" }, ctx);
+    expect(r.message).toContain("I couldn't check whether Jane Smith was texted about it");
+    expect(r.message).not.toContain("Smyth");
+  });
+
+  it("C04 + C05: the same service and note again is no change — the booking's read really brings both back", async () => {
+    const SERVICE_ID = "66666666-7777-4888-9999-aaaaaaaaaaaa";
+    tables.service_types = [{ id: SERVICE_ID, organization_id: ORG, is_active: true, name: "Hot water service" }];
+    tables.appointments = [{ ...STORED, service_type_id: SERVICE_ID, notes: "Leaking tap" }];
+    const r = await handleOwnerBookAppointment(ORG, { ...BOOK, service_type_id: SERVICE_ID, notes: "Leaking tap", confirmed: true, notify_customer: "none" }, ctx);
+    expect(r.message).toContain("that's the booking from a moment ago");
+    expect(r.message).not.toContain("It keeps the service");
+  });
+
+  it("C06 + C07 + X01 + X05: the stored staff member, service and name come back — each one clean line (embeds included)", async () => {
+    // The fake above can't return an embed (service_types(name), practitioners(name)); this one can.
+    type R = Record<string, any>;
+    const pick = (row: R, cols: string): R => {
+      const out: R = {};
+      for (const c of cols.split(/,(?![^(]*\))/).map((s) => s.trim()).filter(Boolean)) {
+        const m = /^(\w+)\((.*)\)$/.exec(c);
+        if (m) out[m[1]] = row[m[1]] == null ? null : pick(row[m[1]], m[2]);
+        else out[c] = row[c];
+      }
+      return out;
+    };
+    const t: Record<string, R[]> = {
+      organizations: [{ id: ORG, timezone: TZ, country: "AU" }],
+      appointments: [{ ...STORED, attendee_name: "Jane\nSmith", service_types: { name: "Hot water\u200b service" }, practitioners: { name: "Alex" } }],
+      appointment_events: [{ id: "ev-1", organization_id: ORG, appointment_id: NEW_ID, event_type: "created", call_id: CALL }],
+    };
+    vi.mocked(createAdminClient).mockReturnValue({
+      from(table: string) {
+        let cols = "*";
+        let limit: number | undefined;
+        const preds: Array<(r: R) => boolean> = [];
+        const rows = () => (t[table] ?? []).filter((r) => preds.every((p) => p(r))).slice(0, limit).map((r) => (cols === "*" ? { ...r } : pick(r, cols)));
+        const b: any = {
+          select(c: string) { cols = c; return b; },
+          eq(k: string, v: unknown) { preds.push((r) => r[k] === v); return b; },
+          in(k: string, vs: unknown[]) { preds.push((r) => vs.includes(r[k])); return b; },
+          limit(n: number) { limit = n; return b; },
+          single() { const out = rows(); return Promise.resolve(out.length === 1 ? { data: out[0], error: null } : { data: null, error: { code: "PGRST116" } }); },
+          maybeSingle() { return Promise.resolve({ data: rows()[0] ?? null, error: null }); },
+          then(resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) { return Promise.resolve({ data: rows(), error: null }).then(resolve, reject); },
+        };
+        return b;
+      },
+    } as any);
+    const r = await handleOwnerBookAppointment(ORG, { ...BOOK, confirmed: true, notify_customer: "none" }, ctx);
+    expect(r.message).toBe(`Jane Smith is already booked for ${WHEN} with Alex — that's the booking from a moment ago. I haven't let Jane Smith know.`);
+    expect(r.data).toMatchObject({ customer_name: "Jane Smith", service: "Hot water service", practitioner: "Alex" });
+  });
+});
+
+describe("test lens round 3 — a repeat with other details, one field at a time; and its audit row when the read or write fails", () => {
+  const EARLIER_R3 = { id: NEW_ID, attendee_first_name: "Jane", attendee_name: "Jane Smith", attendee_phone: "+61412345678", confirmation_code: "654321", service_type_id: null, notes: "Hot water" };
+  const SERVICE_ID = "66666666-7777-4888-9999-aaaaaaaaaaaa";
+  const KEPT = "It keeps the service and note it was booked with — the new ones weren't added";
+
+  it("B04 + B05: only the service differs, or only the note — either way the owner hears the booking kept its own", async () => {
+    db.queues.service_types = [{ data: { id: SERVICE_ID, name: "Blocked drain" }, error: null }];
+    db.queues.appointments = [{ data: [EARLIER_R3], error: null }];
+    db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
+    const service = await handleOwnerBookAppointment(ORG, { ...BOOK, service_type_id: SERVICE_ID, notes: "Hot water", confirmed: true, notify_customer: "none" }, ctx);
+    expect(service.message).toContain(KEPT);
+    db.queues.organizations = [AU_ORG];
+    db.queues.appointments = [{ data: [EARLIER_R3], error: null }];
+    db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
+    const note = await handleOwnerBookAppointment(ORG, { ...BOOK, notes: "Blocked drain", confirmed: true, notify_customer: "none" }, ctx);
+    expect(note.message).toContain(KEPT);
+    expect(handleBookAppointment).not.toHaveBeenCalled();
+  });
+
+  it("E05: an unreadable audit trail writes nothing (a second 'created' row can't be ruled out) — the booking is still handed back", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    db.queues.appointments = [{ data: [EARLIER_R3], error: null }];
+    db.queues.appointment_events = [{ data: null, error: { code: "57014" } }];
+    const r = await handleOwnerBookAppointment(ORG, { ...BOOK, notes: "Hot water", confirmed: true, notify_customer: "none" }, ctx);
+    expect(r.message).toContain("that's the booking from a moment ago");
+    expect(recordAppointmentEvent).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalled();
+  });
+
+  it("E06 + E08: a missing audit row that won't write is paged, as the 'created' change", async () => {
+    const { pageSentry } = await import("@/lib/observability/page-sentry");
+    const { SENTRY_REASONS } = await import("@/lib/security/error-ids");
+    db.queues.appointments = [{ data: [EARLIER_R3], error: null }];
+    db.queues.appointment_events = [{ data: [], error: null }];
+    vi.mocked(recordAppointmentEvent).mockResolvedValueOnce(false);
+    const r = await handleOwnerBookAppointment(ORG, { ...BOOK, notes: "Hot water", confirmed: true, notify_customer: "none" }, ctx);
+    expect(r.data).toMatchObject({ outcome: "booked", appointment_id: NEW_ID });
+    expect(pageSentry).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(pageSentry).mock.calls[0][0]).toMatchObject({
+      reason: SENTRY_REASONS.OWNER_CHANGE_NOT_AUDITED,
+      extras: { organizationId: ORG, callId: CALL, appointmentId: NEW_ID, change: "created" },
+    });
+  });
+});

@@ -1798,3 +1798,30 @@ describe("SCRUM-599 test lens: behaviour, not just the lists", () => {
     assert.match(told[0], /the change HAS been made, and the customer WAS texted/);
   });
 });
+
+// Test lens round 3 (dcc8fffa): U01-U03 — an interrupted block or callback whose answer never
+// came back tells the model how to find out for THAT write (owner_list_appointments shows
+// neither a block nor a callback).
+describe("test lens round 3: the advice when an interrupted block or callback never answered", () => {
+  for (const [name, key, args, advice, wrong] of [
+    ["owner_block_time", 'owner_block_time|["2026-10-30T13:00","2026-10-30T17:00",""]', { start: "2026-10-30T13:00", end: "2026-10-30T17:00" }, "trying the same block again (the same start and end) never doubles it", "owner_list_messages"],
+    ["owner_mark_callback_done", 'owner_mark_callback_done|["cb-1",""]', { callback_id: "cb-1" }, "check with owner_list_messages", "never doubles it"],
+  ]) {
+    it(`U01-U03: ${name} — how to find out for this write, never owner_list_appointments`, async () => {
+      const s = makeSession();
+      armConfirmed(s, key);
+      const told = [];
+      const deps = {
+        executeToolCall: async () => { noteCancelledOwnerToolCalls(s, ["g-1"]); return { message: "I'm having a little trouble right now. Could you give me a moment?" }; },
+        scheduleCache: { invalidate: () => {} },
+        sendText: (text) => told.push(text),
+      };
+      await captureConsole(() => runOwnerToolCall(s, { id: "g-1", name, args: { ...args, confirmed: true } }, deps));
+      assert.equal(told.length, 1);
+      assert.ok(told[0].includes("may have gone through"), told[0]);
+      assert.ok(told[0].includes(advice), told[0]);
+      assert.ok(!told[0].includes("owner_list_appointments"), told[0]);
+      assert.ok(!told[0].includes(wrong), told[0]);
+    });
+  }
+});

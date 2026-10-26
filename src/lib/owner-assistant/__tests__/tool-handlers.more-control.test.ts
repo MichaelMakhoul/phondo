@@ -358,11 +358,12 @@ describe("owner_book_appointment", () => {
       });
     });
 
-    it("what the customer was told came with the first: a text that went out (or reached the phone and bounced) is reported and never sent twice", async () => {
+    it("what the customer was told came with the first: a text that went out — or may have (a 'failed' is also a Twilio timeout) — is reported and never sent twice", async () => {
       process.env.CALLER_SMS_ENABLED = "true";
       for (const [status, contact] of [
         ["delivered", { method: "text", status: "sent" }],
         ["undelivered", { method: "text", status: "not_sent", reason: "undelivered" }],
+        ["failed", { method: "text", status: "not_sent", reason: "failed" }],
       ] as const) {
         db.queues.organizations = [AU_ORG];
         db.queues.appointments = [{ data: [EARLIER], error: null }];
@@ -376,9 +377,9 @@ describe("owner_book_appointment", () => {
       expect(filters(log, "eq")).toEqual([["organization_id", ORG], ["idempotency_key", `${NEW_ID}:sms:confirmation:2026-10-15T23:00:00.000Z`]]);
     });
 
-    it("silent lens r2 F5: a first text that failed or was held back never went out — the owner's choice is carried out now", async () => {
+    it("silent lens r2 F5: a first text that was held back never went out — the owner's choice is carried out now", async () => {
       process.env.CALLER_SMS_ENABLED = "true";
-      for (const status of ["failed", "skipped_db_error"]) {
+      for (const status of ["skipped_db_error", "skipped_cap"]) {
         db.queues.organizations = [AU_ORG];
         db.queues.appointments = [{ data: [EARLIER], error: null }];
         db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
@@ -389,7 +390,7 @@ describe("owner_book_appointment", () => {
       expect(sendAppointmentConfirmationSMS).toHaveBeenCalledTimes(2);
     });
 
-    it("a text log row still pending (a send may be under way) is never sent again, and never claimed either way", async () => {
+    it("a text log row left at its 'pending' default (caller-sms never writes it) is never sent again, and never claimed either way", async () => {
       process.env.CALLER_SMS_ENABLED = "true";
       db.queues.appointments = [{ data: [EARLIER], error: null }];
       db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
