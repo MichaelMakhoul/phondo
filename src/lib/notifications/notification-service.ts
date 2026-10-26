@@ -1171,8 +1171,8 @@ function diaryState(r: CallOutcomeReport) {
   return {
     /** A time moved to or booked on the call that still stands. */
     newTime: r.diary.some((d) => (d.kind === "moved" || d.kind === "booked") && standing(d)),
-    /** A separate booking made on the call (not a move) that still stands. */
-    bookedNew: r.diary.some((d) => d.kind === "booked" && standing(d)),
+    /** A separate booking made on the call (not a move) that still stands, if any. */
+    bookedNew: r.diary.find((d): d is Extract<DiaryLine, { kind: "booked" }> => d.kind === "booked" && standing(d)) ?? null,
     /** The booking the call was about was cancelled on the call. */
     cancelledOnTheCall: r.bookingWhen !== null && r.diary.some((d) => d.kind === "cancelled" && d.when === r.bookingWhen),
     /** The booking the call was about, as it stands, when the call didn't move or cancel it. */
@@ -1199,7 +1199,8 @@ function nextStepLine(r: CallOutcomeReport): string | null {
   // A new booking where the call should have moved the old one: both are in the diary
   // (on a confirm call too — "can we do Thursday instead?" booked, not moved: silent lens R4).
   if (r.purpose !== "cancelled" && bookedNew && about?.state === "booked") {
-    return `A new time was booked for ${who}, but their booking on ${escapeHtml(about.when)} is still in your diary — cancel it if the new time replaces it.`;
+    // Clients lens: the new time named, so it can be judged at a glance (a recall booked on a confirm call is fine).
+    return `A new time (${escapeHtml(bookedNew.when)}) was booked for ${who}, but their booking on ${escapeHtml(about.when)} is still in your diary — cancel it only if the new time replaces it.`;
   }
   const seeNote = r.assistantOutcome === "other" || noMoreCalls ? " (see the assistant's note)" : "";
   const asked = noMoreCalls ? ", and they asked not to be called again" : "";

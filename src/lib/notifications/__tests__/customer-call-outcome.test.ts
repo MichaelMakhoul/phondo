@@ -203,7 +203,7 @@ describe("sendCustomerCallOutcomeNotification", () => {
       ["move, declined, no number", { purpose: "moved", result: answered, assistantOutcome: "declined", phone: null }, `Jane Smith heard about the move, but the new time may not suit them (see the assistant's note). It's still booked for ${ON}.`],
       ["move, moved again on the call", { purpose: "moved", result: answered, assistantOutcome: "rebooked", diary: [{ kind: "moved", from: ON, when: "Fri" }] }, null],
       // A new booking where the call should have moved the old one.
-      ["move, booked a new one beside it", { purpose: "moved", result: answered, assistantOutcome: "rebooked", diary: [...unchanged, { kind: "booked", when: "Fri" }] }, `A new time was booked for Jane Smith, but their booking on ${ON} is still in your diary — cancel it if the new time replaces it.`],
+      ["move, booked a new one beside it", { purpose: "moved", result: answered, assistantOutcome: "rebooked", diary: [...unchanged, { kind: "booked", when: "Fri" }] }, `A new time (Fri) was booked for Jane Smith, but their booking on ${ON} is still in your diary — cancel it only if the new time replaces it.`],
       ["move, message played", { purpose: "moved", result: played, assistantOutcome: null }, null],
       // A confirmation: done only when they confirmed, or the diary changed on the call.
       ["confirm, busy", { purpose: "confirm", result: { kind: "busy" }, assistantOutcome: null }, `Jane Smith hasn't confirmed their booking${RING}`],
@@ -223,9 +223,9 @@ describe("sendCustomerCallOutcomeNotification", () => {
       ["find, no answer", { purpose: "find_new_time", result: { kind: "no_answer" }, assistantOutcome: null }, `Jane Smith doesn't know yet that their booking needs to move${RING}`],
       ["find, message", { purpose: "find_new_time", result: played, assistantOutcome: null }, `Jane Smith doesn't know yet that their booking needs to move (the assistant left a message asking them to call back)${RING}`],
       ["find, moved", { purpose: "find_new_time", result: answered, assistantOutcome: "rebooked", diary: [{ kind: "moved", from: "Wed", when: "Thu" }] }, null],
-      ["find, booked a new one beside it", { purpose: "find_new_time", result: answered, assistantOutcome: "rebooked", diary: [...unchanged, { kind: "booked", when: "Thu" }] }, `A new time was booked for Jane Smith, but their booking on ${ON} is still in your diary — cancel it if the new time replaces it.`],
+      ["find, booked a new one beside it", { purpose: "find_new_time", result: answered, assistantOutcome: "rebooked", diary: [...unchanged, { kind: "booked", when: "Thu" }] }, `A new time (Thu) was booked for Jane Smith, but their booking on ${ON} is still in your diary — cancel it only if the new time replaces it.`],
       // Silent lens R4: on a confirm call too — "can we do Thursday instead?" booked, not moved.
-      ["confirm, booked a new one beside it", { purpose: "confirm", result: answered, assistantOutcome: "confirmed", diary: [...unchanged, { kind: "booked", when: "Thu" }] }, `A new time was booked for Jane Smith, but their booking on ${ON} is still in your diary — cancel it if the new time replaces it.`],
+      ["confirm, booked a new one beside it", { purpose: "confirm", result: answered, assistantOutcome: "confirmed", diary: [...unchanged, { kind: "booked", when: "Thu" }] }, `A new time (Thu) was booked for Jane Smith, but their booking on ${ON} is still in your diary — cancel it only if the new time replaces it.`],
       ["cancel, booked a new time (that's the point)", { purpose: "cancelled", result: answered, assistantOutcome: "rebooked", diary: [{ kind: "unchanged", when: ON, state: "cancelled" }, { kind: "booked", when: "Thu" }] }, null],
       // Silent lens R3 (low): "still stands" only when the diary says so.
       ["find, declined, booking cancelled since", { purpose: "find_new_time", result: answered, assistantOutcome: "declined", diary: [{ kind: "unchanged", when: ON, state: "cancelled" }] }, `No new time was agreed, and the booking on ${ON} is now cancelled — check Appointments.`],
