@@ -41,6 +41,13 @@ const TOKEN_TTL_MS = 15 * 60 * 1000;
 const RING_TIMEOUT_SECONDS = 25;
 /** Twilio's TimeLimit: the call is cut at 5 minutes whatever happens on it. */
 const CALL_TIME_LIMIT_SECONDS = 300;
+/**
+ * How long Twilio may take to accept a call. The whole placement sits inside the
+ * owner's tool call (the voice server gives that 15 s; Next.js waits 12 s for this
+ * route), so a slow Twilio is a refusal, never a hang. A call Twilio creates after
+ * this finds no row at its TwiML fetch and is hung up.
+ */
+const TWILIO_CREATE_TIMEOUT_MS = 9_000;
 /** Process-wide backstop against a runaway loop: placements per window, all orgs together. */
 const PLACEMENTS_PER_WINDOW = 30;
 const PLACEMENT_WINDOW_MS = 10 * 60 * 1000;
@@ -426,6 +433,7 @@ function placementWindowFull(nowMs) {
  * @property {string} publicUrl
  * @property {string} secret
  * @property {() => string} [randomUUID]
+ * @property {number} [createTimeoutMs] - test hook (default TWILIO_CREATE_TIMEOUT_MS)
  */
 
 /**
@@ -467,8 +475,18 @@ async function placeCustomerCall(req, deps) {
     );
 
     let sid = null;
+    /** @type {ReturnType<typeof setTimeout>|undefined} */
+    let timer;
+    let timedOut = false;
     try {
-      const created = await deps.twilio.createCall({
+      const timeoutMs = deps.createTimeoutMs ?? TWILIO_CREATE_TIMEOUT_MS;
+      const slow = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(new Error(`Twilio took over ${timeoutMs} ms to accept the call`));
+        }, timeoutMs);
+      });
+      const creating = deps.twilio.createCall({
         to: plan.phone,
         from: plan.fromNumber.phone_number,
         url: `${deps.publicUrl}/twiml/customer-call/${token}`,
@@ -480,10 +498,24 @@ async function placeCustomerCall(req, deps) {
         timeout: RING_TIMEOUT_SECONDS,
         timeLimit: CALL_TIME_LIMIT_SECONDS,
       });
+      // A call Twilio accepts after we gave up has no row: cancel it before it's answered.
+      creating.then(
+        (late) => {
+          if (!timedOut || !late || typeof late.sid !== "string") return;
+          console.error(`[ALERT:error] [CustomerCall] Twilio accepted call ${late.sid} after the timeout — cancelling it`);
+          Promise.resolve(deps.twilio.cancelCall(late.sid)).catch((err) =>
+            console.error(`[ALERT:error] [CustomerCall] could not cancel late call ${late.sid}:`, err instanceof Error ? err.message : String(err))
+          );
+        },
+        () => {}
+      );
+      const created = await Promise.race([slow, creating]);
       sid = created && typeof created.sid === "string" ? created.sid : null;
     } catch (err) {
       console.error(`[ALERT:error] [CustomerCall] Twilio refused the call (org=${plan.organizationId}):`, err instanceof Error ? err.message : String(err));
       return { placed: false, reason: "place_failed" };
+    } finally {
+      clearTimeout(timer);
     }
     if (!sid) {
       console.error(`[ALERT:error] [CustomerCall] Twilio returned no call sid (org=${plan.organizationId})`);
@@ -898,6 +930,7 @@ module.exports = {
   TOKEN_TTL_MS,
   RING_TIMEOUT_SECONDS,
   CALL_TIME_LIMIT_SECONDS,
+  TWILIO_CREATE_TIMEOUT_MS,
   PLACEMENTS_PER_WINDOW,
   HANGUP_TWIML,
   isCustomerCallsEnabled,

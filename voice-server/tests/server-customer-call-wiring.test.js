@@ -359,6 +359,15 @@ describe("SCRUM-598: the session takes over the row the call was placed with", (
     const r = await runRecordSection(s);
     assert.deepEqual(r.calls.map((c) => c[0]), ["createCallRecord"]);
     assert.equal(s.callRecordId, "new-row");
+    assert.equal("metadata" in r.calls[0][1], false, "a customer call's row starts with no call type");
+  });
+
+  it("an owner phone session's row is an owner call from the moment it exists (a customer call it asks for checks that)", async () => {
+    const s = makeSession({ notify: null });
+    s.ownerMode = true;
+    s.ownerAuth = "verified";
+    const r = await runRecordSection(s);
+    assert.deepEqual(r.calls[0][1].metadata, { call_type: "owner", owner_auth: "verified" });
   });
 });
 

@@ -2595,6 +2595,10 @@ wss.on("connection", (twilioWs) => {
                 phoneNumberId: context.phoneNumberId,
                 callerPhone,
                 callSid,
+                // SCRUM-598: an owner call from the moment it exists (as the browser
+                // session's row is) — a customer call the owner asks for on this line is
+                // only placed for a row marked as this org's owner call.
+                ...(session.ownerMode ? { metadata: { call_type: "owner", owner_auth: "verified" } } : {}),
               });
               session.callRecordId = callRecordId;
             } catch (err) {

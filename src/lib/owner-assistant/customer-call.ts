@@ -123,8 +123,11 @@ export interface CustomerCallDeps {
 }
 
 const CHECK_TIMEOUT_MS = 4_000;
-/** Placing waits on Twilio, which the voice server gives 15 s: its own refusal arrives first. */
-const PLACE_TIMEOUT_MS = 20_000;
+/**
+ * Placing waits on Twilio, which the voice server gives 9 s: its own refusal arrives
+ * first, and the whole change + call fits inside the owner's 15-second tool call.
+ */
+const PLACE_TIMEOUT_MS = 12_000;
 
 function isVoiceReason(v: unknown): v is VoiceCallBlockReason {
   return typeof v === "string" && (VOICE_CALL_BLOCK_REASONS as readonly string[]).includes(v);

@@ -513,6 +513,30 @@ describe("placeCustomerCall", () => {
     assert.ok(alerts().length >= 3, "each one pages");
   });
 
+  it("a Twilio that doesn't answer in time is a refusal, never a hang (the placement sits inside the owner's tool call)", async () => {
+    assert.equal(cc.TWILIO_CREATE_TIMEOUT_MS, 9000);
+    const sb = fakeSupabase(responder(world()));
+    const deps = placeDeps(sb, { createTimeoutMs: 20 });
+    let accept;
+    deps.twilio.createCall = () => new Promise((resolve) => { accept = resolve; });
+    assert.deepEqual(await cc.placeCustomerCall(req(), deps), { placed: false, reason: "place_failed" });
+    assert.equal(sb.queries.filter((q) => q.op === "insert").length, 0);
+    assert.ok(alerts().some((m) => m.includes("Twilio refused the call")));
+    // Twilio accepts it after all: that call has no row, so it is cancelled at once.
+    accept({ sid: "CA-late" });
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(deps.twilio.cancelled, ["CA-late"]);
+    assert.ok(alerts().some((m) => m.includes("after the timeout — cancelling it")));
+  });
+
+  it("a call accepted in time is never cancelled by the timeout", async () => {
+    const sb = fakeSupabase(responder(world(), (q) => (q.op === "insert" ? { data: null, error: null } : undefined)));
+    const deps = placeDeps(sb, { createTimeoutMs: 50 });
+    assert.equal((await cc.placeCustomerCall(req(), deps)).placed, true);
+    await new Promise((r) => setTimeout(r, 80));
+    assert.deepEqual(deps.twilio.cancelled, []);
+  });
+
   it("a row that can't be written cancels the call before anyone answers it", async () => {
     const sb = fakeSupabase(responder(world(), (q) => (q.op === "insert" ? { data: null, error: { message: "unique violation" } } : undefined)));
     const deps = placeDeps(sb);
