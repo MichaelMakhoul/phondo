@@ -158,25 +158,121 @@ A one-minute call costs about the same as a two-part text.
   - A failure pages (`[ALERT:error]`) and never fails the route.
 - **Demo org:** skipped, as for every owner alert.
 
-## PR 2: the AI call to the customer (SCRUM-598, detailed when PR 1 ships)
+## PR 2: the AI call to the customer (SCRUM-598)
 
-- **Trigger:** `notify_customer: "call"` on a confirmed cancel or move, offered only when calls are available:
-  - the flag `OWNER_CUSTOMER_CALLS_ENABLED`;
-  - the phone normalises;
-  - it is 8am–8pm in the org's timezone;
-  - the org has a Phondo number to call from;
-  - the org is under its daily cap.
-- **The call:**
-  - Twilio outbound from the org's own Phondo number (the customer recognises it, and calling back reaches the receptionist), with answering-machine detection.
-  - Gemini Live in the assistant's voice, with a short notify prompt: it says it's the business's AI assistant, gives the news (cancelled / moved to X / "are you still OK for X?"), and can offer another time with the receptionist's booking tools, scoped to that customer.
-  - On a machine it leaves a short message asking them to call back.
-- **Plumbing:** reuses SCRUM-166's outbound pieces (`services/outbound-caller.js`, `/outbound/twiml/:token`, `/ws/outbound`) in a new customer-notify mode with its own guards:
-  - the flag;
-  - org-scoped numbers only;
-  - one call per appointment per change;
-  - a daily cap;
-  - calling hours.
-- **Records:** a `calls` row (`metadata.call_type = "customer_notify"`, the appointment id and purpose). Bookings made on the call carry its `call_id`. The outcome email reuses the recap builder for that call.
+Detailed on 2026-10-26, after PR 1 shipped. It builds on the PR 1 contract and stays within what the owner approved. The owner's own examples:
+- "call the client ... confirm the appointment or cancel it";
+- "call them and get another time, or call them and cancel".
+
+Rulings made while detailing it are marked **Ruling**.
+
+### What the owner gets
+
+- **Calling after a change.** `notify_customer: "call"` on a confirmed cancel or move, offered in `contact_options` only when a call can be placed now. The call says:
+  - for a cancel: "it's been cancelled, would you like another time?";
+  - for a move: "it's been moved to X, does that suit you?".
+- **Calling without a change** (**Ruling:** a new owner tool, `owner_call_customer`, because the owner asked for both):
+  - `purpose: "confirm"`: "are you still OK for X?";
+  - `purpose: "find_new_time"`: "the business needs to move your X, what other time suits you?". The booking stays as it is until the customer picks a time.
+  - It has the same read-back and confirmation gate as the other owner writes. An optional `note` (≤160 characters, one line) carries the owner's guidance on times, for example "next week, mornings". The note is used to choose times and is never read out.
+- **After a call is placed**, the owner hears: "I'm calling Jane now. You'll get an email when the call's done." (`customer_contact: { method: "call", status: "calling" }`). A call that can't be placed is reported with its reason, and the change itself still happens.
+- **The outcome email**, one per call, to the owner. It is built from records, never from the AI's words:
+  - the result: answered (with duration), voicemail left, no answer, busy or failed;
+  - what changed in the diary on the call: bookings and moves carrying the call's `call_id`, and the booking's state now;
+  - the assistant's own note and summary, labelled as AI-written;
+  - a link to the call, with its recording and transcript.
+- **The owner session's recap email** (PR 1) says "calling them, a separate email follows" for a change whose call was placed.
+
+### When a call can be placed
+
+The voice server checks every condition at the read-back (`/internal/customer-call/check`) and again at placement. Each check fails closed.
+
+1. **The flag.** `OWNER_CUSTOMER_CALLS_ENABLED=true` on Fly. **Ruling:** this is the only flag. The voice server places the call, so its switch is the one that matters, and Next.js asks the voice server instead of keeping a second copy.
+2. **The Gemini Live pipeline is available.** Calls never run on the classic fallback.
+3. **The request comes from an owner session of the same org.** `requested_by_call_id` must be that org's `call_type = "owner"` call, and the demo org is never called from.
+4. **The booking is the org's.**
+   - The number to dial must be the booking's own: the E.164 that Next.js normalised has to match the stored `attendee_phone` on at least its last 9 digits.
+   - The purpose has to match the booking's state:
+     - `cancelled` needs a cancelled booking;
+     - `moved`, `confirm` and `find_new_time` need a confirmed or pending booking in the future.
+5. **Australia only (Ruling).** The org's country must be AU and the number +61. A US call needs a TCPA review first: since 2024 the FCC counts AI voices as "artificial voice".
+6. **Calling hours.** 8:00 to 20:00 in the org's timezone.
+7. **A number to call from.** The org needs an active Twilio Phondo number: not released, `telephony_provider = 'twilio'`. That number is the caller ID, so calling back reaches the receptionist.
+8. **Caps, counted over the last 24 hours:**
+   - at most 20 customer calls per org;
+   - at most 2 per customer number per org;
+   - one per booking and purpose ("already called them about this").
+9. **Never a number that asked not to be called.** A prior call's `metadata.notify.outcome = "do_not_call"` blocks the number for that org.
+
+### The call (voice server)
+
+- **Placing it.** `POST /internal/customer-call` (X-Internal-Secret), the same pattern as `/cache/invalidate`. Twilio `calls.create` is called with:
+  - from the org's number to the customer;
+  - `MachineDetection=DetectMessageEnd`;
+  - `Timeout=25` (seconds of ringing);
+  - `TimeLimit=300`, a hard 5-minute ceiling on the call;
+  - `Url` = `/twiml/customer-call/:token`;
+  - `StatusCallback` = `/twiml/customer-call-status/:token` (terminal events).
+
+  The token is HMAC-signed with `INTERNAL_API_SECRET`, expires in 15 minutes and carries ids only (no names or numbers in a URL).
+- **The call row.** Inserted right after Twilio accepts the call, as `sh_<CallSid>`, with:
+  - `direction` outbound;
+  - `status` queued;
+  - `caller_phone` = the customer;
+  - `metadata.call_type = "customer_notify"`;
+  - `metadata.notify = { purpose, appointment_id, requested_by_call_id }`.
+
+  If the row can't be written, the Twilio call is cancelled and the owner told.
+- **The TwiML** (Twilio signature plus the token) branches on `AnsweredBy`:
+  - `human` or `unknown`: the conversation;
+  - `machine_end_*`: the voicemail;
+  - anything else: hang up.
+
+  Both of the first two stream to `/ws/audio` with a server-side stream token carrying the notify context, the same token mechanism as the owner PIN line.
+- **The conversation:**
+  - **Context:** loaded by the org's number, as if the customer had called it. `callerPhone` is the customer, verified because we dialled it, so the receptionist's own tools find only that customer's bookings.
+  - **Prompt:** the receptionist's own prompt, rules and knowledge, plus a final OUTBOUND CALL section (`lib/notify-call-prompt.js`) that says:
+    - who it is calling and why;
+    - make sure it's the customer before sharing any detail; with anyone else, ask them to pass on a call-back message and end the call;
+    - the purpose's script;
+    - only this customer's own bookings;
+    - honour "don't call me again";
+    - use the name already on the booking instead of collecting it again;
+    - keep it short;
+    - `record_call_outcome`, then `end_call`.
+  - **The opener:** "Hi, this is the AI assistant at {business}, calling for {first name}. Is that you?", with the recording disclosure woven in when the existing consent rules require it.
+  - **Tools:**
+    - the receptionist's own tools (calendar, callback, `end_call`, and transfer under the org's own rules);
+    - `record_call_outcome({ outcome, note })`, handled locally. Outcome is one of: `confirmed`, `rebooked`, `declined`, `will_call_back`, `wrong_person`, `do_not_call` or `other`.
+- **The voicemail:**
+  - Gemini speaks one deterministic message in the assistant's voice: who's calling, the news, and "please call us back on this number". It never names the service.
+  - The call is hung up after that first turn.
+  - There is no disclosure and no recording.
+  - The message text is stored on the row.
+- **The end of the call:**
+  - **Answered:** the session's cleanup completes the row (`callType` and `notify` re-sent: `completeCallRecord` rewrites metadata) and calls call-completed.
+  - **No session** (no answer, busy, failed, voicemail): the status callback finalises the row and calls call-completed.
+  - **A row still in progress with no live session** (a restart mid-call): the status callback finalises it as cut off.
+
+### The website
+
+- **`customer-call.ts`** (new): the voice-server client for check and place, plus the spoken reasons.
+  - With calls on, `getContactOptions` adds `"call"` and the note says why a call isn't possible when it isn't.
+  - With calls off it stays silent; asked to call anyway, the assistant says "I can't call customers yet".
+- **`contactCustomer` with `"call"`:** places the call about the cancelled booking or the new leg.
+- **`handleOwnerCallCustomer`:** read-back, gate, then place.
+- **call-completed**, for `call_type = "customer_notify"`:
+  - no spam scoring, missed or unsuccessful alerts, caller text-back or integrations webhook;
+  - **Ruling:** no plan-call billing, the default until the owner decides;
+  - the outcome email, sent once (claimed on `metadata.notify_outcome_emailed_at`), after the response.
+
+### Costs (US$, Twilio list)
+
+| Call | Cost |
+|---|---|
+| Answered | ≈ 7.5¢/min to an AU mobile, plus ≈ 2.25¢/min of Gemini, plus 0.75¢ for machine detection |
+| Typical 1-2 minutes | 11–20¢ |
+| No answer | the 0.75¢ detection fee only |
 
 ## Testing
 
