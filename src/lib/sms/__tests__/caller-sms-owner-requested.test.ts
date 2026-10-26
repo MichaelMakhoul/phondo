@@ -13,13 +13,18 @@ const db = {
   ownerCount: 1, // sent appointment texts (both types) to this number in the hour
   logFilters: [] as Array<Array<[string, unknown[]]>>,
   upserts: [] as Array<Record<string, unknown>>,
+  // The gates an owner-requested text must still meet (test lens round 2).
+  ownerError: null as null | { code: string },
+  optedOut: false,
+  orgTexts: true,
+  planOk: true,
 };
 
 vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn(), captureMessage: vi.fn(), withScope: vi.fn() }));
 vi.mock("@/lib/notifications/notification-service", () => ({
   getNotificationPreferences: vi.fn(async () => ({ sms_appointment_confirmation: true, sms_textback_on_missed_call: true })),
 }));
-vi.mock("@/lib/stripe/billing-service", () => ({ hasFeatureAccess: vi.fn(async () => true) }));
+vi.mock("@/lib/stripe/billing-service", () => ({ hasFeatureAccess: vi.fn(async () => db.planOk) }));
 vi.mock("@/lib/twilio/client", () => ({ getTwilioClient: () => ({ messages: { create: twilioCreate } }) }));
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
@@ -28,9 +33,10 @@ vi.mock("@/lib/supabase/admin", () => ({
       const b: any = {};
       for (const m of ["select", "eq", "gte", "in", "order", "limit"]) b[m] = (...a: unknown[]) => { filters.push([m, a]); return b; };
       b.maybeSingle = async () => {
-        if (table === "organizations") return { data: { send_customer_confirmations: true, sms_sender: null }, error: null };
+        if (table === "organizations") return { data: { send_customer_confirmations: db.orgTexts, sms_sender: null }, error: null };
         if (table === "phone_numbers") return { data: { phone_number: "+61257015064", telephony_provider: "twilio" }, error: null };
-        return { data: null, error: null }; // caller_sms_optouts: not opted out
+        if (table === "caller_sms_optouts") return { data: db.optedOut ? { id: "opt-1" } : null, error: null };
+        return { data: null, error: null };
       };
       b.single = async () =>
         table === "organizations"
@@ -40,6 +46,7 @@ vi.mock("@/lib/supabase/admin", () => ({
         if (table === "caller_sms_log") {
           db.logFilters.push(filters);
           const owner = filters.some(([m]) => m === "in");
+          if (owner && db.ownerError) return Promise.resolve({ count: null, error: db.ownerError }).then(resolve);
           return Promise.resolve({ count: owner ? db.ownerCount : db.automatedCount, error: null }).then(resolve);
         }
         return Promise.resolve({ data: null, error: null }).then(resolve);
@@ -67,6 +74,10 @@ beforeEach(() => {
   db.ownerCount = 1;
   db.logFilters = [];
   db.upserts = [];
+  db.ownerError = null;
+  db.optedOut = false;
+  db.orgTexts = true;
+  db.planOk = true;
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(console, "log").mockImplementation(() => {});
@@ -124,5 +135,41 @@ describe("the hourly cap and owner-requested texts", () => {
     const { sendCancellationSMS } = await load();
     expect((await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, { ownerRequested: "yes" as any })).reason).toBe("rate_limited");
     expect((await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, {})).reason).toBe("rate_limited");
+  });
+});
+
+// Test lens round 2: an owner-requested text is exempt ONLY from the hourly cap — the
+// org's toggle, the customer's STOP, the plan and a fail-closed owner cap all still hold.
+describe("an owner-requested text is exempt ONLY from the hourly cap", () => {
+  it("only the exact boolean true counts — for confirmations too; the dashboard's { moved: true } stays on the hourly cap", async () => {
+    const { sendAppointmentConfirmationSMS } = await load();
+    for (const options of [{}, { ownerRequested: "yes" as any }, { moved: true }]) {
+      expect((await sendAppointmentConfirmationSMS(ORG, "+61414141883", START, "Australia/Sydney", undefined, APPT, options)).reason, JSON.stringify(options)).toBe("rate_limited");
+    }
+    expect(twilioCreate).not.toHaveBeenCalled();
+  });
+  it("a customer who replied STOP is never texted, even when the owner asks", async () => {
+    db.optedOut = true;
+    const { sendCancellationSMS } = await load();
+    expect(await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, { ownerRequested: true })).toEqual({ sent: false, status: "blocked_optout", reason: "caller_opted_out" });
+    expect(twilioCreate).not.toHaveBeenCalled();
+  });
+  it("the org's 'no customer texts' toggle still wins", async () => {
+    db.orgTexts = false;
+    const { sendAppointmentConfirmationSMS } = await load();
+    expect(await sendAppointmentConfirmationSMS(ORG, "+61414141883", START, "Australia/Sydney", undefined, APPT, { ownerRequested: true, moved: true })).toEqual({ sent: false, status: "skipped", reason: "org_disabled" });
+    expect(twilioCreate).not.toHaveBeenCalled();
+  });
+  it("a plan without SMS still blocks it", async () => {
+    db.planOk = false;
+    const { sendCancellationSMS } = await load();
+    expect(await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, { ownerRequested: true })).toEqual({ sent: false, status: "blocked_plan", reason: "plan_not_eligible" });
+    expect(twilioCreate).not.toHaveBeenCalled();
+  });
+  it("an owner cap that can't be counted holds the text back (fails closed)", async () => {
+    db.ownerError = { code: "57014" };
+    const { sendCancellationSMS } = await load();
+    expect(await sendCancellationSMS(ORG, "+61414141883", START, "Australia/Sydney", APPT, { ownerRequested: true })).toEqual({ sent: false, status: "blocked_ratelimit", reason: "rate_limited" });
+    expect(twilioCreate).not.toHaveBeenCalled();
   });
 });

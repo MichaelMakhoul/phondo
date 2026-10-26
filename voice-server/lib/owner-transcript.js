@@ -97,8 +97,13 @@ function createOwnerTranscriber({ apiKey, openStream, industry, onFinal, onLost,
         // already going away
       }
     },
+    /**
+     * Writing the owner's lines right now: open, not lost, not closed. While it is
+     * still connecting the owner's words come from Gemini's text, so the first words
+     * (often over the greeting) are kept rather than dropped.
+     */
     get active() {
-      return !done;
+      return !done && !!ws && ws.readyState === WS_OPEN;
     },
   };
 }

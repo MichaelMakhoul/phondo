@@ -91,7 +91,8 @@ describe("createOwnerTranscriber", () => {
 
   it("a stream still connecting after the deadline is lost (a hung handshake would blank every line until it ends)", async () => {
     const { t, dg, lost } = make({ readyState: 0 }, 20);
-    assert.equal(t.active, true, "still within the deadline");
+    assert.equal(t.active, false, "connecting: the owner's words come from Gemini's text meanwhile");
+    assert.deepEqual(lost, [], "still within the deadline");
     await sleep(60);
     assert.deepEqual(lost, ["did not connect within 20 ms"]);
     assert.equal(t.active, false);
@@ -128,5 +129,15 @@ describe("createOwnerTranscriber", () => {
     assert.deepEqual(lost, ["could not open: bad url"]);
     assert.equal(t.active, false);
     assert.doesNotThrow(() => { t.send(Buffer.from([1])); t.close(); });
+  });
+});
+
+describe("while Deepgram connects (test lens round 2 residual)", () => {
+  it("isn't active until the stream is open, so nothing the owner says meanwhile is dropped", () => {
+    const { t, dg } = make({ readyState: 0 });
+    assert.equal(t.active, false);
+    dg.ws.readyState = 1; // the handshake completes
+    assert.equal(t.active, true);
+    t.close();
   });
 });

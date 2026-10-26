@@ -819,6 +819,17 @@ describe("/ws/test Gemini: the owner's transcript from Deepgram, run for real", 
     assert.deepEqual(userLines(ws), ["Any messages?"]);
   });
 
+  it("while Deepgram is still connecting, the owner's words come from Gemini's text — never dropped", () => {
+    const s = ownerSession();
+    const { cbs, dg, ws } = wire(s);
+    dg.ws.readyState = 0; // the handshake hasn't completed yet
+    cbs.onAudio("AAAA"); cbs.onTurnComplete({}); // the greeting
+    cbs.onTranscriptIn("Any messages for me?");
+    cbs.onTranscriptOut("Two."); cbs.onAudio("B"); cbs.onTurnComplete({});
+    assert.deepEqual(userLines(ws), ["Any messages for me?"]);
+    s.ownerTranscriber.close();
+  });
+
   it("no Deepgram key, or a customer's test call: no transcriber, Gemini's text as before", () => {
     for (const [session, apiKey] of [[ownerSession(), undefined], [customerSession(), "dg-key"]]) {
       const { cbs, dg, ws } = wire(session, { apiKey });
