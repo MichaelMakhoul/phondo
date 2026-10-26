@@ -1301,6 +1301,21 @@ function simulateCalendarWrite(functionName, args) {
       data: { outcome: verb, customer_notified: false },
     };
   }
+  if (functionName === "owner_call_customer") {
+    // SCRUM-598: the same parity — a test session never places a call to anyone.
+    if (args.confirmed !== true) {
+      return {
+        success: false,
+        message: "Needs confirmation: read back who you'll call and why, get a clear yes, then call again with confirmed=true. (Simulated — test mode)",
+        data: { outcome: "needs_confirmation", customer_notified: false },
+      };
+    }
+    return {
+      success: true,
+      message: "Calling the customer now. (Simulated — test mode: no call is placed)",
+      data: { outcome: "calling", customer_notified: false },
+    };
+  }
   if (functionName === "reschedule_appointment") {
     // SCRUM-452: reschedule previously fell through to the REAL internal API —
     // a test caller saying "move my appointment" created a real reschedule leg

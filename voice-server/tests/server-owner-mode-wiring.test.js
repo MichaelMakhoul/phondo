@@ -31,23 +31,26 @@ describe("SCRUM-587: owner session wiring", () => {
   it("owner calls get the owner prompt, skip the returning-caller hint and the schedule snapshot", () => {
     assert.match(src, /const systemPrompt = session\.ownerMode\s*\?\s*buildOwnerPrompt\(\{/);
     assert.match(src, /if \(callerPhone && !session\.ownerMode\) \{/);
-    assert.match(src, /if \(!session\.ownerMode && !clinikoOwnsAvailability && \(session\.calendarEnabled \|\| session\.serviceTypes\?\.length > 0\)\)/);
+    // SCRUM-598: nor does a voicemail-mode customer call (one fixed message).
+    assert.match(src, /if \(!session\.ownerMode && session\.notify\?\.mode !== "voicemail" && !clinikoOwnsAvailability && \(session\.calendarEnabled \|\| session\.serviceTypes\?\.length > 0\)\)/);
   });
   it("owner calls pick their pipeline via OWNER_PIPELINE", () => {
     // SCRUM-594: customer calls now go through resolveCallPipeline (the demo-line
     // switch, VOICE_PIPELINE otherwise); the owner branch is unchanged.
-    assert.match(src, /const effectivePipeline = session\.ownerMode\s*\?\s*resolveOwnerPipeline\(\)\s*:\s*resolveCallPipeline\(\{[^}]*globalPipeline: VOICE_PIPELINE,/);
+    // SCRUM-598: a customer call the assistant placed runs on Gemini Live, never routed.
+    assert.match(src, /const effectivePipeline = session\.ownerMode\s*\?\s*resolveOwnerPipeline\(\)\s*:\s*session\.notify\s*\?\s*"gemini-live"(?:\s*\/\/[^\n]*)?\s*:\s*resolveCallPipeline\(\{[^}]*globalPipeline: VOICE_PIPELINE,/);
     assert.ok((src.match(/effectivePipeline === "gemini-live"/g) || []).length >= 2, "both pipeline-selection checks must use effectivePipeline");
   });
   it("Gemini: owner tools, owner greeting, no disclosure, owner suffix", () => {
-    assert.match(src, /const llmOptions = session\.ownerMode \? \{ tools: buildOwnerTools\(\) \} : buildLLMOptions\(session, \{ includeTransfer: true \}\);/);
+    // SCRUM-598: a customer call gets the receptionist's tools without transfer; a voicemail none.
+    assert.match(src, /const llmOptions = session\.ownerMode\s*\?\s*\{ tools: buildOwnerTools\(\) \}\s*:\s*notifyVoicemail\s*\?\s*\{ tools: \[\] \}\s*:\s*buildLLMOptions\(session, \{ includeTransfer: !session\.notify \}\);/);
     assert.match(src, /const consentResult = session\.ownerMode\s*\?\s*\{ required: false, callerState: null, reason: "owner-call" \}/);
     assert.match(src, /const greeting = session\.ownerMode\s*\?\s*buildOwnerGreeting\(session\.ownerFirstName\)/);
     assert.match(src, /geminiSystemPrompt \+= buildOwnerGeminiSuffix\(\);/);
     // The customer CRITICAL RULES block must sit inside the !ownerMode branch.
     const rulesIdx = src.indexOf("CRITICAL RULES FOR THIS CONVERSATION:");
-    const gateIdx = src.lastIndexOf("if (!session.ownerMode) {", rulesIdx);
-    assert.ok(gateIdx > 0 && rulesIdx - gateIdx < 800, "customer CRITICAL RULES must be gated on !session.ownerMode");
+    const gateIdx = src.lastIndexOf("if (!session.ownerMode && !notifyVoicemail) {", rulesIdx);
+    assert.ok(gateIdx > 0 && rulesIdx - gateIdx < 800, "customer CRITICAL RULES must be gated on !session.ownerMode (and off for a voicemail)");
   });
   // That every owner tool call reaches the runner and no customer guard runs is proven by
   // running the callbacks ("Gemini callbacks, run for real" below); this pins only the order.
@@ -71,13 +74,13 @@ describe("SCRUM-587: owner session wiring", () => {
     assert.ok((src.match(/buildOwnerGreeting\(session\.ownerFirstName\)/g) || []).length >= 2, "both pipelines use the owner greeting");
   });
   it("post-call: no phantom scan, no OpenAI analysis, deterministic summary, owner stamps — and the DB write precedes the webhook", () => {
-    assert.match(cleanup, /const phantomActions = s\.ownerMode \? \[\] : detectPostCallPhantoms\(s\.fullTranscriptMessages, s\.toolCallAudit\);/);
-    assert.match(cleanup, /if \(!s\.ownerMode && transcript && durationSeconds > 5\) \{/);
+    assert.match(cleanup, /const phantomActions = s\.ownerMode \|\| s\.notify\?\.mode === "voicemail" \? \[\] : detectPostCallPhantoms\(s\.fullTranscriptMessages, s\.toolCallAudit\);/);
+    assert.match(cleanup, /if \(!s\.ownerMode && s\.notify\?\.mode !== "voicemail" && transcript && durationSeconds > 5\) \{/);
     assert.match(cleanup, /let ownerSummary = s\.ownerMode \? buildOwnerCallSummary\(s\.toolCallAudit \|\| \[\]\) : null;/);
     assert.match(cleanup, /summary: s\.ownerMode \? ownerSummary : \(analysis\?\.summary \|\| null\),/);
     assert.match(cleanup, /callerName: s\.ownerMode \? \(s\.ownerFirstName \|\| "Owner"\) : \(analysis\?\.callerName \|\| null\),/);
     assert.match(cleanup, /actionTaken: s\.ownerMode\s*\?\s*"owner_call"/);
-    assert.match(cleanup, /callType: s\.ownerMode \? "owner" : null,/);
+    assert.match(cleanup, /callType: s\.ownerMode \? "owner" : s\.notify \? customerCall\.CUSTOMER_NOTIFY_CALL_TYPE : null,/);
     assert.match(cleanup, /ownerAuth: s\.ownerAuth \|\| null,/);
     const writeIdx = cleanup.indexOf("await completeCallRecord(s.callRecordId, {");
     assert.ok(writeIdx >= 0 && writeIdx < cleanup.indexOf("notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, {"), "PR B reads call_type from the DB — the record must be written (awaited) before the webhook");
@@ -315,7 +318,7 @@ async function assemblePrompts({ owner, ownerAuth, timezone }) {
   });
   const classicPrompt = session.messages[0].content;
   const gemini = runSlice({
-    from: "const llmOptions = session.ownerMode",
+    from: "const notifyVoicemail = session.notify?.mode === \"voicemail\";",
     to: "// Transcript buffering — accumulate fragments, flush on turn complete",
     scope: {
       session, context, isAfterHours: false, afterHoursConfig: null,

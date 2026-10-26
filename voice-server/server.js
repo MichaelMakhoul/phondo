@@ -141,6 +141,9 @@ function getTwilioRestClient() {
   return _twilioRestClient;
 }
 const { lookupPhoneNumber, isAiEnabled, getAnswerMode, getPhoneNumberContext } = require("./lib/answer-mode");
+// SCRUM-598: the AI's call to a customer, on the owner's request.
+const customerCall = require("./lib/customer-call");
+const notifyPrompt = require("./lib/notify-call-prompt");
 const { initAudioFrontend } = require("./lib/audio-frontend");
 const { detectAndRedact, redactObject } = require("./lib/pii-detector");
 const { maskPhone } = require("./lib/mask-phone");
@@ -164,7 +167,7 @@ const { mintStreamToken, verifyStreamToken, withoutOwnerAccess } = require("./li
 // SCRUM-587: the owner session — its prompt and tools, the ONE tool path that
 // bypasses the customer guards, and the turn clock its confirmation gate reads.
 const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require("./lib/owner-prompt");
-const { buildOwnerTools, OWNER_WRITE_TOOL_NAMES } = require("./lib/owner-tools");
+const { buildOwnerTools, OWNER_CHANGE_TOOL_NAMES } = require("./lib/owner-tools");
 const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, ownerResultSucceeded, OWNER_MAX_TOOL_CALLS } = require("./lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("./lib/owner-turn-stamps");
 const { OWNER_WEB_MAX_SESSION_MS, OWNER_WEB_RECORD_METADATA, OWNER_WEB_PROBLEM_MESSAGE, isOwnerWebToken, ownerWebCallSid, buildOwnerWebPrompt, createOwnerTokenLedger, createOwnerWebSessions, finishOwnerWebSession } = require("./lib/owner-web-session"); // SCRUM-596: the owner assistant in the dashboard
@@ -398,9 +401,10 @@ const TOKEN_TTL_MS = 30_000;
  * @param {string} callerPhone
  * @param {string} [reconnectCallSid]
  * @param {any} [phoneRecord]
- * @param {{ ownerMode?: boolean, ownerAuth?: "verified"|"locked"|"failed"|"error"|null, ownerFirstName?: string|null }} [extra]
+ * @param {{ ownerMode?: boolean, ownerAuth?: "verified"|"locked"|"failed"|"error"|null, ownerFirstName?: string|null, notify?: import("./lib/customer-call").NotifyContext }} [extra]
  *   SCRUM-587: owner-mode flags live HERE (server-side) — the TwiML parameter
  *   stays an opaque HMAC token, so a client can never assert owner mode.
+ *   SCRUM-598: so does a customer call's notify context (set only by /twiml/customer-call).
  */
 function issueStreamToken(calledNumber, callerPhone, reconnectCallSid, phoneRecord, extra = {}) {
   // SCRUM-587: `${ts}.${nonce}.${hmac}` — the random nonce keeps two tokens
@@ -417,6 +421,8 @@ function issueStreamToken(calledNumber, callerPhone, reconnectCallSid, phoneReco
     ownerMode: extra.ownerMode === true && extra.ownerAuth === "verified",
     ownerAuth: typeof extra.ownerAuth === "string" ? extra.ownerAuth : null,
     ownerFirstName: typeof extra.ownerFirstName === "string" ? extra.ownerFirstName : null,
+    // SCRUM-598: never together with owner mode (a customer call is a customer's call).
+    notify: extra.notify && typeof extra.notify === "object" && extra.ownerMode !== true ? extra.notify : null,
   });
   return token;
 }
@@ -424,7 +430,7 @@ function issueStreamToken(calledNumber, callerPhone, reconnectCallSid, phoneReco
 /**
  * Verify and consume a stream token. Returns the stored call metadata
  * (calledNumber, callerPhone, reconnectCallSid, phoneRecord, ownerMode, ownerAuth,
- * ownerFirstName) or null if invalid/expired.
+ * ownerFirstName, notify) or null if invalid/expired.
  */
 function consumeStreamToken(token) {
   try {
@@ -441,6 +447,7 @@ function consumeStreamToken(token) {
       ownerMode: entry.ownerMode === true,
       ownerAuth: entry.ownerAuth || null,
       ownerFirstName: entry.ownerFirstName || null,
+      notify: entry.notify || null,
     };
   } catch (err) {
     console.error("[Auth] Token verification threw unexpectedly — if this repeats, all calls will be rejected:", err);
@@ -1328,6 +1335,130 @@ app.post("/internal/retranscribe", async (req, res) => {
   }
 });
 
+// ── SCRUM-598: the AI's call to a customer, on the owner's request ──────────
+// lib/customer-call.js decides whether a call may be placed and places it; the
+// call itself is an ordinary /ws/audio session in notify mode (below). Next.js asks
+// over the internal secret, like /cache/invalidate; Twilio's fetches are signed.
+
+/** CallSids whose notify session is running in this process (the status callback leaves those to it). */
+const liveCustomerCalls = new Set();
+/** The Twilio mark sent after a voicemail's last audio: its echo means the message has played. */
+const NOTIFY_VOICEMAIL_MARK = "notify-voicemail-done";
+/** A spoken voicemail whose mark never echoes still ends this long after it was spoken. */
+const NOTIFY_VOICEMAIL_PLAYBACK_MAX_MS = 25_000;
+/** A voicemail session that never speaks at all ends after this. */
+const NOTIFY_VOICEMAIL_MAX_MS = 45_000;
+
+/**
+ * End a customer call: the Gemini session, then the stream (which ends the
+ * <Connect>, and so the call).
+ * @param {any} session
+ * @param {import("ws").WebSocket} twilioWs
+ */
+function hangUpNotifyCall(session, twilioWs) {
+  try {
+    session?.geminiSession?.close();
+  } catch (err) {
+    console.warn("[CustomerCall] closing the Gemini session failed (non-fatal):", err && err.message);
+  }
+  try {
+    if (twilioWs.readyState === WebSocket.OPEN) twilioWs.close(1000, "customer call ended");
+  } catch (err) {
+    console.warn("[CustomerCall] closing the stream failed (non-fatal):", err && err.message);
+  }
+}
+
+/**
+ * The voicemail has been spoken: mark the end of its audio and hang up when Twilio
+ * echoes the mark (the whole message has played), or after a backstop.
+ * @param {any} session
+ * @param {import("ws").WebSocket} twilioWs
+ */
+function endVoicemailAfterPlayback(session, twilioWs) {
+  if (twilioWs.readyState !== WebSocket.OPEN) return;
+  session.endedReason = "customer-call-voicemail-left";
+  twilioWs.send(JSON.stringify({ event: "mark", streamSid: session.streamSid, mark: { name: NOTIFY_VOICEMAIL_MARK } }));
+  setTimeout(() => {
+    if (twilioWs.readyState === WebSocket.OPEN) {
+      console.warn(`[CustomerCall] no playback mark in ${NOTIFY_VOICEMAIL_PLAYBACK_MAX_MS / 1000}s — hanging up call=${session.notify?.callId}`);
+      hangUpNotifyCall(session, twilioWs);
+    }
+  }, NOTIFY_VOICEMAIL_PLAYBACK_MAX_MS).unref();
+}
+
+function customerCallCheckDeps() {
+  return {
+    supabase: getSupabase(),
+    env: process.env,
+    now: Date.now,
+    // Notify calls run on Gemini Live only (never the classic fallback).
+    pipelineAvailable: () => !!process.env.GEMINI_API_KEY,
+    demoOrgId: DEMO_ORG_ID,
+  };
+}
+
+app.post("/internal/customer-call/check", async (req, res) => {
+  if (!timingSafeEqualStr(req.headers["x-internal-secret"], INTERNAL_API_SECRET)) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const result = await customerCall.checkCustomerCall(req.body || {}, "check", customerCallCheckDeps());
+  return res.json(result.ok ? { canCall: true } : { canCall: false, reason: /** @type {{ reason: string }} */ (result).reason });
+});
+
+app.post("/internal/customer-call", async (req, res) => {
+  if (!timingSafeEqualStr(req.headers["x-internal-secret"], INTERNAL_API_SECRET)) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const result = await customerCall.placeCustomerCall(req.body || {}, {
+    ...customerCallCheckDeps(),
+    twilio: {
+      createCall: (params) => getTwilioRestClient().calls.create(/** @type {any} */ (params)),
+      cancelCall: (sid) => getTwilioRestClient().calls(sid).update({ status: "canceled" }),
+    },
+    publicUrl: PUBLIC_URL,
+    secret: INTERNAL_API_SECRET,
+  });
+  return res.json(result);
+});
+
+app.post("/twiml/customer-call/:token", async (req, res) => {
+  if (!validateTwilioSignature(req)) {
+    console.warn("[CustomerCall] Rejected TwiML request — invalid Twilio signature");
+    return res.status(403).send("Forbidden");
+  }
+  const xml = await customerCall.handleCustomerCallTwiml(req, {
+    supabase: getSupabase(),
+    secret: INTERNAL_API_SECRET,
+    env: process.env,
+    issueStreamToken,
+    wsUrl: WS_URL,
+    escapeXml,
+  });
+  return res.type("text/xml").send(xml);
+});
+
+app.post("/twiml/customer-call-status/:token", (req, res) => {
+  if (!validateTwilioSignature(req)) {
+    console.warn("[CustomerCall] Rejected status callback — invalid Twilio signature");
+    return res.status(403).send("Forbidden");
+  }
+  // Answer Twilio at once; finishing the call (and the call-completed POST, with its
+  // retries) runs after. The handler never throws.
+  res.sendStatus(204);
+  customerCall
+    .handleCustomerCallStatus(req, {
+      supabase: getSupabase(),
+      secret: INTERNAL_API_SECRET,
+      hasLiveSession: (sid) => liveCustomerCalls.has(sid),
+      notifyCallCompleted: (payload) =>
+        INTERNAL_API_URL && INTERNAL_API_SECRET
+          ? notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, payload)
+          : Promise.resolve(console.error("[ALERT:error] [CustomerCall] INTERNAL_API_URL/SECRET unset — no outcome email")),
+    })
+    .then((r) => console.log(`[CustomerCall] status ${req.body?.CallStatus}: ${r.finalized ? "finished" : "left"} (${r.reason})`))
+    .catch((err) => console.error("[CustomerCall] status handler threw:", err && err.message));
+});
+
 app.post("/preview", async (req, res) => {
   // SCRUM-355: constant-time secret comparison (was a plain !== that leaked
   // length/prefix via timing).
@@ -1630,6 +1761,7 @@ wss.on("connection", (twilioWs) => {
     // If a transfer is pending, don't run post-call processing yet —
     // the /twiml/transfer-status callback or TTL cleanup will handle it.
     if (s.pendingTransfer) {
+      if (s.notify) liveCustomerCalls.delete(s.callSid); // SCRUM-598: never expected (no transfer tool), never left live
       console.log(`[Cleanup] Transfer pending for callSid=${s.callSid} — deferring post-call processing`);
       // SCRUM-594: whoever writes this call's record later (finishTransferredCall,
       // or the cleanup of a leg reconnected after a failed dial) writes the summary.
@@ -1638,6 +1770,16 @@ wss.on("connection", (twilioWs) => {
         if (saved && fastPathSummary) saved.fastPath = fastPathSummary;
         if (saved && pipelineServed) saved.pipeline = pipelineServed; // gate C7
       }
+      s.destroy();
+      return;
+    }
+
+    // SCRUM-598: a customer call whose setup failed before this session took its row
+    // over is finished by Twilio's status callback, from the row still queued — never
+    // reported as a call-completed with no call id (that would run a customer's alerts).
+    if (s.notify && !s.callRecordId) {
+      liveCustomerCalls.delete(s.callSid);
+      console.warn(`[CustomerCall] session ended before it took call=${s.notify.callId} over — the status callback finishes it`);
       s.destroy();
       return;
     }
@@ -1660,7 +1802,8 @@ wss.on("connection", (twilioWs) => {
     // hallucinated claim is something the AI said, so a caller reciting a code or
     // narrating a past appointment must not trip it.
     // SCRUM-587: owner calls skip the claim scan — "cancelled Mrs Smith's job" is the owner's instruction, not a receptionist claim.
-    const phantomActions = s.ownerMode ? [] : detectPostCallPhantoms(s.fullTranscriptMessages, s.toolCallAudit);
+    // SCRUM-598: nor on a voicemail-mode customer call (one fixed message, no tools).
+    const phantomActions = s.ownerMode || s.notify?.mode === "voicemail" ? [] : detectPostCallPhantoms(s.fullTranscriptMessages, s.toolCallAudit);
     if (phantomActions.length) {
       const { bugTag, reason } = summarizePhantoms(phantomActions);
       console.error(`[HallucinatedAction] callSid=${s.callSid} claimed [${phantomActions.join(", ")}] but no backing tool succeeded. toolCallAudit=${JSON.stringify(s.toolCallAudit || [])}`);
@@ -1683,7 +1826,7 @@ wss.on("connection", (twilioWs) => {
     // Run post-call analysis (best-effort, awaited because results feed into the call record)
     let analysis = null;
     // SCRUM-587: no OpenAI analysis on owner calls — the summary is built from the tool audit below.
-    if (!s.ownerMode && transcript && durationSeconds > 5) {
+    if (!s.ownerMode && s.notify?.mode !== "voicemail" && transcript && durationSeconds > 5) {
       // SCRUM-594 (phone test F10): the names on the appointments this call made, so
       // a misheard spelled surname doesn't become the call log's name. Never throws;
       // a failed lookup leaves them out (lib/booked-names.js says how loudly).
@@ -1795,7 +1938,8 @@ wss.on("connection", (twilioWs) => {
     // attempt, exactly as before.
     let recordWritten = false;
     if (s.callRecordId) {
-      for (let attempt = 1; !recordWritten && attempt <= (s.ownerMode ? 2 : 1); attempt++) {
+      // SCRUM-598: a customer call's write is retried too — call-completed's outcome email reads it.
+      for (let attempt = 1; !recordWritten && attempt <= (s.ownerMode || s.notify ? 2 : 1); attempt++) {
         if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, 1000));
         try {
           await completeCallRecord(s.callRecordId, {
@@ -1839,8 +1983,21 @@ wss.on("connection", (twilioWs) => {
             // SCRUM-587: written BEFORE notifyCallCompleted (below) — PR B reads
             // call_type from the row. owner_auth also marks a customer call that
             // failed the PIN gate.
-            callType: s.ownerMode ? "owner" : null,
+            callType: s.ownerMode ? "owner" : s.notify ? customerCall.CUSTOMER_NOTIFY_CALL_TYPE : null,
             ownerAuth: s.ownerAuth || null,
+            // SCRUM-598: a customer call re-sends its request (this write replaces metadata)
+            // plus how it went; outcome: a person picked up, or the voicemail was left.
+            ...(s.notify
+              ? {
+                  notify: customerCall.notifyMetadata(s.notify, {
+                    ...(s.notifyStartedAt ? { stream_started_at: s.notifyStartedAt } : {}),
+                    ...(s.notifyOutcome ? { outcome: s.notifyOutcome.outcome, note: s.notifyOutcome.note } : {}),
+                    ...(s.notifyVoicemailText ? { voicemail_text: s.notifyVoicemailText } : {}),
+                    ended_reason: endedReason,
+                  }),
+                  outcome: s.notify.mode === "voicemail" ? "voicemail" : "answered",
+                }
+              : {}),
           });
           recordWritten = true;
         } catch (err) {
@@ -1885,13 +2042,15 @@ wss.on("connection", (twilioWs) => {
         unansweredQuestions: analysis?.unansweredQuestions || undefined,
         // SCRUM-587: informational — PR B reads call_type / owner_auth from
         // the row written above. Absent from a plain customer call's body.
-        callType: s.ownerMode ? "owner" : undefined,
+        callType: s.ownerMode ? "owner" : s.notify ? customerCall.CUSTOMER_NOTIFY_CALL_TYPE : undefined,
         ownerAuth: s.ownerAuth || undefined,
       }).catch((err) =>
         console.error("[Cleanup] Failed to notify call completed:", err)
       );
     }
 
+    // SCRUM-598: finished — from here Twilio's status callback may finish the row itself.
+    if (s.notify) liveCustomerCalls.delete(s.callSid);
     s.destroy();
   }
 
@@ -2053,6 +2212,15 @@ wss.on("connection", (twilioWs) => {
           session.ownerAuth = tokenData.ownerAuth || null;
           session.ownerFirstName = tokenData.ownerFirstName || null;
           if (session.ownerMode) console.log(`[OwnerPin] Owner session for callSid=${callSid}`);
+          // SCRUM-598: a call the assistant placed to a customer — only ever from the
+          // server-side token /twiml/customer-call issued (never a client parameter).
+          // calledNumber is the org's line and callerPhone the customer, as on an
+          // inbound call, so the receptionist's own tools find only their bookings.
+          session.notify = tokenData.notify || null;
+          if (session.notify) {
+            liveCustomerCalls.add(callSid);
+            console.log(`[CustomerCall] ${session.notify.mode} session for call=${session.notify.callId} callSid=${callSid}`);
+          }
           sessions.set(streamSid, session);
           console.log(`[Twilio] Stream started — callSid=${callSid} streamSid=${streamSid} called=${calledNumber} from=${maskPhone(callerPhone)}`);
 
@@ -2068,11 +2236,29 @@ wss.on("connection", (twilioWs) => {
 
           if (!context) {
             console.warn(`[Context] No context found for ${calledNumber} — sending fallback and closing`);
+            // SCRUM-598: a call we placed never says "this number isn't set up" to the
+            // customer — it just ends, and the status callback finishes the queued row.
+            if (session.notify) {
+              console.error(`[ALERT:error] [CustomerCall] no call context for call=${session.notify.callId} — ending the call`);
+              liveCustomerCalls.delete(callSid);
+              twilioWs.close();
+              return;
+            }
             try {
               await sendTTS(session, twilioWs, getErrorMsg(session.language, "notConfigured"));
             } catch (ttsErr) {
               console.error("[Context] Failed to send fallback message — caller heard silence before disconnect:", ttsErr);
             }
+            twilioWs.close();
+            return;
+          }
+
+          // SCRUM-598: the number must still belong to the org that asked for the call.
+          if (session.notify && session.notify.organizationId !== context.organizationId) {
+            console.error(`[ALERT:error] [CustomerCall] the line now belongs to another org — ending call=${session.notify.callId}`);
+            session.callFailed = true;
+            session.endedReason = "customer-call-org-mismatch";
+            liveCustomerCalls.delete(callSid); // the status callback finishes the queued row
             twilioWs.close();
             return;
           }
@@ -2135,7 +2321,8 @@ wss.on("connection", (twilioWs) => {
           //   so use Call Control `record_start` API. context.callSid IS the Telnyx
           //   call_control_id (see tool-executor.js → telnyxTransfer.transferCall).
           const recordingConsentMode = context.organization.recordingConsentMode || "auto";
-          if (recordingConsentMode !== "never" && callSid) {
+          // SCRUM-598: a voicemail-mode customer call leaves a fixed message (kept on the row) — not recorded.
+          if (recordingConsentMode !== "never" && callSid && session.notify?.mode !== "voicemail") {
             if (!APP_PUBLIC_URL) {
               // Hard-fail: never start recording with the wrong callback URL —
               // PUBLIC_URL points at the voice server, which doesn't host the
@@ -2282,7 +2469,7 @@ wss.on("connection", (twilioWs) => {
             // appointments.attendee_phone may not be — migration 00137 left it
             // out — so the appointments side may under-match, which is the safe
             // direction.)
-            if (/^\+?\d{7,}$/.test(callerPhone)) {
+            if (!session.notify && /^\+?\d{7,}$/.test(callerPhone)) {
               try {
                 const supabaseClient = require("./lib/supabase").getSupabase();
                 const [apptResult, callResult] = await Promise.all([
@@ -2321,7 +2508,7 @@ wss.on("connection", (twilioWs) => {
             console.log(`[ScheduleCache] Skipped — Cliniko owns availability for org=${context.organizationId} (live diary)`);
           }
           // SCRUM-587: owner sessions carry no snapshot (it has no names); check_availability falls through to the API.
-          if (!session.ownerMode && !clinikoOwnsAvailability && (session.calendarEnabled || session.serviceTypes?.length > 0)) {
+          if (!session.ownerMode && session.notify?.mode !== "voicemail" && !clinikoOwnsAvailability && (session.calendarEnabled || session.serviceTypes?.length > 0)) {
             try {
               scheduleSnapshot = scheduleCache.getSchedule(context.organizationId);
               if (!scheduleSnapshot) {
@@ -2378,18 +2565,42 @@ wss.on("connection", (twilioWs) => {
           // SCRUM-587 (SF6): setup has reached the record — an owner call that
           // ends without one from here on is a fault (cleanup pages on it).
           if (session) session.callRecordRequested = true;
-          try {
-            const callRecordId = await createCallRecord({
-              orgId: context.organizationId,
-              assistantId: context.assistantId,
-              phoneNumberId: context.phoneNumberId,
-              callerPhone,
-              callSid,
-            });
-            session.callRecordId = callRecordId;
-          } catch (err) {
-            console.error("[DB] Failed to create call record:", err);
-            // Non-fatal — continue handling the call
+          if (session.notify) {
+            // SCRUM-598: the briefing first — what the call is about, read fresh. Without
+            // it there is no news to give, so the call ends (the status callback then
+            // finishes the row and the owner hears it failed).
+            const briefing = await customerCall.loadNotifyBriefing(getSupabase(), session.notify);
+            if (!session) return;
+            if (!briefing) {
+              console.error(`[ALERT:error] [CustomerCall] no briefing for call=${session.notify.callId} — ending the call`);
+              session.callFailed = true;
+              session.endedReason = "customer-call-no-briefing";
+              liveCustomerCalls.delete(callSid); // the status callback finishes the queued row
+              twilioWs.close();
+              return;
+            }
+            session.notifyBriefing = briefing;
+            session.notify.ownerNote = briefing.ownerNote;
+            // The row was written when the call was placed: this session completes it.
+            session.callRecordId = session.notify.callId;
+            const started = await customerCall.markCustomerCallStarted(getSupabase(), session.notify);
+            if (!session) return;
+            session.notifyStartedAt = started.startedAt;
+            if (!started.marked) console.warn(`[CustomerCall] call ${session.notify.callId} was not queued any more — the session goes on`);
+          } else {
+            try {
+              const callRecordId = await createCallRecord({
+                orgId: context.organizationId,
+                assistantId: context.assistantId,
+                phoneNumberId: context.phoneNumberId,
+                callerPhone,
+                callSid,
+              });
+              session.callRecordId = callRecordId;
+            } catch (err) {
+              console.error("[DB] Failed to create call record:", err);
+              // Non-fatal — continue handling the call
+            }
           }
 
           // ── Pipeline selection ───────────────────────────────────────────
@@ -2403,7 +2614,9 @@ wss.on("connection", (twilioWs) => {
           // fastPathProblem, read when the resolver asks) takes VOICE_PIPELINE (R12c).
           const effectivePipeline = session.ownerMode
             ? resolveOwnerPipeline()
-            : resolveCallPipeline({
+            : session.notify
+              ? "gemini-live" // SCRUM-598: never the classic fallback (placement checks GEMINI_API_KEY)
+              : resolveCallPipeline({
                 calledNumber,
                 ownerMode: session.ownerMode,
                 language: session.language,
@@ -2421,8 +2634,18 @@ wss.on("connection", (twilioWs) => {
             const geminiT0 = Date.now();
             console.log(`[GeminiLive] Starting session for callSid=${callSid}`);
 
-            const llmOptions = session.ownerMode ? { tools: buildOwnerTools() } : buildLLMOptions(session, { includeTransfer: true });
-            const allTools = llmOptions.tools || [];
+            // SCRUM-598: a customer call gets the receptionist's own tools WITHOUT transfer
+            // (a transferred leg would be finished by the transfer flow, not as this call),
+            // plus record_call_outcome; a voicemail gets none.
+            const notifyVoicemail = session.notify?.mode === "voicemail";
+            const llmOptions = session.ownerMode
+              ? { tools: buildOwnerTools() }
+              : notifyVoicemail
+                ? { tools: [] }
+                : buildLLMOptions(session, { includeTransfer: !session.notify });
+            const allTools = session.notify && !notifyVoicemail
+              ? [...(llmOptions.tools || []), notifyPrompt.recordCallOutcomeToolDefinition]
+              : llmOptions.tools || [];
 
             // ── Build greeting text for Gemini to speak ──
             // Gemini speaks the disclosure + greeting as its FIRST utterance.
@@ -2432,12 +2655,14 @@ wss.on("connection", (twilioWs) => {
             // in Settings; recording still runs as today).
             const consentResult = session.ownerMode
               ? { required: false, callerState: null, reason: "owner-call" }
-              : requiresRecordingDisclosureHybrid(
-                  context.organization.country,
-                  context.organization.businessState,
-                  context.organization.recordingConsentMode,
-                  session.callerPhone
-                );
+              : notifyVoicemail
+                ? { required: false, callerState: null, reason: "customer-call-voicemail" }
+                : requiresRecordingDisclosureHybrid(
+                    context.organization.country,
+                    context.organization.businessState,
+                    context.organization.recordingConsentMode,
+                    session.callerPhone
+                  );
             const greeting = session.ownerMode
               ? buildOwnerGreeting(session.ownerFirstName)
               : getGreeting(context.assistant, context.organization.name, { isAfterHours, afterHoursConfig });
@@ -2475,7 +2700,39 @@ wss.on("connection", (twilioWs) => {
               .replace(/I can only assist in English/g, "I can assist in multiple languages")
               .replace(/I'm sorry, I can only assist in English[^"']*/g, "I can assist in multiple languages");
 
-            if (disclosureText) {
+            // SCRUM-598: a call we placed opens with who's calling (an AI), the recording
+            // notice when one is needed, and a check that it's the customer; a voicemail
+            // is one fixed message and nothing else.
+            const notifyBriefing = session.notify ? session.notifyBriefing : null;
+            const notifyWhen = notifyBriefing ? notifyPrompt.formatWhen(notifyBriefing.startTime, context.organization.timezone) : null;
+            const notifyFirstName = notifyBriefing ? notifyPrompt.firstNameOf(notifyBriefing.customerName) : null;
+            const notifyVoicemailScript = session.notify
+              ? notifyPrompt.buildVoicemailScript({
+                  businessName: context.organization.name,
+                  firstName: notifyFirstName,
+                  purpose: session.notify.purpose,
+                  when: notifyWhen,
+                })
+              : null;
+            if (session.notify && notifyVoicemail) {
+              session.notifyVoicemailText = notifyVoicemailScript;
+              geminiSystemPrompt = notifyPrompt.buildVoicemailPrompt({
+                businessName: context.organization.name,
+                script: notifyVoicemailScript,
+                languageName: languageName(session.language),
+              });
+            } else if (session.notify) {
+              const opener = notifyPrompt.buildNotifyOpener({
+                businessName: context.organization.name,
+                firstName: notifyFirstName,
+                disclosureText,
+              });
+              const openerLanguage =
+                languageName(session.language) !== "English"
+                  ? ` You may say it in ${languageName(session.language)}, keeping the business name and the customer's name exactly.`
+                  : "";
+              geminiSystemPrompt += `\n\nIMPORTANT — YOUR FIRST MESSAGE: When the call connects, you will receive a short text message. Respond by speaking this opening, word for word, naturally and warmly: "${opener}"${openerLanguage}${disclosureText ? ` The recording notice in it is a legal notice: say it EXACTLY as written, never translated, shortened or skipped.` : ""} Then wait for their answer. Do NOT add anything else. Do NOT invent a receptionist name — you are an AI assistant.`;
+            } else if (disclosureText) {
               // SCRUM-368: the LANGUAGE rule tells the model to translate every
               // utterance into the caller's language — but a recording-consent
               // disclosure is a legal notice and must be spoken EXACTLY as the
@@ -2491,7 +2748,7 @@ wss.on("connection", (twilioWs) => {
             // owner call gets the owner variant of the freshest-instruction block
             // instead, and NOTHING after it: the language lock ends on
             // schedule_callback, a customer tool the owner session does not have.
-            if (!session.ownerMode) {
+            if (!session.ownerMode && !notifyVoicemail) {
               // CRITICAL — tool calling, filler words, and name enforcement
               geminiSystemPrompt += `\n\nCRITICAL RULES FOR THIS CONVERSATION:`;
               geminiSystemPrompt += `\n- ABSOLUTELY NEVER FABRICATE ACTIONS: This is the most important rule. It is IMPOSSIBLE to book, cancel, or schedule anything without calling the corresponding tool. The tools (book_appointment, cancel_appointment, schedule_callback) are the ONLY way actions happen in the database. If you say "I've booked your appointment" without calling book_appointment first, the caller will have NO actual appointment — this is a catastrophic failure. The correct sequence is ALWAYS: (1) say a brief filler phrase in the caller's language (the equivalent of "one moment, let me do that for you"), (2) CALL THE TOOL, (3) WAIT for the tool to return a result, (4) ONLY THEN tell the caller what happened based on the tool's response. NEVER speak the words "booked", "confirmed", "cancelled", "scheduled" BEFORE the tool returns. If you catch yourself about to confirm an action — STOP and call the tool first.`;
@@ -2554,7 +2811,22 @@ wss.on("connection", (twilioWs) => {
                 `\n🌐 LANGUAGE — conduct the ENTIRE call in the caller's language: fillers, tool acknowledgements, transfer/hold messages, booking confirmations and closings included. Every English phrase quoted above is an ENGLISH SAMPLE — say its equivalent in the caller's language, never the literal English unless the caller is speaking English. When a tool returns an English message, translate it before speaking, keeping names, numbers, dates, times and confirmation codes exactly as given.\n` +
                 `══════════════════════════════════════════════════════`;
               geminiSystemPrompt += buildLanguageLockDirective(session.language);
-            } else {
+              // SCRUM-598: last, so it wins over everything written for answering calls.
+              if (session.notify && notifyBriefing) {
+                geminiSystemPrompt += notifyPrompt.buildNotifyCallSection({
+                  businessName: context.organization.name,
+                  customerName: notifyBriefing.customerName,
+                  purpose: session.notify.purpose,
+                  when: notifyWhen,
+                  previousWhen: notifyBriefing.previousStartTime
+                    ? notifyPrompt.formatWhen(notifyBriefing.previousStartTime, context.organization.timezone)
+                    : null,
+                  ownerNote: notifyBriefing.ownerNote,
+                  voicemailScript: notifyVoicemailScript || "",
+                  canTransfer: false,
+                });
+              }
+            } else if (session.ownerMode) {
               geminiSystemPrompt += buildOwnerGeminiSuffix();
             }
 
@@ -2674,6 +2946,8 @@ wss.on("connection", (twilioWs) => {
                     }
                     // SCRUM-587: this assistant turn produced speech (the owner confirmation gate's turn clock).
                     if (session?.ownerMode) noteAssistantSpeech(session);
+                    // SCRUM-598: a voicemail ends only after its message has actually gone out.
+                    if (session?.notify) session.notifyAudioSent = true;
                   }
                 },
                 onToolCall: async (toolCall) => {
@@ -2701,6 +2975,20 @@ wss.on("connection", (twilioWs) => {
                     } finally {
                       if (session) session._toolCallInFlight = false;
                     }
+                  }
+
+                  // SCRUM-598: record_call_outcome is the customer call's own tool — kept on
+                  // the session (it reaches the call row and the owner's email), never sent on.
+                  if (toolCall.name === "record_call_outcome") {
+                    if (!session.notify) return { message: "Unknown function: record_call_outcome" };
+                    const parsed = notifyPrompt.parseCallOutcome(toolCall.args);
+                    session.toolCallAudit.push({ name: "record_call_outcome", successful: !!parsed, at: Date.now() });
+                    if (!parsed) {
+                      return { message: `Use one of these outcomes: ${customerCall.CALL_OUTCOMES.join(", ")}. Then say goodbye and call end_call.` };
+                    }
+                    session.notifyOutcome = parsed;
+                    console.log(`[CustomerCall] outcome ${parsed.outcome} for call=${session.notify.callId}`);
+                    return { message: "Noted. Now say goodbye and call end_call." };
                   }
 
                   // SCRUM-373: block end_call when a booking was started but never
@@ -3256,6 +3544,12 @@ wss.on("connection", (twilioWs) => {
 
                     pendingAiTranscript = "";
                   }
+                  // SCRUM-598: a voicemail is one message: once it has been spoken, the call
+                  // ends as soon as Twilio has played it.
+                  if (session.notify?.mode === "voicemail" && session.notifyAudioSent && !session.notifyVoicemailDone) {
+                    session.notifyVoicemailDone = true;
+                    endVoicemailAfterPlayback(session, twilioWs);
+                  }
                 },
                 // SCRUM-587: Gemini cancelled these tool calls — the owner talked
                 // over them. An owner write not yet sent never will be, and one
@@ -3357,6 +3651,19 @@ wss.on("connection", (twilioWs) => {
                 },
               }
             );
+
+            // SCRUM-598: a voicemail that is never spoken (Gemini silent) still ends.
+            if (session.notify?.mode === "voicemail") {
+              const vmSession = session;
+              setTimeout(() => {
+                if (!vmSession.notifyVoicemailDone && twilioWs.readyState === WebSocket.OPEN) {
+                  console.warn(`[CustomerCall] voicemail never spoken in ${NOTIFY_VOICEMAIL_MAX_MS / 1000}s — hanging up call=${vmSession.notify?.callId}`);
+                  vmSession.callFailed = true;
+                  vmSession.endedReason = "customer-call-voicemail-not-spoken";
+                  hangUpNotifyCall(vmSession, twilioWs);
+                }
+              }, NOTIFY_VOICEMAIL_MAX_MS).unref();
+            }
 
             // No greeting needed — Gemini handles the full conversation including greeting
             // The system prompt tells it what to say first
@@ -3581,6 +3888,12 @@ wss.on("connection", (twilioWs) => {
         }
 
         case "mark": {
+          // SCRUM-598: Twilio has played the voicemail to its end — hang up.
+          if (session?.notify?.mode === "voicemail" && msg.mark?.name === NOTIFY_VOICEMAIL_MARK) {
+            console.log(`[CustomerCall] voicemail played — hanging up call=${session.notify.callId}`);
+            hangUpNotifyCall(session, twilioWs);
+            break;
+          }
           // TTS playback finished for a marked chunk
           if (session && msg.mark && msg.mark.name === "tts-done") {
             session.isSpeaking = false;
@@ -6808,7 +7121,8 @@ const ownerTokenLedger = createOwnerTokenLedger();
  * @param {unknown} result - the owner runner's result
  */
 function notifyBookingsChanged(ws, name, result) {
-  if (!OWNER_WRITE_TOOL_NAMES.includes(name) || !ownerResultSucceeded(name, result)) return;
+  // SCRUM-598: a call placed to a customer changes no booking by itself.
+  if (!OWNER_CHANGE_TOOL_NAMES.includes(name) || !ownerResultSucceeded(name, result)) return;
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "bookings_changed" }));
 }
 

@@ -13,8 +13,11 @@
  * the session (context.ownerMode) — never from anything the model sends.
  */
 
-const OWNER_TOOL_NAMES = Object.freeze(["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment"]);
-const OWNER_WRITE_TOOL_NAMES = Object.freeze(["owner_reschedule_appointment", "owner_cancel_appointment"]);
+const OWNER_TOOL_NAMES = Object.freeze(["owner_list_appointments", "owner_list_messages", "owner_reschedule_appointment", "owner_cancel_appointment", "owner_call_customer"]);
+/** Every owner tool that acts (and so goes through the confirmation gate). SCRUM-598: placing a call to a customer is one. */
+const OWNER_WRITE_TOOL_NAMES = Object.freeze(["owner_reschedule_appointment", "owner_cancel_appointment", "owner_call_customer"]);
+/** The writes that change the diary (the schedule cache is refreshed and the dashboard told); a call changes nothing by itself. */
+const OWNER_CHANGE_TOOL_NAMES = Object.freeze(["owner_reschedule_appointment", "owner_cancel_appointment"]);
 const OWNER_SHARED_TOOL_NAMES = Object.freeze(["get_current_datetime", "check_availability", "end_call"]);
 const OWNER_ALLOWED_TOOL_NAMES = new Set([...OWNER_TOOL_NAMES, ...OWNER_SHARED_TOOL_NAMES]);
 /**
@@ -22,7 +25,7 @@ const OWNER_ALLOWED_TOOL_NAMES = new Set([...OWNER_TOOL_NAMES, ...OWNER_SHARED_T
  * needs_confirmation, not_found, slot_taken, invalid_time, rate_limited,
  * external_calendar — is a business non-success.
  */
-const OWNER_SUCCESS_OUTCOMES = new Set(["rescheduled", "cancelled"]);
+const OWNER_SUCCESS_OUTCOMES = new Set(["rescheduled", "cancelled", "calling"]);
 
 /**
  * SCRUM-597: the owner's answer on letting the customer know, sent with the
@@ -32,7 +35,7 @@ const NOTIFY_CUSTOMER_PARAM = Object.freeze({
   type: "string",
   enum: ["text", "call", "none"],
   description:
-    "With confirmed=true: the owner's answer on letting the customer know — one of data.contact_options from the read-back (\"none\" means don't tell them). Without it nothing changes.",
+    "With confirmed=true: the owner's answer on letting the customer know — one of data.contact_options from the read-back (\"call\" means the assistant phones them right after the change; \"none\" means don't tell them). Without it nothing changes.",
 });
 
 const ownerToolDefinitions = [
@@ -109,6 +112,34 @@ const ownerToolDefinitions = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "owner_call_customer",
+      description:
+        "Have the assistant phone a customer about ONE of their bookings WITHOUT changing it: purpose \"confirm\" checks they're still OK for it; purpose \"find_new_time\" agrees a new time with them and moves it (it stays as it is until they pick one). To tell a customer about a cancel or a move, use notify_customer \"call\" on that change instead. In two calls. First call WITHOUT confirmed: nothing happens, and data.outcome is needs_confirmation with the read-back (data.customer_name, data.when), or not_available with the reason in the message. Read it back to the owner and get a clear yes, THEN call again with confirmed=true. The result's data.outcome is calling | needs_confirmation | not_available | not_found | external_calendar — only 'calling' means the call is being placed; the owner gets an email when it ends.",
+      parameters: {
+        type: "object",
+        properties: {
+          appointment_id: { type: "string", description: "The appointment_id from owner_list_appointments." },
+          purpose: {
+            type: "string",
+            enum: ["confirm", "find_new_time"],
+            description: "confirm: check they're still OK for the booking. find_new_time: agree a new time with them and move it.",
+          },
+          note: {
+            type: "string",
+            description: "find_new_time only, optional: the owner's guidance on times, in their words (e.g. \"next week, mornings\"). The assistant uses it to choose times and never reads it out.",
+          },
+          confirmed: {
+            type: "boolean",
+            description: "The boolean true ONLY after the owner clearly said yes to your read-back. Leave it out to get the read-back to give.",
+          },
+        },
+        required: ["appointment_id", "purpose"],
+      },
+    },
+  },
 ];
 
 /**
@@ -144,7 +175,7 @@ const ownerCheckAvailabilityDefinition = {
 };
 
 /**
- * The owner session's complete tool list: the four owner tools, then the
+ * The owner session's complete tool list: the five owner tools, then the
  * shared get_current_datetime, the owner-worded check_availability and
  * end_call. Lazy require: tool-executor imports the NAME lists from this
  * module, so a top-level require would be circular.
@@ -160,6 +191,7 @@ function buildOwnerTools() {
 module.exports = {
   OWNER_TOOL_NAMES,
   OWNER_WRITE_TOOL_NAMES,
+  OWNER_CHANGE_TOOL_NAMES,
   OWNER_SHARED_TOOL_NAMES,
   OWNER_ALLOWED_TOOL_NAMES,
   OWNER_SUCCESS_OUTCOMES,
