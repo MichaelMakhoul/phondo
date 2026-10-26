@@ -281,6 +281,14 @@ export const SENTRY_REASONS = {
    *  minutes). Check the call-completed logs for the cause and tell the owner
    *  by hand. */
   OWNER_PIN_LOCK_EMAIL_FAILED: "owner-pin-lock-email-failed",
+
+  /** SCRUM-597: an owner-assistant call changed bookings but the recap email
+   *  (what actually changed, from the audit trail) could not be built or sent —
+   *  the owner has no record to check the AI against. Error level. The
+   *  call-completed route still answers 200; if the send itself failed, the
+   *  call's recap claim stays stamped, so it is not retried: look up the call's
+   *  appointment_events (call_id) and tell the owner by hand. */
+  OWNER_RECAP_EMAIL_FAILED: "owner-recap-email-failed",
 } as const;
 
 export type SentryReason = (typeof SENTRY_REASONS)[keyof typeof SENTRY_REASONS];

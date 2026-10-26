@@ -8,6 +8,7 @@ import {
   sendFailedCallNotification,
   sendUnsuccessfulCallNotification,
   sendOwnerPinLockedNotification,
+  sendOwnerAssistantRecapNotification,
 } from "@/lib/notifications/notification-service";
 import { classifyCallNotification } from "@/lib/notifications/classify-call";
 import { humanizeEndedReason } from "@/lib/notifications/humanize-ended-reason";
@@ -17,6 +18,7 @@ import { withRateLimit, rateLimitDistributed } from "@/lib/security/rate-limiter
 import { maskPhoneForOwner } from "@/lib/owner-assistant/mask-phone";
 import { formatOwnerLockTime } from "@/lib/owner-assistant/lock-email-time";
 import { isOwnerCallMetadata } from "@/lib/owner-assistant/owner-call";
+import { buildOwnerRecap } from "@/lib/owner-assistant/recap";
 import { pageSentry } from "@/lib/observability/page-sentry";
 import { SENTRY_REASONS } from "@/lib/security/error-ids";
 
@@ -105,9 +107,10 @@ async function stampOwnerLockEmailed(
  */
 async function readOrgTimezoneOnce(
   supabase: ReturnType<typeof createAdminClient>,
-  organizationId: string
+  organizationId: string,
+  purpose = "the PIN-lockout email"
 ): Promise<string | undefined> {
-  const failed = "[Internal] Could not read the org timezone for the PIN-lockout email — it will read in the default zone:";
+  const failed = `[Internal] Could not read the org timezone for ${purpose} — it will read in the default zone:`;
   try {
     const { data, error } = await (supabase as any)
       .from("organizations")
@@ -182,6 +185,76 @@ async function emailOwnerPinLockOnce(
   }
   if (outcome === "sent") await stampOwnerLockEmailed(supabase, callId);
   return outcome;
+}
+
+/**
+ * SCRUM-597: claim the call's recap email, once. The write is conditional — it
+ * only lands while metadata.owner_recap_emailed_at is absent — so a retried
+ * call-completed (the voice server retries a non-2xx or a timeout) can't send a
+ * second copy. False when another delivery already claimed it. A claim that fails
+ * to read or write still lets the email go: the owner asked for this safety net,
+ * and a rare duplicate is the lesser harm.
+ */
+async function claimOwnerRecap(supabase: ReturnType<typeof createAdminClient>, callId: string): Promise<boolean> {
+  const failed = "[Internal] Could not claim the owner recap email — sending anyway (a retried call could repeat it):";
+  try {
+    const { data: fresh, error: readError } = await (supabase as any)
+      .from("calls")
+      .select("metadata")
+      .eq("id", callId)
+      .single();
+    if (readError) {
+      console.error(failed, { callId, stage: "re-read", error: readError });
+      return true;
+    }
+    if (fresh?.metadata?.owner_recap_emailed_at) return false;
+    const { data: claimed, error: writeError } = await (supabase as any)
+      .from("calls")
+      .update({ metadata: { ...(fresh?.metadata || {}), owner_recap_emailed_at: new Date().toISOString() } })
+      .eq("id", callId)
+      .is("metadata->>owner_recap_emailed_at", null)
+      .select("id");
+    if (writeError) {
+      console.error(failed, { callId, stage: "write", error: writeError });
+      return true;
+    }
+    return Array.isArray(claimed) && claimed.length > 0;
+  } catch (err) {
+    console.error(failed, { callId, stage: "unexpected", error: err });
+    return true;
+  }
+}
+
+/**
+ * SCRUM-597: email the owner what their assistant actually changed on this call —
+ * read from the audit trail and the text log (buildOwnerRecap), never from the
+ * AI's words — so a mishearing or a made-up confirmation is caught before it
+ * becomes a dispute with a customer. Nothing changed ⇒ no email. A failure pages
+ * and never throws.
+ */
+async function emailOwnerRecapOnce(
+  supabase: ReturnType<typeof createAdminClient>,
+  call: { callId: string; organizationId: string; channel: "web" | "phone" }
+): Promise<"sent" | "skipped" | "no_changes" | "claimed_elsewhere" | "failed"> {
+  const { callId, organizationId, channel } = call;
+  try {
+    const timezone = (await readOrgTimezoneOnce(supabase, organizationId, "the owner recap email")) || "Australia/Sydney";
+    const items = await buildOwnerRecap(supabase, { organizationId, callId, timezone });
+    if (items === null) throw new Error("the call's changes could not be read");
+    if (items.length === 0) return "no_changes";
+    if (!(await claimOwnerRecap(supabase, callId))) return "claimed_elsewhere";
+    return await sendOwnerAssistantRecapNotification({ organizationId, callId, channel, items });
+  } catch (err) {
+    pageSentry({
+      service: "next-api",
+      reason: SENTRY_REASONS.OWNER_RECAP_EMAIL_FAILED,
+      level: "error",
+      err,
+      message: "owner assistant recap email failed — the owner has no record of what their assistant changed",
+      extras: { organizationId, callId },
+    });
+    return "failed";
+  }
 }
 
 /**
@@ -552,6 +625,22 @@ export async function POST(request: Request) {
       callerPhone,
       knownTimezone: orgTimezone,
       startedAt: new Date(Date.now() - durationSeconds * 1000),
+    });
+  }
+
+  // 4d. SCRUM-597: the owner-assistant recap. After an OWNER call (web or phone)
+  // that changed at least one booking, the owner is emailed what actually changed —
+  // read from the audit trail and the text log, never from the AI's words — in case
+  // the AI misheard or made something up. Whatever the call's status: a session
+  // that failed after a change still made it. After the response (the voice server
+  // times out at 15 s and retries), once per call (claimed on the call row); a
+  // failure pages and never fails the route. Reads the DB row's metadata, never
+  // the payload.
+  if (isOwnerCall && callId) {
+    const recapCall = { callId, organizationId, channel: storedMetadata?.channel === "web" ? ("web" as const) : ("phone" as const) };
+    runAfterResponse(async () => {
+      const outcome = await emailOwnerRecapOnce(supabase, recapCall);
+      console.log("[Internal] Owner recap email:", { callId, organizationId, outcome });
     });
   }
 
