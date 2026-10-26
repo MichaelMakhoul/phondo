@@ -259,7 +259,8 @@ function confirmationKey(name, args) {
     const optional = (v) => (v === undefined || v === null || v === "" ? "" : part(v));
     const earliest = optional(args.earliest_date);
     const latest = optional(args.latest_date);
-    const timeOfDay = optional(args.time_of_day);
+    // "any" constrains nothing, as the website reads it: the same key as no time of day (code lens R2-N2).
+    const timeOfDay = args.time_of_day === "any" ? "" : optional(args.time_of_day);
     if (purpose === null || earliest === null || latest === null || timeOfDay === null) return null;
     return `${name}|${id}|${purpose}|${earliest}|${latest}|${timeOfDay}`;
   }

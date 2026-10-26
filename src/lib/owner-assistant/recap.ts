@@ -8,6 +8,9 @@ import { sanitizeCustomerText } from "./sanitize";
 import { parseConfirmationIdempotencyKey } from "@/lib/sms/caller-sms";
 import { CUSTOMER_NOTIFY_CALL_TYPE } from "./owner-call";
 
+/** Where a customer call names the owner call that asked for it (the voice server writes it there — parity-tested). */
+export const REQUESTED_BY_PATH = "metadata->notify->>requested_by_call_id";
+
 export type RecapChange = "cancelled" | "moved" | "booked";
 
 /**
@@ -148,7 +151,7 @@ export async function buildOwnerRecap(
     .select("id, metadata")
     .eq("organization_id", organizationId)
     .eq("metadata->>call_type", CUSTOMER_NOTIFY_CALL_TYPE)
-    .eq("metadata->notify->>requested_by_call_id", callId);
+    .eq(REQUESTED_BY_PATH, callId);
   if (callsError) {
     console.error("[OwnerRecap] customer calls read failed:", { organizationId, callId, error: callsError });
     return null;

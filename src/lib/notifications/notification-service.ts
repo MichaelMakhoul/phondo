@@ -1074,8 +1074,11 @@ function callResultLine(result: CallResult): string {
   }
 }
 
-/** One diary line (customer-derived values escaped here: nested data skips the top-level escaping). */
-function diaryLineHtml(line: DiaryLine): string {
+/**
+ * One diary line (customer-derived values escaped here: nested data skips the
+ * top-level escaping). `alone`: the only line — "nothing changed" is the whole story.
+ */
+function diaryLineHtml(line: DiaryLine, alone: boolean): string {
   switch (line.kind) {
     case "booked":
       return `Booked a new time: <strong>${escapeHtml(line.when)}</strong>`;
@@ -1083,19 +1086,27 @@ function diaryLineHtml(line: DiaryLine): string {
       return `Moved${line.from ? ` from ${escapeHtml(line.from)}` : ""} to <strong>${escapeHtml(line.when)}</strong>`;
     case "cancelled":
       return `Cancelled the booking on <strong>${escapeHtml(line.when)}</strong>`;
-    case "unchanged":
+    case "unchanged": {
+      const at = escapeHtml(line.when);
+      let state: string;
       switch (line.state) {
         case "booked":
-          return `Nothing changed on the call — still booked for <strong>${escapeHtml(line.when)}</strong>`;
+          state = `still booked for <strong>${at}</strong>`;
+          break;
         case "cancelled":
-          return `Nothing changed on the call — the booking on ${escapeHtml(line.when)} is still cancelled`;
+          state = `the booking on ${at} is still cancelled`;
+          break;
         case "inactive":
-          return `Nothing changed on the call — the booking on ${escapeHtml(line.when)} is no longer active`;
+          state = `the booking on ${at} is no longer active`;
+          break;
         default: {
           const unhandled: never = line.state;
           return unhandled;
         }
       }
+      // Beside what the call made, it says where the old booking stands.
+      return alone ? `Nothing changed on the call — ${state}` : state.charAt(0).toUpperCase() + state.slice(1);
+    }
     default: {
       const unhandled: never = line;
       return unhandled;
@@ -1152,10 +1163,20 @@ function newsReach(r: CallOutcomeReport): NewsReach {
   }
 }
 
-/** A time booked or moved to on the call that still stands (one also cancelled on the call doesn't count). */
-function standingNewTime(diary: DiaryLine[]): boolean {
-  const cancelledAt = new Set(diary.filter((d) => d.kind === "cancelled").map((d) => d.when));
-  return diary.some((d) => (d.kind === "moved" || d.kind === "booked") && !cancelledAt.has(d.when));
+/** What the diary says the call left behind. A time also cancelled on the call never stands. */
+function diaryState(r: CallOutcomeReport) {
+  const cancelledAt = new Set(r.diary.filter((d) => d.kind === "cancelled").map((d) => d.when));
+  const standing = (d: DiaryLine) => !cancelledAt.has(d.when);
+  return {
+    /** A time moved to or booked on the call that still stands. */
+    newTime: r.diary.some((d) => (d.kind === "moved" || d.kind === "booked") && standing(d)),
+    /** A separate booking made on the call (not a move) that still stands. */
+    bookedNew: r.diary.some((d) => d.kind === "booked" && standing(d)),
+    /** The booking the call was about was cancelled on the call. */
+    cancelledOnTheCall: r.bookingWhen !== null && r.diary.some((d) => d.kind === "cancelled" && d.when === r.bookingWhen),
+    /** The booking the call was about, as it stands, when the call didn't move or cancel it. */
+    about: r.diary.find((d): d is Extract<DiaryLine, { kind: "unchanged" }> => d.kind === "unchanged") ?? null,
+  };
 }
 
 /**
@@ -1170,21 +1191,35 @@ function nextStepLine(r: CallOutcomeReport): string | null {
   // "Ring them" never follows someone who asked not to be called again.
   const ring = r.phone && !noMoreCalls ? ` — ring them on ${phoneHtml(r.phone)}` : "";
   const reach = newsReach(r);
-  const newTime = standingNewTime(r.diary);
-  const cancelledOnTheCall = r.bookingWhen !== null && r.diary.some((d) => d.kind === "cancelled" && d.when === r.bookingWhen);
+  const { newTime, bookedNew, cancelledOnTheCall, about } = diaryState(r);
   if (r.assistantOutcome === "rebooked" && !newTime) {
     return `The assistant noted it booked or moved a time for ${who}, but your diary shows no new time. Check the call and Appointments${ring}.`;
+  }
+  // A new booking where the call should have moved the old one: both are in the diary.
+  if ((r.purpose === "moved" || r.purpose === "find_new_time") && bookedNew && about?.state === "booked") {
+    return `A new time was booked for ${who}, but their booking on ${escapeHtml(about.when)} is still in your diary — cancel it if the new time replaces it.`;
   }
   const seeNote = r.assistantOutcome === "other" || noMoreCalls ? " (see the assistant's note)" : "";
   const asked = noMoreCalls ? ", and they asked not to be called again" : "";
   const leftMessage = r.result.kind === "voicemail";
+  const notToldYet = (): string => {
+    if (leftMessage) return `${who} may not have heard about this change (we couldn't confirm the message played to the end)${ring}.`;
+    if (reach === "unsure") return `${who} may not have heard about this change${seeNote}${asked}${ring}.`;
+    return `${who} hasn't been told about this change${ring}.`;
+  };
   switch (r.purpose) {
     case "cancelled":
+      return reach === "heard" || reach === "message" ? null : notToldYet();
     case "moved":
-      if (reach === "heard" || reach === "message") return null;
-      if (leftMessage) return `${who} may not have heard about this change (we couldn't confirm the message played to the end)${ring}.`;
-      if (reach === "unsure") return `${who} may not have heard about this change${seeNote}${asked}${ring}.`;
-      return `${who} hasn't been told about this change${ring}.`;
+      if (newTime || reach === "message" || (reach === "heard" && r.assistantOutcome === "confirmed")) return null;
+      // Silent lens R3-1: a move's call also asks whether the new time suits — "declined"
+      // or "will call back" heard the news, but may not have taken the time.
+      if (reach === "heard") {
+        const still = about?.state === "booked" ? ` It's still booked for ${escapeHtml(about.when)}` : "";
+        const then = still ? `${still}${ring}.` : r.phone ? ` Ring them on ${phoneHtml(r.phone)}.` : "";
+        return `${who} heard about the move, but the new time may not suit them (see the assistant's note).${then}`;
+      }
+      return notToldYet();
     case "confirm":
       if (newTime || cancelledOnTheCall || (reach === "heard" && r.assistantOutcome === "confirmed")) return null;
       if (leftMessage) return `${who} hasn't confirmed their booking (the assistant left a message)${ring}.`;
@@ -1195,6 +1230,10 @@ function nextStepLine(r: CallOutcomeReport): string | null {
       if (newTime || cancelledOnTheCall) return null;
       if (leftMessage) return `${who} doesn't know yet that their booking needs to move (the assistant left a message asking them to call back)${ring}.`;
       if (reach === "missed") return `${who} doesn't know yet that their booking needs to move${ring}.`;
+      // Silent lens R3 (low): "still stands" only when the diary says so.
+      if (about && about.state !== "booked") {
+        return `No new time was agreed, and the booking on ${escapeHtml(about.when)} ${about.state === "cancelled" ? "is now cancelled" : "is no longer active"} — check Appointments${seeNote}${asked}.`;
+      }
       return `No new time was agreed, so ${who}'s booking${r.bookingWhen ? ` on ${escapeHtml(r.bookingWhen)}` : ""} still stands${seeNote}${asked}. It's back with you${ring}.`;
     }
     default: {
@@ -1897,7 +1936,7 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       ${next ? `<p><strong>Next step:</strong> ${next}</p>` : ""}
       <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
         ${row("Result", escapeHtml(callResultLine(r.result)))}
-        ${row("Your diary", r.diary.length ? r.diary.map(diaryLineHtml).join("<br/>") : "Nothing changed on the call.")}
+        ${row("Your diary", r.diary.length ? r.diary.map((line) => diaryLineHtml(line, r.diary.length === 1)).join("<br/>") : "Nothing changed on the call.")}
         ${noted}
         ${r.summary ? row("Summary <span style=\"font-weight: normal; color: #6b7280;\">(AI-written)</span>", escapeHtml(r.summary)) : ""}
         ${r.voicemailText ? row("Message left", `&ldquo;${escapeHtml(r.voicemailText)}&rdquo;`) : ""}

@@ -1546,6 +1546,18 @@ describe("SCRUM-598: owner_call_customer through the runner", () => {
     assert.equal(d2.calls.at(-1).args.confirmed, true, "the same window confirms");
   });
 
+  it("a read-back without a time of day is confirmed by a yes that says 'any' (the same window — code lens R2-N2)", async () => {
+    const s = makeSession();
+    const d = makeDeps(prB);
+    const read = { appointment_id: "a1", purpose: "find_new_time", earliest_date: "2026-11-02" };
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: read }, d.deps));
+    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ["owner_call_customer|a1|find_new_time|2026-11-02||"]);
+    assistantTurn(s);
+    ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: { ...read, time_of_day: "any", confirmed: true } }, d.deps)));
+    assert.equal(d.calls.at(-1).args.confirmed, true);
+  });
+
   it("a confirm with no read-back is forwarded unconfirmed (PR B answers with the read-back)", async () => {
     const s = makeSession();
     const d = makeDeps(prB);

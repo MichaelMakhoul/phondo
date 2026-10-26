@@ -170,16 +170,6 @@ export async function buildCallOutcome(
   }
 
   const when = (iso: unknown) => (typeof iso === "string" && iso ? formatWhen(new Date(iso), timezone) : null);
-  const diary: DiaryLine[] = [];
-  for (const m of madeRows) {
-    const at = when(m.start_time);
-    if (!at) continue;
-    if (m.rescheduled_from_id) diary.push({ kind: "moved", from: when(priorStart.get(m.rescheduled_from_id)), when: at });
-    else diary.push({ kind: "booked", when: at });
-    // Made on the call and cancelled on it too (the receptionist's own fix-up is to
-    // cancel and rebook): never left reading as booked (code lens G4).
-    if (m.status === "cancelled") diary.push({ kind: "cancelled", when: at });
-  }
   // A cancel on the call leaves no call_id: the booking cancelled during the call
   // (and live when it began — a cancel's own call is about an already-cancelled one).
   const callStart = Date.parse(call.started_at ?? call.created_at);
@@ -191,12 +181,25 @@ export async function buildCallOutcome(
     Number.isFinite(callStart) &&
     Date.parse(booking.updated_at) >= callStart &&
     Date.parse(booking.updated_at) <= callEnd + CANCEL_WINDOW_SLACK_MS;
-  if (cancelledOnCall && bookingAt) diary.push({ kind: "cancelled", when: bookingAt });
-  // The booking moved on the call is shown by its new leg; anything else is unchanged.
+  // The booking moved on the call is shown by its new leg.
   const movedOnCall = madeRows.some((m) => m.rescheduled_from_id === appointmentId);
-  if (diary.length === 0 && bookingAt && !movedOnCall) {
+
+  const diary: DiaryLine[] = [];
+  // First the booking the call was about — cancelled on the call, or as it stands —
+  // then whatever the call made, so the diary reads whole (code lens R2-N4).
+  if (bookingAt && cancelledOnCall) diary.push({ kind: "cancelled", when: bookingAt });
+  else if (bookingAt && !movedOnCall) {
     const status = String(booking?.status);
     diary.push({ kind: "unchanged", when: bookingAt, state: ACTIVE.has(status) ? "booked" : status === "cancelled" ? "cancelled" : "inactive" });
+  }
+  for (const m of madeRows) {
+    const at = when(m.start_time);
+    if (!at) continue;
+    if (m.rescheduled_from_id) diary.push({ kind: "moved", from: when(priorStart.get(m.rescheduled_from_id)), when: at });
+    else diary.push({ kind: "booked", when: at });
+    // Made on the call and cancelled on it too (the receptionist's own fix-up is to
+    // cancel and rebook): never left reading as booked (code lens G4).
+    if (m.status === "cancelled") diary.push({ kind: "cancelled", when: at });
   }
 
   return {

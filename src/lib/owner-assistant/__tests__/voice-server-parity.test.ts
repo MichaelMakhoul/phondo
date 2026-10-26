@@ -6,6 +6,7 @@ import { CONTACT_METHODS, contactOutcomeSentence, type CustomerContactResult } f
 import { CALL_OUTCOMES, CALL_PURPOSES, TIMES_OF_DAY, VOICE_CALL_BLOCK_REASONS, checkCustomerCall, type TimeWindow } from "../customer-call";
 import { CUSTOMER_NOTIFY_CALL_TYPE } from "../owner-call";
 import { MACHINE_ANSWERS, buildCallOutcome, callResultOf } from "../call-outcome";
+import { REQUESTED_BY_PATH } from "../recap";
 import { OWNER_TOOL_NAMES } from "../tool-handlers";
 
 // SCRUM-597 (types lens F6): the "let them know?" contract lives on both sides — the
@@ -161,6 +162,13 @@ describe("website ↔ voice server: what a customer call's row says", () => {
     };
   }
   const read = (call: Record<string, unknown>) => buildCallOutcome(readerDb(call), { organizationId: ORG, callId: CALL, timezone: "Australia/Sydney" });
+
+  it("the request's ids sit where the recap and the outcome email look for them (types lens R1)", () => {
+    const requestedByKey = REQUESTED_BY_PATH.split("->>").pop() as string;
+    expect(REQUESTED_BY_PATH).toBe(`metadata->notify->>${requestedByKey}`);
+    // recap.ts matches a placed call to its change by these three.
+    expect(customerCall.notifyMetadata(NOTIFY)).toMatchObject({ [requestedByKey]: "o1", appointment_id: BOOKING, purpose: "confirm" });
+  });
 
   it("a conversation's end-of-call fields (notifyCallEnd) read back: purpose, result, outcome and note", async () => {
     const end = customerCall.notifyCallEnd({ notify: NOTIFY, notifyOutcome: { outcome: "declined", note: "Can't make it" } }, "end_call_tool");

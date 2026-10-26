@@ -623,7 +623,8 @@ Every line starts `[CustomerCall]`:
 | `status: row unreadable` / `status handling threw` | Twilio's status callback couldn't be handled | The sweeper retries within about 20 minutes. |
 | `sweep: open customer calls unreadable` / `sweep threw` | The sweeper failed | Check Supabase. It runs again in 5 minutes. |
 | `could not read call … to stamp` / `could not stamp call …` | A do-not-call, a setup failure or the answer type wasn't saved | A lost do-not-call matters: tell the owner. |
-| `no call context` / `no briefing` / `the line now belongs to another org` / `wasn't waiting for this stream` | The session couldn't start | The row is stamped `setup_failed`, and the email says it failed on our side. |
+| `no call context` / `no briefing` / `the line now belongs to another org` | The session couldn't start | The row is stamped `setup_failed` (waiting at most 2 s), and the email says it failed on our side. |
+| `wasn't waiting for this stream` | A replayed or late stream for a call another flow already claimed | The session ends without touching the row. Nothing to do unless it repeats. |
 | `INTERNAL_API_URL/SECRET unset — no outcome email` | The voice server can't reach Next.js | Set the secrets. |
 
 On the web side, a failed outcome email pages with

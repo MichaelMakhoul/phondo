@@ -139,8 +139,10 @@ describe("sendCustomerCallOutcomeNotification", () => {
     });
     html = sent()[0].html;
     expect(html).toContain("to check they're still OK for Wednesday, October 28 at 2:30 PM");
-    expect(html).toContain("Nothing changed on the call — still booked for <strong>Wednesday, October 28 at 2:30 PM</strong>");
-    expect(html).toContain("Nothing changed on the call — the booking on Sunday is no longer active");
+    // Code lens R2-N4: beside what the call made, the old booking's line says where it stands.
+    expect(html).toContain("Still booked for <strong>Wednesday, October 28 at 2:30 PM</strong>");
+    expect(html).toContain("The booking on Sunday is no longer active");
+    expect(html).not.toContain("Nothing changed on the call");
     expect(html).toContain("Booked a new time: <strong>Friday</strong>");
     expect(html).toContain("Cancelled the booking on <strong>Saturday</strong>");
     expect(html).toContain("they asked not to be called again — your assistant won&#39;t call them again");
@@ -191,6 +193,13 @@ describe("sendCustomerCallOutcomeNotification", () => {
       ["cancel, declined another time", { purpose: "cancelled", result: answered, assistantOutcome: "declined" }, null],
       ["cancel, will call back", { purpose: "cancelled", result: answered, assistantOutcome: "will_call_back" }, null],
       ["move, confirmed", { purpose: "moved", result: answered, assistantOutcome: "confirmed" }, null],
+      // Silent lens R3-1: a move's call asks whether the new time suits — "declined" / "will call back" may not have taken it.
+      ["move, declined", { purpose: "moved", result: answered, assistantOutcome: "declined" }, `Jane Smith heard about the move, but the new time may not suit them (see the assistant's note). It's still booked for ${ON}${RING}`],
+      ["move, will call back", { purpose: "moved", result: answered, assistantOutcome: "will_call_back" }, `Jane Smith heard about the move, but the new time may not suit them (see the assistant's note). It's still booked for ${ON}${RING}`],
+      ["move, declined, no number", { purpose: "moved", result: answered, assistantOutcome: "declined", phone: null }, `Jane Smith heard about the move, but the new time may not suit them (see the assistant's note). It's still booked for ${ON}.`],
+      ["move, moved again on the call", { purpose: "moved", result: answered, assistantOutcome: "rebooked", diary: [{ kind: "moved", from: ON, when: "Fri" }] }, null],
+      // A new booking where the call should have moved the old one.
+      ["move, booked a new one beside it", { purpose: "moved", result: answered, assistantOutcome: "rebooked", diary: [...unchanged, { kind: "booked", when: "Fri" }] }, `A new time was booked for Jane Smith, but their booking on ${ON} is still in your diary — cancel it if the new time replaces it.`],
       ["move, message played", { purpose: "moved", result: played, assistantOutcome: null }, null],
       // A confirmation: done only when they confirmed, or the diary changed on the call.
       ["confirm, busy", { purpose: "confirm", result: { kind: "busy" }, assistantOutcome: null }, `Jane Smith hasn't confirmed their booking${RING}`],
@@ -210,6 +219,11 @@ describe("sendCustomerCallOutcomeNotification", () => {
       ["find, no answer", { purpose: "find_new_time", result: { kind: "no_answer" }, assistantOutcome: null }, `Jane Smith doesn't know yet that their booking needs to move${RING}`],
       ["find, message", { purpose: "find_new_time", result: played, assistantOutcome: null }, `Jane Smith doesn't know yet that their booking needs to move (the assistant left a message asking them to call back)${RING}`],
       ["find, moved", { purpose: "find_new_time", result: answered, assistantOutcome: "rebooked", diary: [{ kind: "moved", from: "Wed", when: "Thu" }] }, null],
+      ["find, booked a new one beside it", { purpose: "find_new_time", result: answered, assistantOutcome: "rebooked", diary: [...unchanged, { kind: "booked", when: "Thu" }] }, `A new time was booked for Jane Smith, but their booking on ${ON} is still in your diary — cancel it if the new time replaces it.`],
+      ["confirm, booked another job beside it (fine)", { purpose: "confirm", result: answered, assistantOutcome: "confirmed", diary: [...unchanged, { kind: "booked", when: "Thu" }] }, null],
+      // Silent lens R3 (low): "still stands" only when the diary says so.
+      ["find, declined, booking cancelled since", { purpose: "find_new_time", result: answered, assistantOutcome: "declined", diary: [{ kind: "unchanged", when: ON, state: "cancelled" }] }, `No new time was agreed, and the booking on ${ON} is now cancelled — check Appointments.`],
+      ["find, declined, booking no longer active", { purpose: "find_new_time", result: answered, assistantOutcome: "declined", diary: [{ kind: "unchanged", when: ON, state: "inactive" }] }, `No new time was agreed, and the booking on ${ON} is no longer active — check Appointments.`],
       // Silent lens R2-1(c): cancelled on the call is never "still stands".
       ["find, cancelled on the call", { purpose: "find_new_time", result: answered, assistantOutcome: "declined", diary: [{ kind: "cancelled", when: ON }] }, null],
       // Code lens G4: a time booked then cancelled on the call isn't agreed.

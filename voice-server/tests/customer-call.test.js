@@ -52,6 +52,7 @@ function fakeSupabase(respond) {
         is(col, val) { q.filters.push(["is", col, val]); return chain; },
         not(col, op, val) { q.filters.push(["not", col, op, val]); return chain; },
         in(col, vals) { q.filters.push(["in", col, vals]); return chain; },
+        like(col, val) { q.filters.push(["like", col, val]); return chain; },
         order(col, opts) { q.order = [col, opts]; return chain; },
         limit(n) { q.limitN = n; return chain; },
         maybeSingle: answer,
@@ -1005,6 +1006,22 @@ describe("SCRUM-598 review fixes: the row stamps a session makes mid-call", () =
     assert.equal(await cc.markSetupFailed(sb, notify, "no-briefing"), true);
     assert.equal(sb.queries.find((q) => q.op === "update").payload.metadata.notify.setup_failed, "no-briefing");
   });
+
+  it("a slow stamp never keeps the customer waiting: false after waitMs, and the stamp still lands (code lens R2-N3)", async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const updates = [];
+    const slow = fakeSupabase((q) => {
+      if (q.op === "update") updates.push(q.payload);
+      return q.op === "select" ? gate.then(() => ({ data: { id: CALL_ID, metadata: {} }, error: null })) : { data: null, error: null };
+    });
+    const t0 = Date.now();
+    assert.equal(await cc.markSetupFailed(slow, { callId: CALL_ID, organizationId: ORG }, "no-call-context", { waitMs: 30 }), false);
+    assert.ok(Date.now() - t0 < 1000, "it gave up waiting");
+    release();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(updates[0]?.metadata?.notify?.setup_failed, "no-call-context", "the stamp carried on in the background");
+  });
   it("a stamp that can't read or write pages and returns false (never throws)", async () => {
     for (const respond of [() => ({ data: null, error: { message: "x" } }), () => ({ data: null, error: null }), (q) => (q.op === "select" ? { data: { id: CALL_ID, metadata: {} }, error: null } : { data: null, error: { message: "x" } }), () => new Error("down")]) {
       assert.equal(await cc.recordDoNotCall(fakeSupabase(respond), notify), false);
@@ -1040,6 +1057,9 @@ describe("sweepStuckCustomerCalls (silent lens N1 — a lost status callback)", 
     assert.deepEqual(await cc.sweepStuckCustomerCalls(deps), { swept: 1, checked: 1 });
     const q = sb.queries.find((x) => x.op === "select");
     assert.ok(has(q, "eq", "metadata->>call_type", "customer_notify"));
+    // Security lens N1: only rows a placement wrote — never rows an org member inserted by hand.
+    assert.ok(has(q, "eq", "direction", "outbound"));
+    assert.ok(has(q, "like", "vapi_call_id", "sh_%"));
     assert.ok(q.filters.some((f) => f[0] === "in" && f[1] === "status"));
     assert.ok(has(q, "lt", "created_at", new Date(NOW - cc.STUCK_AFTER_MS).toISOString()), "only calls past any possible end");
     const upd = sb.queries.find((x) => x.op === "update");
@@ -1054,7 +1074,7 @@ describe("sweepStuckCustomerCalls (silent lens N1 — a lost status callback)", 
     for (const over of [
       { hasLiveSession: () => true },
       { fetchTwilioCall: async () => ({ status: "in-progress" }) },
-      { fetchTwilioCall: async () => { throw Object.assign(new Error("x +61412345678"), { code: 20404 }); } },
+      { fetchTwilioCall: async () => { throw Object.assign(new Error("x +61412345678"), { status: 503 }); } },
       { fetchTwilioCall: async () => null },
     ]) {
       const { deps, notified } = sweepDeps([stuck()], over);
@@ -1066,6 +1086,17 @@ describe("sweepStuckCustomerCalls (silent lens N1 — a lost status callback)", 
     assert.equal((await cc.sweepStuckCustomerCalls(deps)).swept, 1, "after 2 hours it is finished as failed anyway");
     assert.equal(sb.queries.find((x) => x.op === "update").payload.metadata.notify.twilio_status, "unknown");
     assert.equal(notified[0].status, "failed");
+  });
+
+  it("a sid Twilio has never heard of (404) is finished at once as failed — it never holds a slot for 2 hours (security lens N1)", async () => {
+    for (const err of [{ status: 404 }, { code: 20404 }]) {
+      const { deps, sb, notified } = sweepDeps([stuck()], { fetchTwilioCall: async () => { throw Object.assign(new Error("not found"), err); } });
+      assert.equal((await cc.sweepStuckCustomerCalls(deps)).swept, 1, JSON.stringify(err));
+      const upd = sb.queries.find((x) => x.op === "update");
+      assert.equal(upd.payload.status, "failed");
+      assert.equal(upd.payload.metadata.notify.twilio_status, "not_found");
+      assert.equal(notified[0].status, "failed");
+    }
   });
 
   it("an in-progress row with no live session is finished as cut off", async () => {

@@ -121,7 +121,11 @@ describe("buildCallOutcome", () => {
       { data: [{ id: NEW_LEG, start_time: "2026-10-30T23:00:00Z", status: "confirmed", rescheduled_from_id: null }], error: null },
     ];
     const r = await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ });
-    expect(r?.diary).toEqual([{ kind: "booked", when: "Saturday, October 31 at 10:00 AM" }]);
+    // Code lens R2-N4: the booking the call was about leads, beside what the call made.
+    expect(r?.diary).toEqual([
+      { kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", state: "cancelled" },
+      { kind: "booked", when: "Saturday, October 31 at 10:00 AM" },
+    ]);
   });
 
   it("a booking cancelled during a confirm call reads 'cancelled'; one cancelled before it doesn't", async () => {
@@ -149,6 +153,7 @@ describe("buildCallOutcome", () => {
       },
     ];
     expect((await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ }))?.diary).toEqual([
+      { kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", state: "booked" },
       { kind: "booked", when: "Tuesday, November 3 at 2:00 PM" },
       { kind: "cancelled", when: "Tuesday, November 3 at 2:00 PM" },
       { kind: "booked", when: "Tuesday, November 3 at 3:00 PM" },

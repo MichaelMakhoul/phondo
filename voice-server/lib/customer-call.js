@@ -902,15 +902,31 @@ function recordDoNotCall(supabase, notify) {
   return stampCustomerCall(supabase, notify, { outcome: "do_not_call" });
 }
 
+/** How long a failed setup waits for its stamp before the call is ended anyway (code lens R2-N3). */
+const SETUP_FAILED_STAMP_MS = 2000;
+
 /**
  * Our own setup failed after the customer picked up (silent lens N4): said on the
- * row, so the owner's email says it failed on our side — never "they hung up".
+ * row, so the owner's email says it failed on our side — never "they hung up". The
+ * caller waits at most SETUP_FAILED_STAMP_MS: the customer is on a silent line, and a
+ * slow database is the likeliest cause of the failure. The stamp carries on after.
  * @param {any} supabase
  * @param {NotifyContext} notify
  * @param {string} reason
+ * @param {{ waitMs?: number }} [opts]
+ * @returns {Promise<boolean>} true once stamped; false if it failed or is still going
  */
-function markSetupFailed(supabase, notify, reason) {
-  return stampCustomerCall(supabase, notify, { setup_failed: reason });
+async function markSetupFailed(supabase, notify, reason, { waitMs = SETUP_FAILED_STAMP_MS } = {}) {
+  /** @type {ReturnType<typeof setTimeout>|undefined} */
+  let timer;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), waitMs);
+  });
+  try {
+    return await Promise.race([stampCustomerCall(supabase, notify, { setup_failed: reason }), late]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -1096,6 +1112,10 @@ async function sweepStuckCustomerCalls(deps) {
       .from("calls")
       .select("id, organization_id, assistant_id, vapi_call_id, caller_phone, status, created_at, metadata")
       .eq("metadata->>call_type", CUSTOMER_NOTIFY_CALL_TYPE)
+      // Only rows a placement wrote (security lens N1): org members can insert their
+      // own calls rows, and rows nobody placed must never hold the sweep's slots.
+      .eq("direction", "outbound")
+      .like("vapi_call_id", "sh_%")
       .in("status", ["queued", "ringing", "in-progress"])
       .lt("created_at", new Date(nowMs - STUCK_AFTER_MS).toISOString())
       .order("created_at", { ascending: true })
@@ -1109,12 +1129,17 @@ async function sweepStuckCustomerCalls(deps) {
       const sid = typeof row.vapi_call_id === "string" && row.vapi_call_id.startsWith("sh_") ? row.vapi_call_id.slice(3) : null;
       if (!sid || deps.hasLiveSession(sid)) continue;
       let twilio = null;
+      let unknownToTwilio = false;
       try {
         twilio = await deps.fetchTwilioCall(sid);
       } catch (err) {
-        console.warn(`[CustomerCall] sweep: Twilio's record of ${sid} unreadable: ${twilioErrorSummary(err)}`);
+        const e = err && typeof err === "object" ? /** @type {Record<string, unknown>} */ (err) : {};
+        // A sid Twilio has never heard of was never a call: finished at once, never retried
+        // for 2 hours while it holds a slot (security lens N1).
+        unknownToTwilio = e.status === 404 || e.code === 20404;
+        if (!unknownToTwilio) console.warn(`[CustomerCall] sweep: Twilio's record of ${sid} unreadable: ${twilioErrorSummary(err)}`);
       }
-      const status = twilio && typeof twilio.status === "string" ? twilio.status : null;
+      const status = unknownToTwilio ? "failed" : twilio && typeof twilio.status === "string" ? twilio.status : null;
       if (status && !TERMINAL_TWILIO_STATUSES.has(status)) continue; // Twilio says it's still going
       const old = nowMs - Date.parse(row.created_at) > GIVE_UP_AFTER_MS;
       if (!status && !old) continue; // try again next sweep
@@ -1124,7 +1149,7 @@ async function sweepStuckCustomerCalls(deps) {
           twilioStatus: status || "failed",
           durationSeconds: Math.max(0, Math.round(Number(twilio?.duration) || 0)),
           answeredBy: twilio?.answeredBy || row.metadata?.notify?.answered_by,
-          extra: { swept: true, ...(status ? {} : { twilio_status: "unknown" }) },
+          extra: { swept: true, ...(unknownToTwilio ? { twilio_status: "not_found" } : status ? {} : { twilio_status: "unknown" }) },
         },
         deps
       );
