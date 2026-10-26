@@ -309,3 +309,22 @@ describe("SCRUM-598 (test lens): every AI-written row is labelled", () => {
     expect(mail.html).toContain('Summary <span style="font-weight: normal; color: #6b7280;">(AI-written)</span></td><td style="padding: 8px; border-bottom: 1px solid #ddd;">Jane said Thursday suits her better.');
   });
 });
+
+describe("SCRUM-598 (test lens, round 4): next steps the table doesn't reach", () => {
+  const ON = "Wednesday, October 28 at 2:30 PM";
+  const answered = { kind: "answered" as const, seconds: 60, endedOnAFault: false, sureItWasAPerson: true };
+  const nextOf = async (over: Partial<CallOutcomeReport>) => {
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
+    resendSend.mockClear();
+    await sendCustomerCallOutcomeNotification({ organizationId: ORG, report: { ...REPORT, ...over } });
+    const m = /<p><strong>Next step:<\/strong> (.*?)<\/p>/.exec(sent()[0].html);
+    return m ? m[1] : null;
+  };
+  it("a cancel's message Twilio confirmed played needs nothing more", async () => {
+    expect(await nextOf({ purpose: "cancelled", result: { kind: "voicemail", playedToEnd: true }, assistantOutcome: null, diary: [{ kind: "unchanged", when: ON, state: "cancelled" }] })).toBeNull();
+  });
+  it("a new time booked beside a booking that's no longer booked isn't flagged as a double booking", async () => {
+    expect(await nextOf({ purpose: "find_new_time", result: answered, assistantOutcome: "rebooked", diary: [{ kind: "unchanged", when: ON, state: "cancelled" }, { kind: "booked", when: "Thu" }] })).toBeNull();
+    expect(await nextOf({ purpose: "confirm", result: answered, assistantOutcome: "rebooked", diary: [{ kind: "unchanged", when: ON, state: "inactive" }, { kind: "booked", when: "Thu" }] })).toBeNull();
+  });
+});
