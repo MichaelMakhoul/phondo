@@ -10,20 +10,20 @@
  * answering calls, plus the opener and the voicemail. A voicemail gets its own
  * short prompt: one fixed message, nothing else.
  *
- * Customer-written text (the name on the booking) and the owner's note are
- * flattened to one capped line, with double quotes swapped out, before they reach
- * a prompt. The full name appears ONCE, quoted and labelled as data; everywhere an
- * instruction needs a name it uses the first name, cut to letters only, so no
- * name can carry a sentence into the rules.
+ * Customer-written text (the name on the booking) is flattened to one capped line,
+ * with double quotes swapped out, before it reaches a prompt. The full name
+ * appears ONCE, quoted and labelled as data; everywhere an instruction needs a name
+ * it uses the first name, cut to letters only, so no name can carry a sentence
+ * into the rules. Nothing the owner session wrote reaches this prompt as text:
+ * find_new_time's window is structured (dates and a time of day), worded here.
  */
-const { CALL_OUTCOMES, NOTIFY_PURPOSES } = require("./customer-call");
+const { CALL_OUTCOMES, isNotifyPurpose } = require("./customer-call");
 
 const DEFAULT_TZ = "Australia/Sydney";
 const NAME_MAX = 60;
 /** A first name is one word of letters (any script), apostrophes and hyphens. */
 const FIRST_NAME_MAX = 24;
 const BUSINESS_MAX = 80;
-const NOTE_MAX = 160;
 
 /**
  * One line, no control characters, no double quotes, capped.
@@ -101,7 +101,7 @@ function buildNotifyOpener({ businessName, firstName, disclosureText }) {
  * The message left on a voicemail: who's calling, the news and "call us back on
  * this number" (the caller ID is the business's Phondo line). The business name
  * and the time, never the service — whoever plays the message back hears it.
- * @param {{ businessName: string, firstName: string|null, purpose: string, when: string|null }} o
+ * @param {{ businessName: string, firstName: string|null, purpose: import("./customer-call").NotifyPurpose, when: string|null }} o
  */
 function buildVoicemailScript({ businessName, firstName, purpose, when }) {
   const biz = oneLine(businessName, BUSINESS_MAX) || "the business";
@@ -115,9 +115,39 @@ function buildVoicemailScript({ businessName, firstName, purpose, when }) {
         : `${intro}. Your booking has been moved. Please call us back on this number for the new time. Thanks, bye.`;
     case "confirm":
       return `${intro}, calling to check you're still OK for your booking${onWhen(when)}. If you need to change it, please call us back on this number. Thanks, bye.`;
-    default:
+    case "find_new_time":
       return `${intro}. We need to move your booking${onWhen(when)}. Please call us back on this number so we can find a time that suits you. Thanks, bye.`;
+    default: {
+      /** @type {never} */
+      const unhandled = purpose;
+      throw new Error(`unknown notify purpose ${String(unhandled)}`);
+    }
   }
+}
+
+/** @param {string} iso a validated YYYY-MM-DD @returns {string} "Monday 2 November" */
+function dayWords(iso) {
+  // Noon UTC on a calendar date names that date in every zone.
+  return new Intl.DateTimeFormat("en-AU", { timeZone: "UTC", weekday: "long", day: "numeric", month: "long" }).format(new Date(`${iso}T12:00:00Z`));
+}
+
+const PERIOD_WORDS = { morning: "in the morning", afternoon: "in the afternoon", evening: "in the evening", any: "" };
+
+/**
+ * find_new_time's window, worded from its validated fields only: "between Monday
+ * 2 November and Friday 6 November, in the morning". "" when there is none.
+ * @param {import("./customer-call").TimeWindow|null|undefined} window
+ */
+function windowWords(window) {
+  if (!window) return "";
+  const range = window.earliest && window.latest
+    ? `between ${dayWords(window.earliest)} and ${dayWords(window.latest)}`
+    : window.earliest
+      ? `from ${dayWords(window.earliest)}`
+      : window.latest
+        ? `by ${dayWords(window.latest)}`
+        : "";
+  return [range, PERIOD_WORDS[window.timeOfDay] || ""].filter(Boolean).join(", ");
 }
 
 /**
@@ -140,9 +170,9 @@ function buildVoicemailPrompt({ businessName, script, languageName }) {
 
 /**
  * What the call is for, in the section's words.
- * @param {{ purpose: string, biz: string, first: string, when: string|null, previousWhen: string|null, note: string }} o
+ * @param {{ purpose: import("./customer-call").NotifyPurpose, biz: string, first: string, when: string|null, previousWhen: string|null, window: import("./customer-call").TimeWindow|null }} o
  */
-function purposeBlock({ purpose, biz, first, when, previousWhen, note }) {
+function purposeBlock({ purpose, biz, first, when, previousWhen, window }) {
   const at = when ? ` (${when})` : "";
   switch (purpose) {
     case "cancelled":
@@ -160,26 +190,32 @@ function purposeBlock({ purpose, biz, first, when, previousWhen, note }) {
         `PURPOSE: check that ${first} is still OK for their booking${at}. Nothing has changed.\n` +
         `THEN: if they're still OK, that's it. If they can't make it, offer to move it to another time with reschedule_appointment, or cancel it with cancel_appointment only if they ask you to.`
       );
-    default:
+    case "find_new_time": {
+      const span = windowWords(window);
       return (
         `PURPOSE: ${biz} needs to move ${first}'s booking${at} and asked you to find a new time with them. It stays booked as it is until they pick one.\n` +
         `THEN: explain that briefly, find a time that suits them (check_availability) and move it with reschedule_appointment. If nothing suits, or they'd rather sort it out with ${biz} themselves, leave the booking as it is and tell them ${biz} will be in touch.` +
-        (note ? `\n${biz}'s guidance on times: "${note}". Use it to choose which times to offer; never read it out.` : "")
+        (span ? `\n${biz} would like the new time ${span}: offer times in that window first, and if none suit, ask what would.` : "")
       );
+    }
+    default: {
+      /** @type {never} */
+      const unhandled = purpose;
+      throw new Error(`unknown notify purpose ${String(unhandled)}`);
+    }
   }
 }
 
 /**
  * The OUTBOUND CALL section, appended last to the receptionist's Gemini prompt.
- * @param {{ businessName: string, customerName: string|null, purpose: string, when: string|null, previousWhen?: string|null, ownerNote?: string|null, voicemailScript: string, canTransfer: boolean }} o
+ * @param {{ businessName: string, customerName: string|null, purpose: string, when: string|null, previousWhen?: string|null, window?: import("./customer-call").TimeWindow|null, voicemailScript: string, canTransfer: boolean }} o
  */
-function buildNotifyCallSection({ businessName, customerName, purpose, when, previousWhen = null, ownerNote = null, voicemailScript, canTransfer }) {
-  if (!NOTIFY_PURPOSES.includes(purpose)) throw new Error(`unknown notify purpose ${purpose}`);
+function buildNotifyCallSection({ businessName, customerName, purpose, when, previousWhen = null, window = null, voicemailScript, canTransfer }) {
+  if (!isNotifyPurpose(purpose)) throw new Error(`unknown notify purpose ${purpose}`);
   const biz = oneLine(businessName, BUSINESS_MAX) || "the business";
   const fullName = oneLine(customerName, NAME_MAX);
   const firstName = firstNameOf(customerName);
   const first = firstName || "the customer";
-  const note = oneLine(ownerNote, NOTE_MAX);
   const outcomes = CALL_OUTCOMES.map((o) => `"${o}"`).join(", ");
   const rule = "══════════════════════════════════════════════════════";
   // The full name, once, as labelled data — never inside an instruction.
@@ -191,7 +227,7 @@ function buildNotifyCallSection({ businessName, customerName, purpose, when, pre
     `You placed this call. You are the AI assistant at ${biz}, and ${biz} asked you to call ${first} about their booking. Nobody called you: never say "thanks for calling", and never ask how you can help as if they had rung.\n` +
     nameLine +
     `\n` +
-    `${purposeBlock({ purpose, biz, first, when, previousWhen, note })}\n\n` +
+    `${purposeBlock({ purpose, biz, first, when, previousWhen, window })}\n\n` +
     `HOW THE CALL GOES:\n` +
     `1. Your first message says who you are, that you're an AI assistant, and asks whether you're speaking with ${first}. Wait for the answer.\n` +
     `2. Make sure it's ${first} before you share ANY detail of the booking. If it's someone else, or ${first} isn't available: don't mention the booking at all; ask them to let ${first} know ${biz} called and to call back on this number, thank them, call record_call_outcome with "wrong_person", say goodbye and call end_call.\n` +
@@ -237,13 +273,14 @@ const recordCallOutcomeToolDefinition = {
  * The model's record_call_outcome arguments, checked: a known outcome and a capped
  * one-line note, or null.
  * @param {unknown} args
- * @returns {{ outcome: string, note: string|null }|null}
+ * @returns {{ outcome: import("./customer-call").CallOutcome, note: string|null }|null}
  */
 function parseCallOutcome(args) {
   const a = args && typeof args === "object" ? /** @type {Record<string, unknown>} */ (args) : {};
-  if (typeof a.outcome !== "string" || !CALL_OUTCOMES.includes(a.outcome)) return null;
+  const outcome = CALL_OUTCOMES.find((o) => o === a.outcome);
+  if (!outcome) return null;
   const note = oneLine(a.note, 200);
-  return { outcome: a.outcome, note: note || null };
+  return { outcome, note: note || null };
 }
 
 module.exports = {

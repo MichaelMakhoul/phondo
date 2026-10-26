@@ -48,6 +48,7 @@ function fakeSupabase(respond) {
         update(payload) { q.op = "update"; q.payload = payload; return chain; },
         eq(col, val) { q.filters.push(["eq", col, val]); return chain; },
         gte(col, val) { q.filters.push(["gte", col, val]); return chain; },
+        lt(col, val) { q.filters.push(["lt", col, val]); return chain; },
         is(col, val) { q.filters.push(["is", col, val]); return chain; },
         not(col, op, val) { q.filters.push(["not", col, op, val]); return chain; },
         in(col, vals) { q.filters.push(["in", col, vals]); return chain; },
@@ -187,14 +188,59 @@ describe("calling hours and the booking's own number", () => {
     assert.equal(cc.withinCallingHours(at("2026-10-27T10:00:00Z"), "Not/AZone"), false, "21:00 Sydney");
   });
 
-  it("matches the booking's stored number on its last 9 digits, in any format", () => {
-    for (const stored of ["0412 345 678", "+61 412 345 678", "(04) 1234 5678", "412345678", "+61412345678"]) {
+  it("matches the booking's stored number exactly, as AU E.164, whatever its format", () => {
+    for (const stored of ["0412 345 678", "+61 412 345 678", "(04) 1234 5678", "412345678", "+61412345678", "+61 (0) 412 345 678", "+610412345678"]) {
       assert.equal(cc.matchesBookingPhone(PHONE, stored), true, stored);
     }
     assert.equal(cc.matchesBookingPhone(PHONE, "0412 345 679"), false);
-    assert.equal(cc.matchesBookingPhone(PHONE, "345 678"), false, "too short to compare");
+    assert.equal(cc.matchesBookingPhone(PHONE, "345 678"), false, "too short");
     assert.equal(cc.matchesBookingPhone(PHONE, null), false);
     assert.equal(cc.matchesBookingPhone("+614", "0412 345 678"), false);
+    // Security lens H2: a US number ending in the same nine digits is not this mobile.
+    assert.equal(cc.matchesBookingPhone(PHONE, "+1 241 234 5678"), false);
+    assert.equal(cc.matchesBookingPhone(PHONE, "+1 (412) 345-678"), false);
+  });
+
+  it("auE164Of: a stored AU number in E.164, or null for any other plan", () => {
+    assert.equal(cc.auE164Of("(02) 9876 5432"), "+61298765432");
+    assert.equal(cc.auE164Of("298765432"), "+61298765432");
+    assert.equal(cc.auE164Of("+61 (0)2 9876 5432"), "+61298765432");
+    for (const bad of ["+1 241 234 5678", "1300 123 456", "512345678", "", null, 42, "0061 412 345 678"]) assert.equal(cc.auE164Of(bad), null, String(bad));
+  });
+});
+
+describe("parseTimeWindow (find_new_time's window — structured, never free text)", () => {
+  it("dates and a time of day, each checked; a window that constrains nothing is none", () => {
+    assert.deepEqual(cc.parseTimeWindow({ earliest: "2026-11-02", latest: "2026-11-06", timeOfDay: "morning" }), { window: { earliest: "2026-11-02", latest: "2026-11-06", timeOfDay: "morning" } });
+    assert.deepEqual(cc.parseTimeWindow({ earliest: "2026-11-02" }), { window: { earliest: "2026-11-02", latest: null, timeOfDay: "any" } });
+    assert.deepEqual(cc.parseTimeWindow({ timeOfDay: "evening" }), { window: { earliest: null, latest: null, timeOfDay: "evening" } });
+    assert.deepEqual(cc.parseTimeWindow(undefined), { window: null });
+    assert.deepEqual(cc.parseTimeWindow(null), { window: null });
+    assert.deepEqual(cc.parseTimeWindow({}), { window: null });
+    assert.deepEqual(cc.parseTimeWindow({ timeOfDay: "any" }), { window: null });
+  });
+  it("anything malformed is refused whole, never half-used", () => {
+    for (const bad of [
+      { earliest: "next week" },
+      { earliest: "2026-02-30" },
+      { latest: "2026-11-06T09:00" },
+      { timeOfDay: "lunchtime" },
+      { earliest: "2026-11-06", latest: "2026-11-02" },
+      { earliest: 20261102 },
+      "next week, mornings",
+      ["2026-11-02"],
+    ]) {
+      assert.equal(cc.parseTimeWindow(bad), null, JSON.stringify(bad));
+    }
+  });
+});
+
+describe("twilioErrorSummary", () => {
+  it("a Twilio error's code and status, never its message (it can carry the number dialled)", () => {
+    const err = Object.assign(new Error("Account not authorized to call +61412345678"), { code: 21215, status: 400 });
+    assert.equal(cc.twilioErrorSummary(err), "code=21215 status=400");
+    assert.equal(cc.twilioErrorSummary(new Error("boom +61412345678")), "code=none status=none");
+    assert.equal(cc.twilioErrorSummary(null), "code=none status=none");
   });
 });
 
@@ -211,7 +257,7 @@ describe("checkCustomerCall", () => {
         purpose: "confirm",
         phone: PHONE,
         requestedByCallId: OWNER_CALL,
-        ownerNote: null,
+        window: null,
         appointment: { id: APPT, status: "confirmed", start_time: FUTURE },
         fromNumber: { id: NUMBER_ID, phone_number: "+61257015064", assistant_id: ASSISTANT },
       },
@@ -247,6 +293,17 @@ describe("checkCustomerCall", () => {
       assert.deepEqual(await cc.checkCustomerCall(r, "check", checkDeps(sb)), { ok: false, reason: "invalid_request" });
       assert.equal(sb.queries.length, 0);
     }
+  });
+
+  it("find_new_time with a malformed window is invalid; other purposes ignore a window", async () => {
+    const sb = fakeSupabase(responder(world()));
+    assert.deepEqual(await cc.checkCustomerCall(req({ purpose: "find_new_time", window: { earliest: "soon" } }), "check", checkDeps(sb)), { ok: false, reason: "invalid_request" });
+    assert.equal(sb.queries.length, 0);
+    const ok = await cc.checkCustomerCall(req({ purpose: "find_new_time", window: { earliest: "2026-11-02", timeOfDay: "morning" } }), "check", checkDeps(fakeSupabase(responder(world()))));
+    assert.deepEqual(ok.plan.window, { earliest: "2026-11-02", latest: null, timeOfDay: "morning" });
+    const confirm = await cc.checkCustomerCall(req({ purpose: "confirm", window: { earliest: "soon" } }), "check", checkDeps(fakeSupabase(responder(world()))));
+    assert.equal(confirm.ok, true);
+    assert.equal(confirm.plan.window, null);
   });
 
   it("never from the demo org, and only to AU numbers we may ring (mobiles and landlines)", async () => {
@@ -470,21 +527,19 @@ describe("placeCustomerCall", () => {
     });
   });
 
-  it("finding a new time keeps the owner's note (one capped line) on the row; other purposes drop it", async () => {
+  it("finding a new time keeps its window (structured fields only) on the row; other purposes keep none", async () => {
     const insertOk = (q) => (q.op === "insert" ? { data: null, error: null } : undefined);
     const sb = fakeSupabase(responder(world(), insertOk));
-    await cc.placeCustomerCall(req({ purpose: "find_new_time", ownerNote: "next week,\n  mornings " + "x".repeat(300) }), placeDeps(sb));
-    const note = sb.queries.find((q) => q.op === "insert").payload.metadata.notify.owner_note;
-    assert.equal(note.length, 160);
-    assert.ok(note.startsWith("next week, mornings x"));
+    await cc.placeCustomerCall(req({ purpose: "find_new_time", window: { earliest: "2026-11-02", latest: "2026-11-06", timeOfDay: "morning" } }), placeDeps(sb));
+    assert.deepEqual(sb.queries.find((q) => q.op === "insert").payload.metadata.notify.window, { earliest: "2026-11-02", latest: "2026-11-06", timeOfDay: "morning" });
     cc.resetPlacementGuards();
     const sb2 = fakeSupabase(responder(world(), insertOk));
-    await cc.placeCustomerCall(req({ purpose: "confirm", ownerNote: "next week" }), placeDeps(sb2));
-    assert.equal("owner_note" in sb2.queries.find((q) => q.op === "insert").payload.metadata.notify, false);
+    await cc.placeCustomerCall(req({ purpose: "confirm", window: { earliest: "2026-11-02" } }), placeDeps(sb2));
+    assert.equal("window" in sb2.queries.find((q) => q.op === "insert").payload.metadata.notify, false);
     cc.resetPlacementGuards();
     const sb3 = fakeSupabase(responder(world(), insertOk));
-    await cc.placeCustomerCall(req({ purpose: "find_new_time", ownerNote: "   " }), placeDeps(sb3));
-    assert.equal("owner_note" in sb3.queries.find((q) => q.op === "insert").payload.metadata.notify, false, "a blank note is none");
+    await cc.placeCustomerCall(req({ purpose: "find_new_time" }), placeDeps(sb3));
+    assert.equal("window" in sb3.queries.find((q) => q.op === "insert").payload.metadata.notify, false, "no window, none kept");
   });
 
   it("a failed check rings nobody and passes its reason on", async () => {
@@ -511,6 +566,17 @@ describe("placeCustomerCall", () => {
       assert.equal(sb.queries.filter((q) => q.op === "insert").length, 0);
     }
     assert.ok(alerts().length >= 3, "each one pages");
+  });
+
+  it("a Twilio refusal pages with its code — never its message, which can carry the customer's number", async () => {
+    const sb = fakeSupabase(responder(world()));
+    const deps = placeDeps(sb);
+    deps.twilio.createCall = async () => { throw Object.assign(new Error("Account not authorized to call +61412345678"), { code: 21215, status: 400 }); };
+    await cc.placeCustomerCall(req(), deps);
+    const line = alerts().find((m) => m.includes("Twilio refused the call"));
+    assert.ok(line.includes("code=21215 status=400"), line);
+    const everything = spies.error.mock.calls.map((c) => c.arguments.map(String).join(" ")).join("\n");
+    assert.ok(!everything.includes("412345678"), "no number in any error line");
   });
 
   it("a Twilio that doesn't answer in time is a refusal, never a hang (the placement sits inside the owner's tool call)", async () => {
@@ -596,7 +662,7 @@ describe("placeCustomerCall", () => {
 
 describe("handleCustomerCallTwiml", () => {
   const token = () => cc.mintCustomerCallToken({ callId: CALL_ID, organizationId: ORG, appointmentId: APPT, purpose: "moved", requestedByCallId: OWNER_CALL, phoneNumberId: NUMBER_ID }, SECRET, { now: () => NOW });
-  const row = { id: CALL_ID, vapi_call_id: "sh_CA123", caller_phone: PHONE, metadata: { voice_provider: "self_hosted", call_type: "customer_notify", notify: { purpose: "moved" } } };
+  const row = { id: CALL_ID, vapi_call_id: "sh_CA123", caller_phone: PHONE, status: "queued", metadata: { voice_provider: "self_hosted", call_type: "customer_notify", notify: { purpose: "moved" } } };
   function twimlDeps(sb, over = {}) {
     const issued = [];
     return {
@@ -611,9 +677,10 @@ describe("handleCustomerCallTwiml", () => {
       ...over,
     };
   }
-  const respondRow = (r = row, num = { id: NUMBER_ID, phone_number: "+61257015064" }) => (q) => {
+  const respondRow = (r = row, num = { id: NUMBER_ID, phone_number: "+61257015064" }, claim = { data: [{ id: CALL_ID }], error: null }) => (q) => {
     if (q.table === "calls" && q.op === "select") return { data: r, error: null };
     if (q.table === "phone_numbers") return { data: num, error: null };
+    if (q.op === "update" && has(q, "eq", "status", "queued")) return claim;
     if (q.op === "update") return { data: null, error: null };
     return undefined;
   };
@@ -629,7 +696,7 @@ describe("handleCustomerCallTwiml", () => {
         PHONE,
         undefined,
         null,
-        { notify: { callId: CALL_ID, organizationId: ORG, appointmentId: APPT, purpose: "moved", requestedByCallId: OWNER_CALL, mode: "conversation", answeredBy: answeredBy || "unknown" } },
+        { notify: { callId: CALL_ID, organizationId: ORG, appointmentId: APPT, purpose: "moved", requestedByCallId: OWNER_CALL, mode: "conversation", answeredBy: answeredBy || "unknown", window: null } },
       ]], String(answeredBy));
     }
   });
@@ -672,6 +739,34 @@ describe("handleCustomerCallTwiml", () => {
     }
   });
 
+  it("serves the stream ONCE: the row moves queued → ringing first, and a replayed fetch is hung up", async () => {
+    const sb = fakeSupabase(respondRow());
+    const deps = twimlDeps(sb);
+    await cc.handleCustomerCallTwiml({ params: { token: token() }, body: { CallSid: "CA123", AnsweredBy: "human" } }, deps);
+    const claim = sb.queries.find((q) => q.op === "update");
+    assert.deepEqual(claim.payload, { status: "ringing" });
+    assert.ok(has(claim, "eq", "id", CALL_ID) && has(claim, "eq", "status", "queued"));
+    assert.equal(deps.issued.length, 1, "the stream token is minted after the claim");
+    for (const lost of [{ data: [], error: null }, { data: null, error: { message: "x" } }]) {
+      const replay = twimlDeps(fakeSupabase(respondRow(row, undefined, lost)));
+      assert.equal(await cc.handleCustomerCallTwiml({ params: { token: token() }, body: { CallSid: "CA123", AnsweredBy: "human" } }, replay), cc.HANGUP_TWIML);
+      assert.equal(replay.issued.length, 0, JSON.stringify(lost));
+    }
+  });
+
+  it("find_new_time's window rides from this read of the row into the notify context (re-checked); never another purpose's", async () => {
+    const tokenFor = (purpose) => cc.mintCustomerCallToken({ callId: CALL_ID, organizationId: ORG, appointmentId: APPT, purpose, requestedByCallId: OWNER_CALL, phoneNumberId: NUMBER_ID }, SECRET, { now: () => NOW });
+    const withWindow = (w) => ({ ...row, metadata: { ...row.metadata, notify: { purpose: "find_new_time", window: w } } });
+    const run = async (purpose, r) => {
+      const deps = twimlDeps(fakeSupabase(respondRow(r)));
+      await cc.handleCustomerCallTwiml({ params: { token: tokenFor(purpose) }, body: { CallSid: "CA123", AnsweredBy: "human" } }, deps);
+      return deps.issued[0][4].notify.window;
+    };
+    assert.deepEqual(await run("find_new_time", withWindow({ earliest: "2026-11-02", timeOfDay: "morning" })), { earliest: "2026-11-02", latest: null, timeOfDay: "morning" });
+    assert.equal(await run("find_new_time", withWindow({ earliest: "next week" })), null, "a malformed window is none");
+    assert.equal(await run("confirm", withWindow({ earliest: "2026-11-02" })), null);
+  });
+
   it("reads the row and the number org-scoped", async () => {
     const sb = fakeSupabase(respondRow());
     await cc.handleCustomerCallTwiml({ params: { token: token() }, body: { CallSid: "CA123", AnsweredBy: "human" } }, twimlDeps(sb));
@@ -684,11 +779,11 @@ describe("handleCustomerCallTwiml", () => {
 
 describe("markCustomerCallStarted", () => {
   const notify = { callId: CALL_ID, organizationId: ORG, appointmentId: APPT, purpose: "confirm", requestedByCallId: OWNER_CALL, mode: "conversation", answeredBy: "human" };
-  it("moves only a still-queued row to in-progress, with the metadata it must keep", async () => {
+  it("moves only the row its TwiML fetch claimed (ringing) to in-progress, with the metadata it must keep", async () => {
     const sb = fakeSupabase((q) => (q.op === "update" ? { data: [{ id: CALL_ID }], error: null } : undefined));
-    assert.deepEqual(await cc.markCustomerCallStarted(sb, notify, () => NOW), { marked: true, startedAt: new Date(NOW).toISOString() });
+    assert.deepEqual(await cc.markCustomerCallStarted(sb, notify, () => NOW), { marked: true, startedAt: new Date(NOW).toISOString(), reason: "ok" });
     const q = sb.queries[0];
-    assert.ok(has(q, "eq", "id", CALL_ID) && has(q, "eq", "organization_id", ORG) && has(q, "eq", "status", "queued"));
+    assert.ok(has(q, "eq", "id", CALL_ID) && has(q, "eq", "organization_id", ORG) && has(q, "eq", "status", "ringing"));
     assert.deepEqual(q.payload, {
       status: "in-progress",
       started_at: new Date(NOW).toISOString(),
@@ -700,10 +795,11 @@ describe("markCustomerCallStarted", () => {
     });
   });
 
-  it("not marked (never a throw) when nothing moved or the write failed — the start time still comes back", async () => {
-    for (const respond of [() => ({ data: [], error: null }), () => ({ data: null, error: { message: "x" } }), () => new Error("down")]) {
-      assert.deepEqual(await cc.markCustomerCallStarted(fakeSupabase(respond), notify, () => NOW), { marked: false, startedAt: new Date(NOW).toISOString() });
-    }
+  it("a row in another state is not_claimable; a failed write is db_error (never a throw) — the start time still comes back", async () => {
+    const at = new Date(NOW).toISOString();
+    assert.deepEqual(await cc.markCustomerCallStarted(fakeSupabase(() => ({ data: [], error: null })), notify, () => NOW), { marked: false, startedAt: at, reason: "not_claimable" });
+    assert.deepEqual(await cc.markCustomerCallStarted(fakeSupabase(() => ({ data: null, error: { message: "x" } })), notify, () => NOW), { marked: false, startedAt: at, reason: "db_error" });
+    assert.deepEqual(await cc.markCustomerCallStarted(fakeSupabase(() => new Error("down")), notify, () => NOW), { marked: false, startedAt: at, reason: "db_error" });
   });
 });
 
@@ -843,21 +939,23 @@ describe("loadNotifyBriefing", () => {
   const responderFor = ({ appt, apptErr, prev, prevErr, row, rowErr } = {}) => (q) => {
     if (q.table === "appointments" && has(q, "eq", "id", APPT)) return { data: appt === undefined ? { id: APPT, attendee_name: "Jane Smith", start_time: FUTURE, rescheduled_from_id: PREV } : appt, error: apptErr || null };
     if (q.table === "appointments" && has(q, "eq", "id", PREV)) return { data: prev === undefined ? { start_time: "2026-10-28T22:00:00Z" } : prev, error: prevErr || null };
-    if (q.table === "calls") return { data: row === undefined ? { metadata: { notify: { owner_note: "mornings" } } } : row, error: rowErr || null };
+    if (q.table === "calls") return { data: row === undefined ? { metadata: { notify: { window: { earliest: "2026-11-02", latest: null, timeOfDay: "morning" } } } } : row, error: rowErr || null };
     return undefined;
   };
 
   it("the name and time on the booking, org-scoped; a move adds the time it came from", async () => {
     const sb = fakeSupabase(responderFor());
-    assert.deepEqual(await cc.loadNotifyBriefing(sb, notify("moved")), { customerName: "Jane Smith", startTime: FUTURE, previousStartTime: "2026-10-28T22:00:00Z", ownerNote: null });
+    assert.deepEqual(await cc.loadNotifyBriefing(sb, notify("moved")), { customerName: "Jane Smith", startTime: FUTURE, previousStartTime: "2026-10-28T22:00:00Z", window: null });
     for (const q of sb.queries) assert.ok(has(q, "eq", "organization_id", ORG), q.table);
-    assert.deepEqual(await cc.loadNotifyBriefing(fakeSupabase(responderFor()), notify("confirm")), { customerName: "Jane Smith", startTime: FUTURE, previousStartTime: null, ownerNote: null }, "only a move reads the old leg");
+    assert.deepEqual(await cc.loadNotifyBriefing(fakeSupabase(responderFor()), notify("confirm")), { customerName: "Jane Smith", startTime: FUTURE, previousStartTime: null, window: null }, "only a move reads the old leg");
   });
 
-  it("finding a new time reads the owner's note off the call row", async () => {
-    assert.equal((await cc.loadNotifyBriefing(fakeSupabase(responderFor()), notify("find_new_time"))).ownerNote, "mornings");
-    assert.equal((await cc.loadNotifyBriefing(fakeSupabase(responderFor({ row: null })), notify("find_new_time"))).ownerNote, null);
-    assert.equal((await cc.loadNotifyBriefing(fakeSupabase(responderFor({ rowErr: { message: "x" } })), notify("find_new_time"))).ownerNote, null, "a lost note is not fatal");
+  it("the window comes with the notify context — the briefing never re-reads the call row for it", async () => {
+    const window = { earliest: "2026-11-02", latest: null, timeOfDay: "morning" };
+    const sb = fakeSupabase(responderFor());
+    assert.deepEqual((await cc.loadNotifyBriefing(sb, { ...notify("find_new_time"), window })).window, window);
+    assert.equal(sb.queries.some((q) => q.table === "calls"), false);
+    assert.equal((await cc.loadNotifyBriefing(fakeSupabase(responderFor()), notify("find_new_time"))).window, null);
   });
 
   it("an unreadable old leg is only a nicety lost; an unreadable booking is null", async () => {
@@ -870,11 +968,110 @@ describe("loadNotifyBriefing", () => {
 });
 
 describe("notifyMetadata", () => {
-  it("keeps the request's ids, the owner's note and how the call was answered, plus what the session adds", () => {
-    const n = { callId: CALL_ID, organizationId: ORG, appointmentId: APPT, purpose: "find_new_time", requestedByCallId: OWNER_CALL, mode: "voicemail", answeredBy: "machine_end_beep", ownerNote: "mornings" };
+  it("keeps the request's ids, the window and how the call was answered, plus what the session adds", () => {
+    const window = { earliest: "2026-11-02", latest: null, timeOfDay: "morning" };
+    const n = { callId: CALL_ID, organizationId: ORG, appointmentId: APPT, purpose: "find_new_time", requestedByCallId: OWNER_CALL, mode: "voicemail", answeredBy: "machine_end_beep", window };
     assert.deepEqual(cc.notifyMetadata(n, { outcome: "will_call_back" }), {
-      purpose: "find_new_time", appointment_id: APPT, requested_by_call_id: OWNER_CALL, owner_note: "mornings", mode: "voicemail", answered_by: "machine_end_beep", outcome: "will_call_back",
+      purpose: "find_new_time", appointment_id: APPT, requested_by_call_id: OWNER_CALL, window, mode: "voicemail", answered_by: "machine_end_beep", outcome: "will_call_back",
     });
-    assert.equal("owner_note" in cc.notifyMetadata({ ...n, ownerNote: null }), false);
+    assert.equal("window" in cc.notifyMetadata({ ...n, window: null }), false);
+  });
+});
+
+describe("SCRUM-598 review fixes: the row stamps a session makes mid-call", () => {
+  const notify = { callId: CALL_ID, organizationId: ORG, appointmentId: APPT, purpose: "confirm", requestedByCallId: OWNER_CALL, mode: "conversation", answeredBy: "human" };
+  const rowWith = (metadata) => (q) => {
+    if (q.op === "select") return { data: { id: CALL_ID, metadata }, error: null };
+    if (q.op === "update") return { data: null, error: null };
+    return undefined;
+  };
+  it("do_not_call is merged into the row's notify at once, keeping everything else (silent lens N3)", async () => {
+    const sb = fakeSupabase(rowWith({ call_type: "customer_notify", notify: { purpose: "confirm", appointment_id: APPT } }));
+    assert.equal(await cc.recordDoNotCall(sb, notify), true);
+    const read = sb.queries.find((q) => q.op === "select");
+    assert.ok(has(read, "eq", "id", CALL_ID) && has(read, "eq", "organization_id", ORG));
+    assert.deepEqual(sb.queries.find((q) => q.op === "update").payload, { metadata: { call_type: "customer_notify", notify: { purpose: "confirm", appointment_id: APPT, outcome: "do_not_call" } } });
+  });
+  it("our own setup failure is said on the row (silent lens N4)", async () => {
+    const sb = fakeSupabase(rowWith({ call_type: "customer_notify", notify: { purpose: "confirm" } }));
+    assert.equal(await cc.markSetupFailed(sb, notify, "no-briefing"), true);
+    assert.equal(sb.queries.find((q) => q.op === "update").payload.metadata.notify.setup_failed, "no-briefing");
+  });
+  it("a stamp that can't read or write pages and returns false (never throws)", async () => {
+    for (const respond of [() => ({ data: null, error: { message: "x" } }), () => ({ data: null, error: null }), (q) => (q.op === "select" ? { data: { id: CALL_ID, metadata: {} }, error: null } : { data: null, error: { message: "x" } }), () => new Error("down")]) {
+      assert.equal(await cc.recordDoNotCall(fakeSupabase(respond), notify), false);
+    }
+    assert.ok(alerts().length >= 4);
+  });
+});
+
+describe("SCRUM-598 review fixes: a failed check read is logged with its stage (silent lens N5)", () => {
+  it("names the read that failed", async () => {
+    const sb = fakeSupabase(responder(world({ apptError: { message: "permission denied", code: "42501" } })));
+    assert.deepEqual(await cc.checkCustomerCall(req(), "check", checkDeps(sb)), { ok: false, reason: "check_failed" });
+    const lines = spies.error.mock.calls.map((c) => String(c.arguments[0]));
+    assert.ok(lines.some((l) => l.includes("the booking read failed (code=42501): permission denied")), lines.join("\n"));
+  });
+});
+
+describe("sweepStuckCustomerCalls (silent lens N1 — a lost status callback)", () => {
+  const OLD = new Date(NOW - cc.STUCK_AFTER_MS - 60_000).toISOString();
+  const stuck = (over = {}) => ({ id: CALL_ID, organization_id: ORG, assistant_id: ASSISTANT, vapi_call_id: "sh_CA123", caller_phone: PHONE, status: "queued", created_at: OLD, metadata: { call_type: "customer_notify", notify: { purpose: "confirm" } }, ...over });
+  function sweepDeps(rows, over = {}) {
+    const notified = [];
+    const sb = fakeSupabase((q) => {
+      if (q.op === "select") return { data: rows, error: null };
+      if (q.op === "update") return { data: [{ id: CALL_ID }], error: null };
+      return undefined;
+    });
+    return { notified, sb, deps: { supabase: sb, now: () => NOW, hasLiveSession: () => false, fetchTwilioCall: async () => ({ status: "no-answer", duration: "0" }), notifyCallCompleted: async (p) => { notified.push(p); }, ...over } };
+  }
+
+  it("finishes an open call from Twilio's own record of it, once, and runs call-completed", async () => {
+    const { deps, sb, notified } = sweepDeps([stuck()]);
+    assert.deepEqual(await cc.sweepStuckCustomerCalls(deps), { swept: 1, checked: 1 });
+    const q = sb.queries.find((x) => x.op === "select");
+    assert.ok(has(q, "eq", "metadata->>call_type", "customer_notify"));
+    assert.ok(q.filters.some((f) => f[0] === "in" && f[1] === "status"));
+    assert.ok(has(q, "lt", "created_at", new Date(NOW - cc.STUCK_AFTER_MS).toISOString()), "only calls past any possible end");
+    const upd = sb.queries.find((x) => x.op === "update");
+    assert.equal(upd.payload.status, "no-answer");
+    assert.equal(upd.payload.metadata.notify.swept, true);
+    assert.ok(has(upd, "eq", "status", "queued"), "conditional, like every finish");
+    assert.equal(notified.length, 1);
+    assert.equal(notified[0].status, "missed");
+  });
+
+  it("leaves a live session, a call Twilio says is still going, and (until 2 h) one Twilio can't tell us about", async () => {
+    for (const over of [
+      { hasLiveSession: () => true },
+      { fetchTwilioCall: async () => ({ status: "in-progress" }) },
+      { fetchTwilioCall: async () => { throw Object.assign(new Error("x +61412345678"), { code: 20404 }); } },
+      { fetchTwilioCall: async () => null },
+    ]) {
+      const { deps, notified } = sweepDeps([stuck()], over);
+      assert.equal((await cc.sweepStuckCustomerCalls(deps)).swept, 0);
+      assert.equal(notified.length, 0);
+    }
+    const veryOld = new Date(NOW - cc.GIVE_UP_AFTER_MS - 60_000).toISOString();
+    const { deps, sb, notified } = sweepDeps([stuck({ created_at: veryOld })], { fetchTwilioCall: async () => null });
+    assert.equal((await cc.sweepStuckCustomerCalls(deps)).swept, 1, "after 2 hours it is finished as failed anyway");
+    assert.equal(sb.queries.find((x) => x.op === "update").payload.metadata.notify.twilio_status, "unknown");
+    assert.equal(notified[0].status, "failed");
+  });
+
+  it("an in-progress row with no live session is finished as cut off", async () => {
+    const { deps, sb, notified } = sweepDeps([stuck({ status: "in-progress" })], { fetchTwilioCall: async () => ({ status: "completed", duration: "88" }) });
+    await cc.sweepStuckCustomerCalls(deps);
+    const upd = sb.queries.find((x) => x.op === "update");
+    assert.equal(upd.payload.metadata.notify.cut_off, true);
+    assert.equal(upd.payload.duration_seconds, 88);
+    assert.equal(notified[0].status, "completed");
+  });
+
+  it("an unreadable list pages; it never throws", async () => {
+    const sb = fakeSupabase(() => ({ data: null, error: { message: "x" } }));
+    assert.deepEqual(await cc.sweepStuckCustomerCalls({ supabase: sb, hasLiveSession: () => false, fetchTwilioCall: async () => null, notifyCallCompleted: async () => {} }), { swept: 0, checked: 0 });
+    assert.ok(alerts().some((m) => m.includes("sweep")));
   });
 });

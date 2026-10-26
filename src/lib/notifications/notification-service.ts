@@ -13,6 +13,7 @@ import { DEMO_ORG_ID } from "@/lib/demo/config";
 import { ssrfSafeFetch, escapeHtml } from "@/lib/security/validation";
 import type { OwnerRecapItem } from "@/lib/owner-assistant/recap";
 import type { CallOutcomeReport, CallResult, DiaryLine } from "@/lib/owner-assistant/call-outcome";
+import type { CallOutcome } from "@/lib/owner-assistant/customer-call";
 import { hasFeatureAccess } from "@/lib/stripe/billing-service";
 import * as Sentry from "@sentry/nextjs";
 import { Resend } from "resend";
@@ -1010,12 +1011,16 @@ function callResultShort(result: CallResult): string {
       return "they answered";
     case "voicemail":
       return "left a voicemail";
+    case "voicemail_not_left":
+      return "voicemail, no message left";
     case "no_answer":
       return "no answer";
     case "busy":
       return "their line was busy";
     case "dropped":
       return "they hung up straight away";
+    case "failed_on_our_side":
+      return "the call failed on our side";
     case "cut_off":
       return "the call was cut off";
     case "failed":
@@ -1038,15 +1043,21 @@ function callLength(seconds: number): string {
 function callResultLine(result: CallResult): string {
   switch (result.kind) {
     case "answered":
-      return `They answered — the call lasted ${callLength(result.seconds)}.${result.endedOnAFault ? " It ended on a fault on our side, so check the recording." : ""}`;
+      return `${result.sureItWasAPerson ? "They answered" : "The call connected (the phone system couldn't tell whether a person or a voicemail answered — the summary says what happened)"} — the call lasted ${callLength(result.seconds)}.${result.endedOnAFault ? " It ended on a fault on our side, so check the recording." : ""}`;
     case "voicemail":
-      return "Their voicemail picked up and the assistant left a message.";
+      return result.playedToEnd
+        ? "Their voicemail picked up and the assistant left a message."
+        : "Their voicemail picked up and the assistant left a message (we couldn't confirm it played to the end).";
+    case "voicemail_not_left":
+      return "Their voicemail picked up, but the assistant couldn't leave a message — give them a ring.";
     case "no_answer":
       return "No answer, and no message left.";
     case "busy":
       return "Their line was busy. Nothing was said.";
     case "dropped":
       return "They picked up but the call ended before the assistant spoke.";
+    case "failed_on_our_side":
+      return "They picked up, but the call failed on our side before the assistant could speak — please give them a ring.";
     case "cut_off":
       return `The call was cut off on our side after ${callLength(result.seconds)} — check the recording and give them a call if needed.`;
     case "failed":
@@ -1097,8 +1108,8 @@ function callPurposeLine(report: CallOutcomeReport): string {
   }
 }
 
-/** record_call_outcome, worded for the owner. */
-const CALL_OUTCOME_WORDS: Record<string, string> = {
+/** record_call_outcome, worded for the owner — every outcome (the compiler checks). */
+const CALL_OUTCOME_WORDS: Record<CallOutcome, string> = {
   confirmed: "they're happy with the booking as it is",
   rebooked: "booked or moved a time for them",
   declined: "they don't want another time",
@@ -1758,7 +1769,7 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       const phone = r.phone ? ` (${escapeHtml(r.phone)})` : "";
       const row = (label: string, value: string) =>
         `<tr><td style="padding: 8px; border-bottom: 1px solid #ddd; font-weight: bold; vertical-align: top;">${label}</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">${value}</td></tr>`;
-      const outcome = r.assistantOutcome && CALL_OUTCOME_WORDS[r.assistantOutcome] ? escapeHtml(CALL_OUTCOME_WORDS[r.assistantOutcome]) : null;
+      const outcome = r.assistantOutcome ? escapeHtml(CALL_OUTCOME_WORDS[r.assistantOutcome]) : null;
       const noted = outcome || r.assistantNote
         ? row("The assistant noted <span style=\"font-weight: normal; color: #6b7280;\">(AI-written)</span>", [outcome, r.assistantNote ? `&ldquo;${escapeHtml(r.assistantNote)}&rdquo;` : null].filter(Boolean).join(" — "))
         : "";

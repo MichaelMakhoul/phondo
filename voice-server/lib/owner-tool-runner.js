@@ -250,10 +250,18 @@ function confirmationKey(name, args) {
   const part = (v) => (typeof v === "string" && v !== "" && !v.includes("|") ? v : null);
   const id = part(args.appointment_id);
   if (id === null) return null;
-  // SCRUM-598: a yes to "call to confirm" never places a "find a new time" call.
+  // SCRUM-598: a yes to "call to confirm" never places a "find a new time" call, and a
+  // yes to one window for the new time never places a call with another (security
+  // lens F2) — every field the read-back gave is in the key, as new_datetime is for a move.
   if (name === "owner_call_customer") {
     const purpose = part(args.purpose);
-    return purpose === null ? null : `${name}|${id}|${purpose}`;
+    /** @param {unknown} v an optional field: absent is "", a malformed one is null */
+    const optional = (v) => (v === undefined || v === null || v === "" ? "" : part(v));
+    const earliest = optional(args.earliest_date);
+    const latest = optional(args.latest_date);
+    const timeOfDay = optional(args.time_of_day);
+    if (purpose === null || earliest === null || latest === null || timeOfDay === null) return null;
+    return `${name}|${id}|${purpose}|${earliest}|${latest}|${timeOfDay}`;
   }
   if (name !== "owner_reschedule_appointment") return `${name}|${id}`;
   const when = part(args.new_datetime);
@@ -414,9 +422,10 @@ function writeDetail(message, fallback, data) {
 function callDetail(data) {
   const d = data && typeof data === "object" ? /** @type {any} */ (data) : {};
   const who = typeof d.customer_name === "string" && d.customer_name ? d.customer_name : "a customer";
-  const why = d.purpose === "find_new_time" ? "find a new time for" : "confirm";
   const when = typeof d.when === "string" && d.when ? ` ${d.when}` : " their booking";
-  const line = Array.from(`Called ${who} to ${why}${when}`);
+  // PR B's data, read at runtime: a purpose this side doesn't know is said plainly, never guessed.
+  const why = d.purpose === "find_new_time" ? `to find a new time for${when}` : d.purpose === "confirm" ? `to confirm${when}` : `about${when}`;
+  const line = Array.from(`Called ${who} ${why}`);
   return line.length > DETAIL_MAX ? `${line.slice(0, DETAIL_MAX - 1).join("")}…` : line.join("");
 }
 

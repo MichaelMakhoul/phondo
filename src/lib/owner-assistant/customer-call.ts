@@ -9,6 +9,28 @@ import { toNumberingPlanE164 } from "@/lib/sms/sms-capability";
 export const CALL_PURPOSES = ["cancelled", "moved", "confirm", "find_new_time"] as const;
 export type CallPurpose = (typeof CALL_PURPOSES)[number];
 
+/** What the assistant may record about a call (record_call_outcome — the voice server's CALL_OUTCOMES; the parity test keeps them in step). */
+export const CALL_OUTCOMES = ["confirmed", "rebooked", "declined", "will_call_back", "wrong_person", "do_not_call", "other"] as const;
+export type CallOutcome = (typeof CALL_OUTCOMES)[number];
+
+export function parseCallOutcome(v: unknown): CallOutcome | null {
+  return typeof v === "string" && (CALL_OUTCOMES as readonly string[]).includes(v) ? (v as CallOutcome) : null;
+}
+
+/**
+ * find_new_time's window for the new time: structured fields only, so nothing the
+ * owner session writes reaches the customer call as text (security lens F2).
+ */
+export const TIMES_OF_DAY = ["morning", "afternoon", "evening", "any"] as const;
+export type TimeOfDay = (typeof TIMES_OF_DAY)[number];
+export interface TimeWindow {
+  /** First day the new time may be on (YYYY-MM-DD, org-local), or null. */
+  earliest: string | null;
+  /** Last day (YYYY-MM-DD), or null. */
+  latest: string | null;
+  timeOfDay: TimeOfDay;
+}
+
 /** The voice server's reasons (its CALL_BLOCK_REASONS; the parity test keeps them in step). */
 export const VOICE_CALL_BLOCK_REASONS = [
   "calls_disabled",
@@ -34,11 +56,12 @@ type VoiceCallBlockReason = (typeof VOICE_CALL_BLOCK_REASONS)[number];
 
 /**
  * Why a call isn't placed: the voice server's reasons, plus this side's own —
- * no_number (nothing to dial), voice_unreachable (the request never got an answer
+ * no_number (nothing to dial), not_callable_number (a number we may not ring: not
+ * an AU mobile or landline), voice_unreachable (the request never got an answer
  * before anything was sent, or the check couldn't run) and place_unconfirmed (the
  * placement went out but no answer came back: the call may be ringing).
  */
-export type CallBlockReason = VoiceCallBlockReason | "no_number" | "voice_unreachable" | "place_unconfirmed";
+export type CallBlockReason = VoiceCallBlockReason | "no_number" | "not_callable_number" | "voice_unreachable" | "place_unconfirmed";
 
 export type CallCheck = { canCall: true } | { canCall: false; reason: CallBlockReason };
 export type CallPlacement = { placed: true; callId: string } | { placed: false; reason: CallBlockReason };
@@ -67,6 +90,7 @@ const CALL_WHY = {
   busy: "too many calls are going out right now",
   place_failed: "the call couldn't be placed",
   no_number: "there's no number on the booking",
+  not_callable_number: "I can only call Australian mobiles and landlines",
   voice_unreachable: "I couldn't reach the phone system",
   place_unconfirmed: "I couldn't confirm the call went out, so check Calls in the dashboard before you ring them",
 } satisfies Record<CallBlockReason, string>;
@@ -90,6 +114,7 @@ const NOTED_CALL_REASONS: ReadonlySet<CallBlockReason> = new Set<CallBlockReason
   "do_not_call",
   "not_au",
   "no_caller_number",
+  "not_callable_number",
 ]);
 
 /** The read-back's note when a call isn't offered, or null when it isn't worth saying. */
@@ -97,10 +122,18 @@ export function callNote(reason: CallBlockReason): string | null {
   return NOTED_CALL_REASONS.has(reason) ? `I can't call them now: ${CALL_WHY[reason]}.` : null;
 }
 
-/** The booking's number as the voice server needs it (AU E.164), or null. */
+/** AU numbers the assistant may ring: geographic (02/03/07/08) and mobile (04) — the voice server's own rule. */
+const AU_DIALABLE_RE = /^\+61[23478]\d{8}$/;
+
+/** The booking's number as the voice server needs it (AU E.164, mobile or landline), or null. */
 export function callablePhone(raw: string | null | undefined): string | null {
   const e164 = toNumberingPlanE164(raw);
-  return e164 && e164.startsWith("+61") ? e164 : null;
+  return e164 && AU_DIALABLE_RE.test(e164) ? e164 : null;
+}
+
+/** Why there's nothing to dial: no number at all, or one we may not ring (13/1300, overseas…). */
+function noDialReason(raw: string | null | undefined): "no_number" | "not_callable_number" {
+  return typeof raw === "string" && raw.replace(/\D/g, "").length > 0 ? "not_callable_number" : "no_number";
 }
 
 export interface CustomerCallRequest {
@@ -112,8 +145,8 @@ export interface CustomerCallRequest {
   phone: string | null | undefined;
   /** The owner session the request comes from (the envelope callId). */
   requestedByCallId: string;
-  /** find_new_time only: the owner's guidance on times. */
-  ownerNote?: string | null;
+  /** find_new_time only: the window for the new time. */
+  window?: TimeWindow | null;
 }
 
 export interface CustomerCallDeps {
@@ -180,14 +213,14 @@ function wireBody(req: CustomerCallRequest, phone: string): Record<string, unkno
     purpose: req.purpose,
     phone,
     requestedByCallId: req.requestedByCallId,
-    ...(req.purpose === "find_new_time" && req.ownerNote ? { ownerNote: req.ownerNote } : {}),
+    ...(req.purpose === "find_new_time" && req.window ? { window: req.window } : {}),
   };
 }
 
 /** Can the assistant call this customer about this booking right now? Never throws. */
 export async function checkCustomerCall(req: CustomerCallRequest, deps: CustomerCallDeps = {}): Promise<CallCheck> {
   const phone = callablePhone(req.phone);
-  if (!phone) return { canCall: false, reason: "no_number" };
+  if (!phone) return { canCall: false, reason: noDialReason(req.phone) };
   const reply = await postToVoice("/internal/customer-call/check", wireBody(req, phone), CHECK_TIMEOUT_MS, deps);
   if (!reply.ok) return { canCall: false, reason: "voice_unreachable" };
   if (reply.json.canCall === true) return { canCall: true };
@@ -200,7 +233,7 @@ export async function checkCustomerCall(req: CustomerCallRequest, deps: Customer
  */
 export async function placeCustomerCall(req: CustomerCallRequest, deps: CustomerCallDeps = {}): Promise<CallPlacement> {
   const phone = callablePhone(req.phone);
-  if (!phone) return { placed: false, reason: "no_number" };
+  if (!phone) return { placed: false, reason: noDialReason(req.phone) };
   const reply = await postToVoice("/internal/customer-call", wireBody(req, phone), PLACE_TIMEOUT_MS, deps);
   // Sent but unanswered, the call may be ringing: never tell the owner it wasn't placed.
   if (!reply.ok) return { placed: false, reason: reply.sent ? "place_unconfirmed" : "voice_unreachable" };

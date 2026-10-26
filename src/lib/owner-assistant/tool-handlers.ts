@@ -36,7 +36,9 @@ import {
   todayISO,
   parseOwnerLocalDatetime,
   formatWhen,
+  isRealCalendarDate,
 } from "./time";
+import { addDaysISO } from "@/lib/calendar/tool-handlers";
 import { sanitizeCustomerText } from "./sanitize";
 import { isOwnerCallMetadata, isCustomerNotifyCallMetadata } from "./owner-call";
 import {
@@ -49,7 +51,7 @@ import {
   type ContactOptions,
   type CustomerContactResult,
 } from "./customer-contact";
-import { callWhy, checkCustomerCall, placeCustomerCall, type CallBlockReason } from "./customer-call";
+import { callWhy, checkCustomerCall, placeCustomerCall, TIMES_OF_DAY, type CallBlockReason, type TimeWindow } from "./customer-call";
 
 export const OWNER_TOOL_NAMES = [
   "owner_list_appointments",
@@ -401,7 +403,11 @@ export interface OwnerCancelData {
   customer_notified: boolean;
 }
 
-/** SCRUM-598: owner_call_customer — a call about one booking that changes nothing by itself. */
+/**
+ * SCRUM-598: owner_call_customer — a call about one booking that changes nothing by
+ * itself (so, unlike the change tools, no customer_notified: the call's own email
+ * says how it went).
+ */
 export interface OwnerCallCustomerData {
   outcome: "calling" | "needs_confirmation" | "not_available" | "not_found" | "external_calendar" | "rate_limited";
   appointment_id?: string;
@@ -409,11 +415,12 @@ export interface OwnerCallCustomerData {
   /** Spoken form of the booking's time (formatWhen). */
   when?: string;
   purpose?: "confirm" | "find_new_time";
+  /** find_new_time: the window for the new time, as validated. */
+  window?: TimeWindow;
   /** On not_available: why a call can't be placed. */
   reason?: CallBlockReason;
   /** On calling: the call's own id (its outcome email links to it). */
   call_id?: string;
-  customer_notified: boolean;
 }
 
 const NOT_FOUND_MSG = "I can't find that job. It may have already been moved or cancelled.";
@@ -912,8 +919,59 @@ const CALL_PURPOSE_WORDS = {
   confirm: "check they're still OK for",
   find_new_time: "find a new time for",
 } as const;
-/** The owner's guidance on times (find_new_time): one bounded line, as for every model-supplied text. */
-const CALL_NOTE_MAX = 160;
+/** How far ahead find_new_time's window may reach. */
+const CALL_WINDOW_MAX_DAYS = 90;
+
+/**
+ * find_new_time's window from the model's flat arguments: real calendar days from
+ * today (org-local) up to 90 days ahead, earliest before latest, and a time of day
+ * from the list. Structured only — the call's prompt words it from these fields, so
+ * no owner-session text reaches the customer (security lens F2). null fields = no
+ * window; a malformed one is refused whole.
+ */
+function parseCallWindow(
+  args: { earliest_date?: string; latest_date?: string; time_of_day?: string },
+  tz: string
+): { ok: true; window: TimeWindow | null } | { ok: false } {
+  const today = todayISO(tz);
+  const last = addDaysISO(today, CALL_WINDOW_MAX_DAYS);
+  const day = (v: string | undefined): string | null | undefined => {
+    if (v === undefined || v === "") return null;
+    return isRealCalendarDate(v) && v >= today && v <= last ? v : undefined;
+  };
+  const earliest = day(args.earliest_date);
+  const latest = day(args.latest_date);
+  const timeOfDay =
+    args.time_of_day === undefined || args.time_of_day === ""
+      ? "any"
+      : (TIMES_OF_DAY as readonly string[]).includes(args.time_of_day)
+        ? (args.time_of_day as TimeWindow["timeOfDay"])
+        : undefined;
+  if (earliest === undefined || latest === undefined || timeOfDay === undefined) return { ok: false };
+  if (earliest && latest && earliest > latest) return { ok: false };
+  if (!earliest && !latest && timeOfDay === "any") return { ok: true, window: null };
+  return { ok: true, window: { earliest, latest, timeOfDay } };
+}
+
+/** A calendar day in words ("Monday, November 2") — the day itself, in any zone. */
+function dayInWords(iso: string): string {
+  return new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" });
+}
+
+/** The window, read back: " — between Monday, November 2 and Friday, November 6, in the morning". */
+function windowPhrase(window: TimeWindow | null): string {
+  if (!window) return "";
+  const range = window.earliest && window.latest
+    ? `between ${dayInWords(window.earliest)} and ${dayInWords(window.latest)}`
+    : window.earliest
+      ? `from ${dayInWords(window.earliest)}`
+      : window.latest
+        ? `by ${dayInWords(window.latest)}`
+        : "";
+  const period = window.timeOfDay === "any" ? "" : `in the ${window.timeOfDay}`;
+  const words = [range, period].filter(Boolean).join(", ");
+  return words ? ` — ${words}` : "";
+}
 
 /** The owner's line when a call isn't placed (the customer's number is offered instead). */
 function callNotPlacedMessage(customer: string, reason: CallBlockReason): string {
@@ -934,7 +992,7 @@ function callNotPlacedMessage(customer: string, reason: CallBlockReason): string
  */
 export async function handleOwnerCallCustomer(
   organizationId: string,
-  args: { appointment_id?: string; purpose?: string; note?: string; confirmed?: unknown },
+  args: { appointment_id?: string; purpose?: string; earliest_date?: string; latest_date?: string; time_of_day?: string; confirmed?: unknown },
   ctx: OwnerCallContext
 ): Promise<ToolResult> {
   const supabase = createAdminClient();
@@ -944,14 +1002,14 @@ export async function handleOwnerCallCustomer(
   const appt = await loadOwnerAppointment(supabase, organizationId, args.appointment_id);
   if (appt === undefined) return errorResult(TROUBLE);
   if (appt === null) {
-    return { success: false, message: NOT_FOUND_MSG, data: callData({ outcome: "not_found", customer_notified: false }) };
+    return { success: false, message: NOT_FOUND_MSG, data: callData({ outcome: "not_found" }) };
   }
   const external = externalDiaryRefusal(organizationId, appt);
   if (external) {
     return {
       success: false,
       message: external,
-      data: callData({ outcome: "external_calendar", appointment_id: appt.id, customer_notified: false }),
+      data: callData({ outcome: "external_calendar", appointment_id: appt.id }),
     };
   }
 
@@ -964,48 +1022,55 @@ export async function handleOwnerCallCustomer(
     return {
       success: false,
       message: `Ask the owner what the call is for: to check ${customer} is still OK for ${when}, or to find them a new time. Then call owner_call_customer with purpose "confirm" or "find_new_time".`,
-      data: callData({ outcome: "needs_confirmation", appointment_id: appt.id, customer_name: customer, when, customer_notified: false }),
+      data: callData({ outcome: "needs_confirmation", appointment_id: appt.id, customer_name: customer, when }),
     };
   }
-  const base = { appointment_id: appt.id, customer_name: customer, when, purpose } as const;
+  const parsedWindow = purpose === "find_new_time" ? parseCallWindow(args, org.tz) : ({ ok: true, window: null } as const);
+  if (!parsedWindow.ok) {
+    return {
+      success: false,
+      message: `I need the days for the new time as dates like ${todayISO(org.tz)} (from today, up to ${CALL_WINDOW_MAX_DAYS} days ahead, the first before the last), and the time of day as morning, afternoon, evening or any. Ask the owner if you're not sure, then call owner_call_customer again.`,
+      data: callData({ outcome: "needs_confirmation", appointment_id: appt.id, customer_name: customer, when, purpose }),
+    };
+  }
+  const window = parsedWindow.window;
+  const base = { appointment_id: appt.id, customer_name: customer, when, purpose, ...(window ? { window } : {}) };
   const notAvailable = (reason: CallBlockReason, message = callNotPlacedMessage(customer, reason)): ToolResult => ({
     success: false,
     message,
-    data: callData({ outcome: "not_available", ...base, reason, customer_notified: false }),
+    data: callData({ outcome: "not_available", ...base, reason }),
   });
   if (start.getTime() <= Date.now()) {
     return notAvailable("wrong_state", `${customer}'s booking on ${when} has already started, so there's nothing to call about.`);
   }
 
-  const note = purpose === "find_new_time" ? sanitizeCustomerText(args.note, CALL_NOTE_MAX) : null;
   const request = {
     organizationId,
     appointmentId: appt.id,
     purpose,
     phone: appt.attendee_phone,
     requestedByCallId: ctx.callId,
-    ownerNote: note,
+    window,
   };
 
   if (args.confirmed !== true) {
     const check = await checkCustomerCall(request);
     if (!check.canCall) return notAvailable(check.reason);
-    const withNote = note ? ` (your note for the times: "${note}")` : "";
     return {
       success: false,
-      message: `Read this back and get a clear yes before calling: call ${customer} now to ${CALL_PURPOSE_WORDS[purpose]} their booking on ${when}${withNote}. If the owner confirms, call owner_call_customer again with confirmed=true, the same purpose${note ? " and the same note" : ""}.`,
-      data: callData({ outcome: "needs_confirmation", ...base, customer_notified: false }),
+      message: `Read this back and get a clear yes before calling: call ${customer} now to ${CALL_PURPOSE_WORDS[purpose]} their booking on ${when}${windowPhrase(window)}. If the owner confirms, call owner_call_customer again with confirmed=true${window ? ", the same purpose, earliest_date, latest_date and time_of_day" : " and the same purpose"}.`,
+      data: callData({ outcome: "needs_confirmation", ...base }),
     };
   }
 
   if (!(await ownerMutationAllowed(supabase, organizationId))) {
-    return { success: false, message: RATE_LIMITED_MSG, data: callData({ outcome: "rate_limited", ...base, customer_notified: false }) };
+    return { success: false, message: RATE_LIMITED_MSG, data: callData({ outcome: "rate_limited", ...base }) };
   }
   const placed = await placeCustomerCall(request);
   if (!placed.placed) return notAvailable(placed.reason);
   return {
     success: true,
-    message: `Calling ${customer} now to ${CALL_PURPOSE_WORDS[purpose]} their booking on ${when}. You'll get an email when the call's done.`,
-    data: callData({ outcome: "calling", ...base, call_id: placed.callId, customer_notified: false }),
+    message: `Calling ${customer} now to ${CALL_PURPOSE_WORDS[purpose]} their booking on ${when}${windowPhrase(window)}. You'll get an email when the call's done.`,
+    data: callData({ outcome: "calling", ...base, call_id: placed.callId }),
   };
 }

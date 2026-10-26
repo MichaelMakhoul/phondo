@@ -43,7 +43,7 @@ const callRow = (over: Record<string, unknown> = {}, notify: Record<string, unkn
     started_at: START,
     ended_at: END,
     created_at: "2026-10-27T02:59:40Z",
-    metadata: { call_type: "customer_notify", notify: { purpose: "confirm", appointment_id: BOOKING, outcome: "rebooked", note: "Moved to Thursday", ...notify } },
+    metadata: { call_type: "customer_notify", notify: { purpose: "confirm", appointment_id: BOOKING, answered_by: "human", outcome: "rebooked", note: "Moved to Thursday", ...notify } },
     ...over,
   },
   error: null,
@@ -62,9 +62,17 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("callResultOf", () => {
   it("maps the call row the voice server finished to what happened, voicemail and cut-off first", () => {
-    expect(callResultOf({ status: "completed", outcome: "answered", duration_seconds: 75.4 })).toEqual({ kind: "answered", seconds: 75, endedOnAFault: false });
-    expect(callResultOf({ status: "failed", outcome: "answered", duration_seconds: 40 })).toEqual({ kind: "answered", seconds: 40, endedOnAFault: true });
-    expect(callResultOf({ status: "completed", outcome: "voicemail" })).toEqual({ kind: "voicemail" });
+    const human = { notify: { answered_by: "human" } };
+    expect(callResultOf({ status: "completed", outcome: "answered", duration_seconds: 75.4, metadata: human })).toEqual({ kind: "answered", seconds: 75, endedOnAFault: false, sureItWasAPerson: true });
+    expect(callResultOf({ status: "failed", outcome: "answered", duration_seconds: 40, metadata: human })).toEqual({ kind: "answered", seconds: 40, endedOnAFault: true, sureItWasAPerson: true });
+    // Silent lens N7: AMD's "unknown" is never stated as a person.
+    expect(callResultOf({ status: "completed", outcome: "answered", duration_seconds: 40, metadata: { notify: { answered_by: "unknown" } } })).toMatchObject({ kind: "answered", sureItWasAPerson: false });
+    expect(callResultOf({ status: "completed", outcome: "voicemail", metadata: { notify: { mode: "voicemail", voicemail_played: true } } })).toEqual({ kind: "voicemail", playedToEnd: true });
+    expect(callResultOf({ status: "completed", outcome: "voicemail", metadata: { notify: { mode: "voicemail" } } })).toEqual({ kind: "voicemail", playedToEnd: false });
+    // Silent lens G1: a voicemail-mode call with no message spoken is never "voicemail".
+    expect(callResultOf({ status: "failed", outcome: "failed", metadata: { notify: { mode: "voicemail" } } })).toEqual({ kind: "voicemail_not_left" });
+    // Silent lens N4: our own setup failure wins over every other reading.
+    expect(callResultOf({ status: "completed", outcome: null, metadata: { notify: { setup_failed: "no-briefing", mode: "conversation" } } })).toEqual({ kind: "failed_on_our_side" });
     expect(callResultOf({ status: "completed", outcome: null, duration_seconds: 95, metadata: { notify: { cut_off: true } } })).toEqual({ kind: "cut_off", seconds: 95 });
     expect(callResultOf({ status: "no-answer" })).toEqual({ kind: "no_answer" });
     expect(callResultOf({ status: "busy" })).toEqual({ kind: "busy" });
@@ -72,7 +80,7 @@ describe("callResultOf", () => {
     expect(callResultOf({ status: "failed", outcome: null })).toEqual({ kind: "failed" });
     // A row never finished is no success.
     expect(callResultOf({ status: "queued" })).toEqual({ kind: "failed" });
-    expect(callResultOf({ status: "completed", outcome: "answered", duration_seconds: null })).toEqual({ kind: "answered", seconds: 0, endedOnAFault: false });
+    expect(callResultOf({ status: "completed", outcome: "answered", duration_seconds: null })).toEqual({ kind: "answered", seconds: 0, endedOnAFault: false, sureItWasAPerson: false });
   });
 });
 
@@ -91,7 +99,7 @@ describe("buildCallOutcome", () => {
       customer: "Jane Smith",
       phone: "+61412345678",
       bookingWhen: "Wednesday, October 28 at 2:30 PM",
-      result: { kind: "answered", seconds: 130, endedOnAFault: false },
+      result: { kind: "answered", seconds: 130, endedOnAFault: false, sureItWasAPerson: true },
       diary: [{ kind: "moved", from: "Wednesday, October 28 at 2:30 PM", when: "Thursday, October 29 at 3:00 PM" }],
       assistantOutcome: "rebooked",
       assistantNote: "Moved to Thursday",
@@ -133,12 +141,18 @@ describe("buildCallOutcome", () => {
   });
 
   it("a cancel's own call is about a booking already cancelled: never 'cancelled on the call'", async () => {
-    queues.calls = [callRow({ outcome: "voicemail" }, { purpose: "cancelled", voicemail_text: "Hi Jane, your booking has been cancelled." })];
+    queues.calls = [callRow({ outcome: "voicemail" }, { purpose: "cancelled", mode: "voicemail", voicemail_played: true, voicemail_text: "Hi Jane, your booking has been cancelled." })];
     queues.appointments = [booking({ status: "cancelled", updated_at: "2026-10-27T03:00:30Z" }), { data: [], error: null }];
     const r = await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ });
     expect(r?.diary).toEqual([{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", stillBooked: false }]);
-    expect(r?.result).toEqual({ kind: "voicemail" });
+    expect(r?.result).toEqual({ kind: "voicemail", playedToEnd: true });
     expect(r?.voicemailText).toBe("Hi Jane, your booking has been cancelled.");
+  });
+
+  it("an outcome the assistant recorded is parsed; anything else is none (types lens T1)", async () => {
+    queues.calls = [callRow({}, { outcome: "upsold" })];
+    queues.appointments = [booking(), { data: [], error: null }];
+    expect((await buildCallOutcome(fake(), { organizationId: ORG, callId: CALL, timezone: TZ }))?.assistantOutcome).toBeNull();
   });
 
   it("customer- and AI-written values arrive as one bounded line", async () => {

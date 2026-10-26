@@ -3,7 +3,8 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONTACT_METHODS, contactOutcomeSentence, type CustomerContactResult } from "../customer-contact";
-import { CALL_PURPOSES, VOICE_CALL_BLOCK_REASONS } from "../customer-call";
+import { CALL_OUTCOMES, CALL_PURPOSES, TIMES_OF_DAY, VOICE_CALL_BLOCK_REASONS } from "../customer-call";
+import { CUSTOMER_NOTIFY_CALL_TYPE } from "../owner-call";
 import { OWNER_TOOL_NAMES } from "../tool-handlers";
 
 // SCRUM-597 (types lens F6): the "let them know?" contract lives on both sides — the
@@ -17,7 +18,14 @@ const ownerTools = vs("owner-tools.js") as {
   ownerToolDefinitions: Array<{ function: { name: string; parameters: { properties: Record<string, any>; required: string[] } } }>;
   OWNER_TOOL_NAMES: readonly string[];
 };
-const customerCall = vs("customer-call.js") as { CALL_BLOCK_REASONS: readonly string[]; NOTIFY_PURPOSES: readonly string[] };
+const customerCall = vs("customer-call.js") as {
+  CALL_BLOCK_REASONS: readonly string[];
+  NOTIFY_PURPOSES: readonly string[];
+  CALL_OUTCOMES: readonly string[];
+  TIMES_OF_DAY: readonly string[];
+  CUSTOMER_NOTIFY_CALL_TYPE: string;
+  notifyMetadata: (notify: Record<string, unknown>, extra?: Record<string, unknown>) => Record<string, unknown>;
+};
 const runner = vs("owner-tool-runner.js") as {
   describeOwnerToolCall: (name: string, args: object, message: string, successful: boolean, data?: unknown) => string | null;
 };
@@ -62,14 +70,31 @@ describe("website ↔ voice server: the customer-contact contract", () => {
 
   // SCRUM-598: the call's own contract — the voice server's refusals and purposes are
   // the ones the website words, and owner_call_customer is declared with what the route plucks.
-  it("both sides know the same call refusals and purposes", () => {
+  it("both sides know the same call refusals, purposes, outcomes, times of day and call type", () => {
     expect([...VOICE_CALL_BLOCK_REASONS]).toEqual([...customerCall.CALL_BLOCK_REASONS]);
     expect([...CALL_PURPOSES]).toEqual([...customerCall.NOTIFY_PURPOSES]);
+    // Types lens T1: a drifted outcome would drop out of the owner's email silently...
+    expect([...CALL_OUTCOMES]).toEqual([...customerCall.CALL_OUTCOMES]);
+    expect([...TIMES_OF_DAY]).toEqual([...customerCall.TIMES_OF_DAY]);
+    // ...and a drifted call type would run the customer pipeline (a text-back to the customer we rang).
+    expect(CUSTOMER_NOTIFY_CALL_TYPE).toBe(customerCall.CUSTOMER_NOTIFY_CALL_TYPE);
+  });
+
+  it("the metadata.notify keys the website reads are the ones the voice server writes", () => {
+    const written = customerCall.notifyMetadata(
+      { callId: "c", organizationId: "o", appointmentId: "a1", purpose: "confirm", requestedByCallId: "o1", mode: "conversation", answeredBy: "human" },
+      { outcome: "confirmed", note: "n", voicemail_text: "v", voicemail_played: true }
+    );
+    // recap.ts, call-outcome.ts and the call-completed claim read these exact keys.
+    for (const key of ["appointment_id", "purpose", "requested_by_call_id", "answered_by", "mode", "outcome", "note", "voicemail_text", "voicemail_played"]) {
+      expect(Object.keys(written)).toContain(key);
+    }
   });
   it("the owner tool names match, and owner_call_customer declares exactly the arguments the route reads", () => {
     expect([...OWNER_TOOL_NAMES]).toEqual([...ownerTools.OWNER_TOOL_NAMES]);
     const call = writeTool("owner_call_customer");
-    expect(Object.keys(call.parameters.properties).sort()).toEqual(["appointment_id", "confirmed", "note", "purpose"]);
+    expect(Object.keys(call.parameters.properties).sort()).toEqual(["appointment_id", "confirmed", "earliest_date", "latest_date", "purpose", "time_of_day"]);
+    expect(call.parameters.properties.time_of_day.enum).toEqual([...TIMES_OF_DAY]);
     expect(call.parameters.properties.purpose.enum).toEqual(["confirm", "find_new_time"]);
   });
 });

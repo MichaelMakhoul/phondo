@@ -7,17 +7,23 @@
 // AI-written, never as fact.
 import { formatWhen } from "./time";
 import { sanitizeCustomerText } from "./sanitize";
-import { CALL_PURPOSES, type CallPurpose } from "./customer-call";
+import { CALL_PURPOSES, parseCallOutcome, type CallOutcome, type CallPurpose } from "./customer-call";
 
 /** What the phone system says happened. */
 export type CallResult =
-  | { kind: "answered"; seconds: number; endedOnAFault: boolean }
-  | { kind: "voicemail" }
+  /** A conversation ran; sureItWasAPerson is false when answering-machine detection couldn't tell. */
+  | { kind: "answered"; seconds: number; endedOnAFault: boolean; sureItWasAPerson: boolean }
+  /** The message was spoken; playedToEnd when Twilio confirmed the whole message played. */
+  | { kind: "voicemail"; playedToEnd: boolean }
+  /** A voicemail picked up, but no message was left. */
+  | { kind: "voicemail_not_left" }
   | { kind: "no_answer" }
   | { kind: "busy" }
   /** Picked up, but the call ended before the assistant spoke. */
   | { kind: "dropped" }
-  /** The conversation was cut off on our side (the phone system restarted mid-call). */
+  /** Picked up, but our side failed before the assistant could speak. */
+  | { kind: "failed_on_our_side" }
+  /** The conversation was cut off on our side (the phone system restarted mid-call, or its record couldn't be saved). */
   | { kind: "cut_off"; seconds: number }
   | { kind: "failed" };
 
@@ -38,7 +44,7 @@ export interface CallOutcomeReport {
   result: CallResult;
   diary: DiaryLine[];
   /** record_call_outcome, as the assistant chose it (AI-written). */
-  assistantOutcome: string | null;
+  assistantOutcome: CallOutcome | null;
   assistantNote: string | null;
   /** The post-call summary (AI-written). */
   summary: string | null;
@@ -59,13 +65,21 @@ function isPurpose(v: unknown): v is CallPurpose {
   return typeof v === "string" && (CALL_PURPOSES as readonly string[]).includes(v);
 }
 
-/** The phone system's result, from the call row the voice server finished. */
+/**
+ * The phone system's result, from the call row the voice server finished. The
+ * voice server says "voicemail" only for a message actually spoken, and stamps
+ * our own setup failures (setup_failed) so they never read as the customer hanging up.
+ */
 export function callResultOf(row: { status?: unknown; outcome?: unknown; duration_seconds?: unknown; metadata?: any }): CallResult {
   const seconds = typeof row.duration_seconds === "number" && row.duration_seconds > 0 ? Math.round(row.duration_seconds) : 0;
   const notify = row.metadata?.notify ?? {};
-  if (row.outcome === "voicemail") return { kind: "voicemail" };
+  if (typeof notify.setup_failed === "string" && notify.setup_failed) return { kind: "failed_on_our_side" };
+  if (row.outcome === "voicemail") return { kind: "voicemail", playedToEnd: notify.voicemail_played === true };
+  if (notify.mode === "voicemail") return { kind: "voicemail_not_left" };
   if (notify.cut_off === true) return { kind: "cut_off", seconds };
-  if (row.outcome === "answered") return { kind: "answered", seconds, endedOnAFault: row.status === "failed" };
+  if (row.outcome === "answered") {
+    return { kind: "answered", seconds, endedOnAFault: row.status === "failed", sureItWasAPerson: notify.answered_by === "human" };
+  }
   switch (row.status) {
     case "no-answer":
       return { kind: "no_answer" };
@@ -177,7 +191,7 @@ export async function buildCallOutcome(
     bookingWhen: bookingAt,
     result: callResultOf(call),
     diary,
-    assistantOutcome: typeof notify.outcome === "string" ? notify.outcome : null,
+    assistantOutcome: parseCallOutcome(notify.outcome),
     assistantNote: sanitizeCustomerText(notify.note, NOTE_MAX),
     summary: sanitizeCustomerText(call.summary, SUMMARY_MAX),
     voicemailText: sanitizeCustomerText(notify.voicemail_text, VOICEMAIL_MAX),

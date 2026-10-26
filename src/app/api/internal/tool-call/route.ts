@@ -253,7 +253,14 @@ export async function POST(request: Request) {
             // SCRUM-598: the assistant phones a customer about one booking (no change by itself).
             ownerResult = await handleOwnerCallCustomer(
               organizationId,
-              { appointment_id: str(raw.appointment_id), purpose: str(raw.purpose), note: str(raw.note), confirmed: raw.confirmed === true },
+              {
+                appointment_id: str(raw.appointment_id),
+                purpose: str(raw.purpose),
+                earliest_date: str(raw.earliest_date),
+                latest_date: str(raw.latest_date),
+                time_of_day: str(raw.time_of_day),
+                confirmed: raw.confirmed === true,
+              },
               ownerCtx
             );
             break;

@@ -22,11 +22,20 @@
 const crypto = require("crypto");
 
 /** What a call is about. cancelled/moved follow an owner change; confirm/find_new_time are owner_call_customer. */
-const NOTIFY_PURPOSES = Object.freeze(["cancelled", "moved", "confirm", "find_new_time"]);
+const NOTIFY_PURPOSES = Object.freeze(/** @type {const} */ (["cancelled", "moved", "confirm", "find_new_time"]));
+/** @typedef {typeof NOTIFY_PURPOSES[number]} NotifyPurpose */
 /** calls.metadata.call_type of a customer call placed by the assistant. */
 const CUSTOMER_NOTIFY_CALL_TYPE = "customer_notify";
 /** What the assistant may record about the call (record_call_outcome). */
-const CALL_OUTCOMES = Object.freeze(["confirmed", "rebooked", "declined", "will_call_back", "wrong_person", "do_not_call", "other"]);
+const CALL_OUTCOMES = Object.freeze(/** @type {const} */ (["confirmed", "rebooked", "declined", "will_call_back", "wrong_person", "do_not_call", "other"]));
+/** @typedef {typeof CALL_OUTCOMES[number]} CallOutcome */
+/**
+ * find_new_time's window for the new time, as structured fields only (security
+ * lens F2): no free text from the owner session ever reaches the customer call.
+ */
+const TIMES_OF_DAY = Object.freeze(/** @type {const} */ (["morning", "afternoon", "evening", "any"]));
+/** @typedef {typeof TIMES_OF_DAY[number]} TimeOfDay */
+/** @typedef {{ earliest: string|null, latest: string|null, timeOfDay: TimeOfDay }} TimeWindow */
 
 /** Calls only between 8:00 and 20:00 in the org's timezone (the hour the call is placed). */
 const CALLING_START_HOUR = 8;
@@ -66,14 +75,13 @@ const HANGUP_TWIML = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Han
  * Why a call can't be placed. Next.js turns each into the owner's spoken reason
  * (src/lib/owner-assistant/customer-call.ts); its parity test holds the two lists
  * in step.
- * @typedef {"calls_disabled"|"pipeline_unavailable"|"invalid_request"|"not_owner_session"|"demo_org"|"not_found"|"wrong_state"|"number_mismatch"|"not_au"|"outside_hours"|"no_caller_number"|"org_cap"|"number_cap"|"already_called"|"do_not_call"|"check_failed"|"busy"|"place_failed"} CallBlockReason
  */
-/** @type {ReadonlyArray<CallBlockReason>} */
-const CALL_BLOCK_REASONS = Object.freeze([
+const CALL_BLOCK_REASONS = Object.freeze(/** @type {const} */ ([
   "calls_disabled", "pipeline_unavailable", "invalid_request", "not_owner_session", "demo_org", "not_found",
   "wrong_state", "number_mismatch", "not_au", "outside_hours", "no_caller_number", "org_cap", "number_cap",
   "already_called", "do_not_call", "check_failed", "busy", "place_failed",
-]);
+]));
+/** @typedef {typeof CALL_BLOCK_REASONS[number]} CallBlockReason */
 
 /**
  * @typedef {object} CustomerCallRequest
@@ -82,7 +90,7 @@ const CALL_BLOCK_REASONS = Object.freeze([
  * @property {string} purpose - one of NOTIFY_PURPOSES
  * @property {string} phone - the customer's number in E.164, as Next.js normalised it
  * @property {string} requestedByCallId - the owner session (calls.id) the request came from
- * @property {string|null} [ownerNote] - find_new_time only: the owner's guidance on times ("next week, mornings")
+ * @property {unknown} [window] - find_new_time only: { earliest?, latest? (YYYY-MM-DD, org-local), timeOfDay? } — parsed by parseTimeWindow
  */
 
 /**
@@ -93,7 +101,7 @@ const CALL_BLOCK_REASONS = Object.freeze([
  * @property {string} purpose
  * @property {string} phone
  * @property {string} requestedByCallId
- * @property {string|null} ownerNote
+ * @property {TimeWindow|null} window
  * @property {{ id: string, status: string, start_time: string }} appointment
  * @property {{ id: string, phone_number: string, assistant_id: string }} fromNumber
  */
@@ -148,17 +156,73 @@ function digitsOf(v) {
 }
 
 /**
- * The number Next.js normalised is the booking's own: the last 9 digits agree
- * ("+61412345678" and a stored "0412 345 678" both end 412345678). Without this,
- * a caller of the endpoint could ring any number under a real booking's name.
+ * A stored AU number in E.164, or null. "0412 345 678", "+61 412 345 678",
+ * "+61 (0) 412 345 678", "412345678" and "(02) 9876 5432" all normalise; a number
+ * from any other plan (a US "+1 241 234 5678" ends in the same nine digits as an
+ * AU mobile) doesn't.
+ * @param {unknown} stored
+ * @returns {string|null}
+ */
+function auE164Of(stored) {
+  let d = digitsOf(stored);
+  if (d.length === 12 && d.startsWith("610")) d = `61${d.slice(3)}`; // the trunk 0 kept after +61
+  if (d.length === 11 && d.startsWith("61")) return `+${d}`;
+  if (d.length === 10 && d.startsWith("0")) return `+61${d.slice(1)}`;
+  if (d.length === 9 && /^[2-478]/.test(d)) return `+61${d}`;
+  return null;
+}
+
+/**
+ * The number Next.js normalised is exactly the booking's own (both as AU E.164).
+ * Without this, a caller of the endpoint could ring any number under a real
+ * booking's name.
  * @param {string} e164
  * @param {unknown} stored
  */
 function matchesBookingPhone(e164, stored) {
-  const a = digitsOf(e164);
-  const b = digitsOf(stored);
-  if (a.length < 9 || b.length < 9) return false;
-  return a.slice(-9) === b.slice(-9);
+  const own = auE164Of(stored);
+  return own !== null && own === e164;
+}
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** @param {unknown} v @returns {v is string} a real calendar date as YYYY-MM-DD */
+function isIsoDate(v) {
+  if (typeof v !== "string" || !ISO_DATE_RE.test(v)) return false;
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+}
+
+/**
+ * find_new_time's window, checked field by field: { window } (null = no window),
+ * or null when it is malformed (never half-used). Next.js validates the dates
+ * against today; this only guards the shape.
+ * @param {unknown} v
+ * @returns {{ window: TimeWindow|null } | null}
+ */
+function parseTimeWindow(v) {
+  if (v === undefined || v === null) return { window: null };
+  if (typeof v !== "object" || Array.isArray(v)) return null;
+  const w = /** @type {Record<string, unknown>} */ (v);
+  const earliest = w.earliest == null ? null : isIsoDate(w.earliest) ? w.earliest : undefined;
+  const latest = w.latest == null ? null : isIsoDate(w.latest) ? w.latest : undefined;
+  const timeOfDay = w.timeOfDay == null ? "any" : TIMES_OF_DAY.find((t) => t === w.timeOfDay);
+  if (earliest === undefined || latest === undefined || timeOfDay === undefined) return null;
+  if (earliest && latest && earliest > latest) return null;
+  if (!earliest && !latest && timeOfDay === "any") return { window: null };
+  return { window: { earliest, latest, timeOfDay } };
+}
+
+/**
+ * A Twilio error for a log line: its code and HTTP status, never its message —
+ * Twilio's messages can carry the number dialled ("… not authorized to call
+ * +614…"), and these lines page (security lens F1).
+ * @param {unknown} err
+ */
+function twilioErrorSummary(err) {
+  const e = err && typeof err === "object" ? /** @type {Record<string, unknown>} */ (err) : {};
+  const code = typeof e.code === "number" || typeof e.code === "string" ? e.code : "none";
+  const status = typeof e.status === "number" ? e.status : "none";
+  return `code=${code} status=${status}`;
 }
 
 /** @param {string} b64 @param {string} secret */
@@ -190,8 +254,13 @@ function mintCustomerCallToken(data, secret, { now = Date.now } = {}) {
 }
 
 /**
- * @typedef {{ v: 1, callId: string, organizationId: string, appointmentId: string, purpose: string, requestedByCallId: string, phoneNumberId: string, exp: number }} CustomerCallToken
+ * @typedef {{ v: 1, callId: string, organizationId: string, appointmentId: string, purpose: NotifyPurpose, requestedByCallId: string, phoneNumberId: string, exp: number }} CustomerCallToken
  */
+
+/** @param {unknown} v @returns {v is NotifyPurpose} */
+function isNotifyPurpose(v) {
+  return typeof v === "string" && /** @type {readonly string[]} */ (NOTIFY_PURPOSES).includes(v);
+}
 
 /**
  * The token's payload, or null when it is malformed, tampered with, expired or
@@ -220,7 +289,7 @@ function verifyCustomerCallToken(token, secret, { now = Date.now } = {}) {
   for (const key of ["callId", "organizationId", "appointmentId", "requestedByCallId", "phoneNumberId"]) {
     if (typeof payload[key] !== "string" || !UUID_RE.test(payload[key])) return null;
   }
-  if (!NOTIFY_PURPOSES.includes(payload.purpose)) return null;
+  if (!isNotifyPurpose(payload.purpose)) return null;
   return /** @type {CustomerCallToken} */ (payload);
 }
 
@@ -246,6 +315,19 @@ function stateFits(purpose, phase, status) {
 }
 
 /**
+ * A read the check couldn't make: logged with its stage (a systematically broken
+ * query would otherwise switch calling off without a word — silent lens N5).
+ * @param {string} stage
+ * @param {unknown} err
+ * @returns {{ ok: false, reason: CallBlockReason }}
+ */
+function readFailed(stage, err) {
+  const e = err && typeof err === "object" ? /** @type {Record<string, unknown>} */ (err) : {};
+  console.error(`[CustomerCall] check: the ${stage} read failed (code=${String(e.code ?? "none")}): ${String(e.message ?? err)}`);
+  return blocked("check_failed");
+}
+
+/**
  * Every condition for placing a call, in the spec's order. "check" is the owner's
  * read-back (is "call" an option?); "place" re-checks all of it at the moment of
  * dialling. Never throws: a query error is check_failed.
@@ -264,11 +346,13 @@ async function checkCustomerCall(req, phase, deps) {
     typeof req.organizationId !== "string" || !UUID_RE.test(req.organizationId) ||
     typeof req.appointmentId !== "string" || !UUID_RE.test(req.appointmentId) ||
     typeof req.requestedByCallId !== "string" || !UUID_RE.test(req.requestedByCallId) ||
-    !NOTIFY_PURPOSES.includes(req.purpose) ||
+    !isNotifyPurpose(req.purpose) ||
     typeof req.phone !== "string"
   ) {
     return blocked("invalid_request");
   }
+  const parsedWindow = req.purpose === "find_new_time" ? parseTimeWindow(req.window) : { window: null };
+  if (!parsedWindow) return blocked("invalid_request");
   if (req.organizationId === deps.demoOrgId) return blocked("demo_org");
   if (!AU_DIALABLE_RE.test(req.phone)) return blocked("not_au");
 
@@ -281,7 +365,7 @@ async function checkCustomerCall(req, phase, deps) {
       .eq("id", req.requestedByCallId)
       .eq("organization_id", req.organizationId)
       .maybeSingle();
-    if (ownerErr) return blocked("check_failed");
+    if (ownerErr) return readFailed("owner call", ownerErr);
     if (!ownerCall || ownerCall.metadata?.call_type !== "owner") return blocked("not_owner_session");
 
     // 2. The org: Australian, with a zone for the calling hours.
@@ -290,7 +374,7 @@ async function checkCustomerCall(req, phase, deps) {
       .select("id, name, timezone, country")
       .eq("id", req.organizationId)
       .maybeSingle();
-    if (orgErr) return blocked("check_failed");
+    if (orgErr) return readFailed("org", orgErr);
     if (!org) return blocked("not_found");
     if (String(org.country || "").toUpperCase() !== "AU") return blocked("not_au");
 
@@ -302,7 +386,7 @@ async function checkCustomerCall(req, phase, deps) {
       .eq("id", req.appointmentId)
       .eq("organization_id", req.organizationId)
       .maybeSingle();
-    if (apptErr) return blocked("check_failed");
+    if (apptErr) return readFailed("booking", apptErr);
     if (!appt) return blocked("not_found");
     const startMs = Date.parse(appt.start_time);
     if (!stateFits(req.purpose, phase, appt.status) || !Number.isFinite(startMs) || startMs <= nowMs) {
@@ -326,7 +410,7 @@ async function checkCustomerCall(req, phase, deps) {
       .not("assistant_id", "is", null)
       .order("created_at", { ascending: true })
       .limit(1);
-    if (numErr) return blocked("check_failed");
+    if (numErr) return readFailed("phone number", numErr);
     const fromNumber = Array.isArray(numbers) ? numbers[0] : null;
     if (!fromNumber || typeof fromNumber.phone_number !== "string" || !fromNumber.assistant_id) {
       return blocked("no_caller_number");
@@ -342,7 +426,7 @@ async function checkCustomerCall(req, phase, deps) {
       .eq("metadata->>call_type", CUSTOMER_NOTIFY_CALL_TYPE)
       .gte("created_at", since)
       .limit(ORG_CALLS_PER_DAY + 1);
-    if (recentErr || !Array.isArray(recent)) return blocked("check_failed");
+    if (recentErr || !Array.isArray(recent)) return readFailed("recent calls", recentErr ?? "no rows array");
     if (recent.length >= ORG_CALLS_PER_DAY) return blocked("org_cap");
     const toThisNumber = recent.filter((c) => c.caller_phone === req.phone);
     if (toThisNumber.length >= NUMBER_CALLS_PER_DAY) return blocked("number_cap");
@@ -363,7 +447,7 @@ async function checkCustomerCall(req, phase, deps) {
       .eq("metadata->>call_type", CUSTOMER_NOTIFY_CALL_TYPE)
       .eq("metadata->notify->>outcome", "do_not_call")
       .limit(1);
-    if (dncErr || !Array.isArray(dnc)) return blocked("check_failed");
+    if (dncErr || !Array.isArray(dnc)) return readFailed("do-not-call", dncErr ?? "no rows array");
     if (dnc.length > 0) return blocked("do_not_call");
 
     return {
@@ -375,29 +459,14 @@ async function checkCustomerCall(req, phase, deps) {
         purpose: req.purpose,
         phone: req.phone,
         requestedByCallId: req.requestedByCallId,
-        ownerNote: req.purpose === "find_new_time" ? ownerNoteOf(req.ownerNote) : null,
+        window: parsedWindow.window,
         appointment: { id: appt.id, status: appt.status, start_time: appt.start_time },
         fromNumber: { id: fromNumber.id, phone_number: fromNumber.phone_number, assistant_id: fromNumber.assistant_id },
       },
     };
   } catch (err) {
-    console.error("[CustomerCall] check threw:", err instanceof Error ? err.message : String(err));
-    return blocked("check_failed");
+    return readFailed("check (threw)", err);
   }
-}
-
-const OWNER_NOTE_MAX = 160;
-
-/**
- * The owner's note as one capped line, or null. It reaches the call's prompt
- * (lib/notify-call-prompt.js flattens it again where it is used).
- * @param {unknown} v
- * @returns {string|null}
- */
-function ownerNoteOf(v) {
-  if (typeof v !== "string") return null;
-  const note = v.replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim().slice(0, OWNER_NOTE_MAX).trim();
-  return note || null;
 }
 
 /** The calls.metadata a customer call starts with (completeCallRecord re-sends it at the end). */
@@ -409,7 +478,7 @@ function initialMetadata(/** @type {CustomerCallPlan} */ plan) {
       purpose: plan.purpose,
       appointment_id: plan.appointment.id,
       requested_by_call_id: plan.requestedByCallId,
-      ...(plan.ownerNote ? { owner_note: plan.ownerNote } : {}),
+      ...(plan.window ? { window: plan.window } : {}),
     },
   };
 }
@@ -483,7 +552,7 @@ async function placeCustomerCall(req, deps) {
       const slow = new Promise((_, reject) => {
         timer = setTimeout(() => {
           timedOut = true;
-          reject(new Error(`Twilio took over ${timeoutMs} ms to accept the call`));
+          reject(Object.assign(new Error(`Twilio took over ${timeoutMs} ms to accept the call`), { code: "timeout" }));
         }, timeoutMs);
       });
       const creating = deps.twilio.createCall({
@@ -504,7 +573,7 @@ async function placeCustomerCall(req, deps) {
           if (!timedOut || !late || typeof late.sid !== "string") return;
           console.error(`[ALERT:error] [CustomerCall] Twilio accepted call ${late.sid} after the timeout — cancelling it`);
           Promise.resolve(deps.twilio.cancelCall(late.sid)).catch((err) =>
-            console.error(`[ALERT:error] [CustomerCall] could not cancel late call ${late.sid}:`, err instanceof Error ? err.message : String(err))
+            console.error(`[ALERT:error] [CustomerCall] could not cancel late call ${late.sid}: ${twilioErrorSummary(err)}`)
           );
         },
         () => {}
@@ -512,7 +581,7 @@ async function placeCustomerCall(req, deps) {
       const created = await Promise.race([slow, creating]);
       sid = created && typeof created.sid === "string" ? created.sid : null;
     } catch (err) {
-      console.error(`[ALERT:error] [CustomerCall] Twilio refused the call (org=${plan.organizationId}):`, err instanceof Error ? err.message : String(err));
+      console.error(`[ALERT:error] [CustomerCall] Twilio refused the call (org=${plan.organizationId}): ${twilioErrorSummary(err)}`);
       return { placed: false, reason: "place_failed" };
     } finally {
       clearTimeout(timer);
@@ -539,7 +608,7 @@ async function placeCustomerCall(req, deps) {
       try {
         await deps.twilio.cancelCall(sid);
       } catch (cancelErr) {
-        console.error(`[ALERT:error] [CustomerCall] could not cancel call ${sid} after the row failed — it may ring with no record:`, cancelErr instanceof Error ? cancelErr.message : String(cancelErr));
+        console.error(`[ALERT:error] [CustomerCall] could not cancel call ${sid} after the row failed — it may ring with no record: ${twilioErrorSummary(cancelErr)}`);
       }
       return { placed: false, reason: "place_failed" };
     }
@@ -563,11 +632,11 @@ function resetPlacementGuards() {
  * @property {string} callId
  * @property {string} organizationId
  * @property {string} appointmentId
- * @property {string} purpose
+ * @property {NotifyPurpose} purpose
  * @property {string} requestedByCallId
  * @property {"conversation"|"voicemail"} mode
  * @property {string} answeredBy
- * @property {string|null} [ownerNote] - set by the session once its briefing has loaded, so the row keeps it
+ * @property {TimeWindow|null} [window] - find_new_time's window, read with the row at the TwiML fetch (so every later write keeps it)
  */
 
 /**
@@ -607,7 +676,7 @@ async function handleCustomerCallTwiml(req, deps) {
   try {
     const { data: row, error } = await deps.supabase
       .from("calls")
-      .select("id, vapi_call_id, caller_phone, metadata")
+      .select("id, vapi_call_id, caller_phone, status, metadata")
       .eq("id", token.callId)
       .eq("organization_id", token.organizationId)
       .maybeSingle();
@@ -635,6 +704,19 @@ async function handleCustomerCallTwiml(req, deps) {
       console.error(`[CustomerCall] TwiML refused — the org's number is gone (call=${token.callId})`);
       return HANGUP_TWIML;
     }
+    // The Stream is served ONCE per call (security lens H1): the row moves queued →
+    // ringing here, conditionally, so a replayed TwiML fetch never mints a second
+    // session. Fails closed — the status callback then finishes the queued row.
+    const { data: claimed, error: claimErr } = await deps.supabase
+      .from("calls")
+      .update({ status: "ringing" })
+      .eq("id", row.id)
+      .eq("status", "queued")
+      .select("id");
+    if (claimErr || !Array.isArray(claimed) || claimed.length === 0) {
+      console.warn(`[CustomerCall] TwiML refused — the call's stream was already served, or the row can't be claimed (call=${token.callId}, error=${claimErr?.message || "none"})`);
+      return HANGUP_TWIML;
+    }
     const streamToken = deps.issueStreamToken(number.phone_number, row.caller_phone, undefined, null, {
       notify: {
         callId: token.callId,
@@ -644,6 +726,9 @@ async function handleCustomerCallTwiml(req, deps) {
         requestedByCallId: token.requestedByCallId,
         mode,
         answeredBy,
+        // From this read of the row (silent lens N6): the session never re-reads it, so
+        // a failed read later can't make the session's own writes drop it.
+        window: token.purpose === "find_new_time" ? parseTimeWindow(row.metadata?.notify?.window)?.window ?? null : null,
       },
     });
     console.log(`[CustomerCall] answered by ${answeredBy} → ${mode} (call=${token.callId})`);
@@ -679,13 +764,15 @@ async function stampNotify(supabase, row, fields) {
 
 /**
  * The stream started: the row goes in-progress and notes how the call was answered.
- * Only a still-queued row moves (a status callback that finished it first wins).
- * The start time comes back so the session can re-send it at the end
- * (completeCallRecord replaces metadata whole).
+ * Only the row its TwiML fetch claimed (ringing) moves: a status callback that
+ * finished it first wins, and a row in any other state is not this session's
+ * ("not_claimable" — the session ends). A failed write is "db_error": the TwiML
+ * claim already guarded the call, so the session goes on. The start time comes back
+ * so the session can re-send it at the end (completeCallRecord replaces metadata whole).
  * @param {any} supabase
  * @param {NotifyContext} notify
  * @param {() => number} [now]
- * @returns {Promise<{ marked: boolean, startedAt: string }>}
+ * @returns {Promise<{ marked: boolean, startedAt: string, reason: "ok"|"not_claimable"|"db_error" }>}
  */
 async function markCustomerCallStarted(supabase, notify, now = Date.now) {
   const startedAt = new Date(now()).toISOString();
@@ -703,27 +790,28 @@ async function markCustomerCallStarted(supabase, notify, now = Date.now) {
       })
       .eq("id", notify.callId)
       .eq("organization_id", notify.organizationId)
-      .eq("status", "queued")
+      .eq("status", "ringing")
       .select("id");
     if (error) {
       console.error(`[CustomerCall] could not mark call ${notify.callId} started:`, error.message);
-      return { marked: false, startedAt };
+      return { marked: false, startedAt, reason: "db_error" };
     }
-    return { marked: Array.isArray(data) && data.length > 0, startedAt };
+    const marked = Array.isArray(data) && data.length > 0;
+    return { marked, startedAt, reason: marked ? "ok" : "not_claimable" };
   } catch (err) {
     console.error(`[CustomerCall] marking call ${notify.callId} started threw:`, err instanceof Error ? err.message : String(err));
-    return { marked: false, startedAt };
+    return { marked: false, startedAt, reason: "db_error" };
   }
 }
 
 /**
  * What the notify session needs to say, read fresh and org-scoped when the call is
- * picked up: the name and time on the booking, the time a move came from, and the
- * owner's note (find_new_time). null when the booking can't be read: the session
- * can't give news it doesn't have, so it ends the call.
+ * picked up: the name and time on the booking and the time a move came from, plus
+ * find_new_time's window (already in the notify context). null when the booking
+ * can't be read: the session can't give news it doesn't have, so it ends the call.
  * @param {any} supabase
  * @param {NotifyContext} notify
- * @returns {Promise<{ customerName: string|null, startTime: string, previousStartTime: string|null, ownerNote: string|null }|null>}
+ * @returns {Promise<{ customerName: string|null, startTime: string, previousStartTime: string|null, window: TimeWindow|null }|null>}
  */
 async function loadNotifyBriefing(supabase, notify) {
   try {
@@ -749,27 +837,77 @@ async function loadNotifyBriefing(supabase, notify) {
       if (prevErr) console.warn(`[CustomerCall] briefing: previous leg unreadable (call=${notify.callId}):`, prevErr.message);
       previousStartTime = !prevErr && typeof prev?.start_time === "string" ? prev.start_time : null;
     }
-    let ownerNote = null;
-    if (notify.purpose === "find_new_time") {
-      const { data: row, error: rowErr } = await supabase
-        .from("calls")
-        .select("metadata")
-        .eq("id", notify.callId)
-        .eq("organization_id", notify.organizationId)
-        .maybeSingle();
-      if (rowErr) console.warn(`[CustomerCall] briefing: owner note unreadable (call=${notify.callId}):`, rowErr.message);
-      ownerNote = rowErr ? null : ownerNoteOf(row?.metadata?.notify?.owner_note);
-    }
+    // The window came with the notify context (read at the TwiML fetch): no second read.
+    const window = notify.window ?? null;
     return {
       customerName: typeof appt.attendee_name === "string" ? appt.attendee_name : null,
       startTime: appt.start_time,
       previousStartTime,
-      ownerNote,
+      window,
     };
   } catch (err) {
     console.error(`[CustomerCall] briefing threw (call=${notify.callId}):`, err instanceof Error ? err.message : String(err));
     return null;
   }
+}
+
+/**
+ * Merge fields into a customer call's metadata.notify by a fresh read — for the
+ * session's mid-call stamps (it holds no copy of the row). Best-effort: logged on
+ * failure, never thrown.
+ * @param {any} supabase
+ * @param {NotifyContext} notify
+ * @param {Record<string, unknown>} fields
+ * @returns {Promise<boolean>}
+ */
+async function stampCustomerCall(supabase, notify, fields) {
+  try {
+    const { data: row, error } = await supabase
+      .from("calls")
+      .select("id, metadata")
+      .eq("id", notify.callId)
+      .eq("organization_id", notify.organizationId)
+      .maybeSingle();
+    if (error || !row) {
+      console.error(`[ALERT:error] [CustomerCall] could not read call ${notify.callId} to stamp ${Object.keys(fields).join(", ")}:`, error?.message || "no row");
+      return false;
+    }
+    const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+    const { error: updErr } = await supabase
+      .from("calls")
+      .update({ metadata: { ...metadata, notify: { ...(metadata.notify || {}), ...fields } } })
+      .eq("id", row.id);
+    if (updErr) {
+      console.error(`[ALERT:error] [CustomerCall] could not stamp call ${notify.callId} with ${Object.keys(fields).join(", ")}:`, updErr.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error(`[ALERT:error] [CustomerCall] stamping call ${notify.callId} threw:`, err instanceof Error ? err.message : String(err));
+    return false;
+  }
+}
+
+/**
+ * "Don't call me again", kept the moment it is said (silent lens N3): the next
+ * check reads it from the row, so a restart or a failed end-of-call write can't
+ * lose it.
+ * @param {any} supabase
+ * @param {NotifyContext} notify
+ */
+function recordDoNotCall(supabase, notify) {
+  return stampCustomerCall(supabase, notify, { outcome: "do_not_call" });
+}
+
+/**
+ * Our own setup failed after the customer picked up (silent lens N4): said on the
+ * row, so the owner's email says it failed on our side — never "they hung up".
+ * @param {any} supabase
+ * @param {NotifyContext} notify
+ * @param {string} reason
+ */
+function markSetupFailed(supabase, notify, reason) {
+  return stampCustomerCall(supabase, notify, { setup_failed: reason });
 }
 
 /**
@@ -783,7 +921,7 @@ function notifyMetadata(notify, extra = {}) {
     purpose: notify.purpose,
     appointment_id: notify.appointmentId,
     requested_by_call_id: notify.requestedByCallId,
-    ...(notify.ownerNote ? { owner_note: notify.ownerNote } : {}),
+    ...(notify.window ? { window: notify.window } : {}),
     mode: notify.mode,
     answered_by: notify.answeredBy,
     ...extra,
@@ -810,22 +948,83 @@ function finalStatusFor(twilioStatus) {
 }
 
 /**
- * @typedef {object} StatusDeps
+ * @typedef {object} FinishDeps
  * @property {any} supabase
- * @property {string|undefined} secret
  * @property {() => number} [now]
- * @property {(callSid: string) => boolean} hasLiveSession - a notify session for this CallSid is running in this process
  * @property {(payload: Record<string, unknown>) => Promise<unknown>} notifyCallCompleted
  */
 
 /**
+ * Finish a customer call no session is finishing, from Twilio's own account of
+ * it, then run call-completed (the owner's outcome email). A row still queued or
+ * ringing never streamed: no answer, busy, failed, or picked up and dropped. A row
+ * in progress lost its session (a restart): finished as cut off. Each finish is a
+ * conditional update on the row's status, so it can never race a session's own
+ * cleanup or another finisher.
+ * @param {{ id: string, organization_id: string, assistant_id: string|null, caller_phone: string|null, status: string, metadata?: any }} row
+ * @param {{ twilioStatus: string, durationSeconds: number, answeredBy?: string|null, extra?: Record<string, unknown> }} what
+ * @param {FinishDeps} deps
+ * @returns {Promise<{ finalized: boolean, reason: string }>}
+ */
+async function finishCustomerCall(row, { twilioStatus, durationSeconds, answeredBy, extra = {} }, deps) {
+  const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+  let rowStatus;
+  let webhookStatus;
+  let endedReason;
+  let notifyExtra;
+  if (row.status === "queued" || row.status === "ringing") {
+    ({ rowStatus, webhookStatus } = finalStatusFor(twilioStatus));
+    endedReason = `customer-call-${twilioStatus}`;
+    notifyExtra = { twilio_status: twilioStatus, ...(answeredBy ? { answered_by: answeredBy } : {}) };
+  } else if (row.status === "in-progress") {
+    rowStatus = "completed";
+    webhookStatus = "completed";
+    endedReason = "customer-call-cut-off";
+    notifyExtra = { twilio_status: twilioStatus, cut_off: true };
+  } else {
+    return { finalized: false, reason: "already_finished" };
+  }
+  const { data: updated, error: updErr } = await deps.supabase
+    .from("calls")
+    .update({
+      status: rowStatus,
+      ended_at: new Date((deps.now || Date.now)()).toISOString(),
+      duration_seconds: durationSeconds,
+      metadata: { ...metadata, notify: { ...(metadata.notify || {}), ...notifyExtra, ...extra } },
+    })
+    .eq("id", row.id)
+    .eq("status", row.status)
+    .select("id");
+  if (updErr) {
+    console.error(`[ALERT:error] [CustomerCall] could not finish call ${row.id} — the owner gets no outcome email:`, updErr.message);
+    return { finalized: false, reason: "update_failed" };
+  }
+  if (!Array.isArray(updated) || updated.length === 0) return { finalized: false, reason: "raced" };
+
+  await deps.notifyCallCompleted({
+    callId: row.id,
+    organizationId: row.organization_id,
+    assistantId: row.assistant_id,
+    callerPhone: row.caller_phone,
+    status: webhookStatus,
+    durationSeconds,
+    transcript: "",
+    endedReason,
+    callType: CUSTOMER_NOTIFY_CALL_TYPE,
+  });
+  console.log(`[CustomerCall] finished call=${row.id} twilio=${twilioStatus} → ${rowStatus}`);
+  return { finalized: true, reason: endedReason };
+}
+
+/**
+ * @typedef {FinishDeps & { secret: string|undefined, hasLiveSession: (callSid: string) => boolean }} StatusDeps
+ */
+
+/**
  * Twilio's end-of-call callback. A call whose session ran is finished by that
- * session's cleanup (with the transcript and summary); this finishes the rest:
- *  - never streamed (no answer, busy, failed, picked up and dropped): from Twilio's status;
- *  - streamed, but no session is live here any more (the process restarted mid-call):
- *    finished as cut off, so the owner still hears how it went.
- * Each finish is a conditional update on the row's status, so a session's own
- * cleanup and this callback can never both finish a call. Never throws.
+ * session's cleanup (with the transcript and summary); this finishes the rest
+ * (finishCustomerCall). Failures page: a call left open costs the owner their
+ * email until the sweeper finds it. Never throws.
  * @param {{ params?: Record<string, string>, body?: Record<string, string> }} req
  * @param {StatusDeps} deps
  * @returns {Promise<{ finalized: boolean, reason: string }>}
@@ -844,7 +1043,7 @@ async function handleCustomerCallStatus(req, deps) {
       .eq("organization_id", token.organizationId)
       .maybeSingle();
     if (error) {
-      console.error(`[CustomerCall] status: row unreadable (call=${token.callId}):`, error.message);
+      console.error(`[ALERT:error] [CustomerCall] status: row unreadable (call=${token.callId}) — the sweeper will retry:`, error.message);
       return { finalized: false, reason: "row_unreadable" };
     }
     if (!row) return { finalized: false, reason: "no_row" };
@@ -852,75 +1051,93 @@ async function handleCustomerCallStatus(req, deps) {
     if (typeof body.CallSid === "string" && deps.hasLiveSession(body.CallSid)) {
       return { finalized: false, reason: "live_session" };
     }
-
-    const durationSeconds = Math.max(0, Math.round(Number(body.CallDuration) || 0));
-    const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
-    const answeredBy = typeof body.AnsweredBy === "string" && body.AnsweredBy ? body.AnsweredBy : metadata.notify?.answered_by;
-    let rowStatus;
-    let webhookStatus;
-    let endedReason;
-    let fromStatus;
-    let notifyExtra;
-    if (row.status === "queued" || row.status === "ringing") {
-      ({ rowStatus, webhookStatus } = finalStatusFor(twilioStatus));
-      endedReason = `customer-call-${twilioStatus}`;
-      fromStatus = row.status;
-      notifyExtra = { twilio_status: twilioStatus, ...(answeredBy ? { answered_by: answeredBy } : {}) };
-    } else if (row.status === "in-progress") {
-      // The session that streamed it is gone from this process: a restart mid-call.
-      rowStatus = "completed";
-      webhookStatus = "completed";
-      endedReason = "customer-call-cut-off";
-      fromStatus = "in-progress";
-      notifyExtra = { twilio_status: twilioStatus, cut_off: true };
-    } else {
-      return { finalized: false, reason: "already_finished" };
-    }
-
-    const { data: updated, error: updErr } = await deps.supabase
-      .from("calls")
-      .update({
-        status: rowStatus,
-        ended_at: new Date((deps.now || Date.now)()).toISOString(),
-        duration_seconds: durationSeconds,
-        metadata: { ...metadata, notify: { ...(metadata.notify || {}), ...notifyExtra } },
-      })
-      .eq("id", row.id)
-      .eq("status", fromStatus)
-      .select("id");
-    if (updErr) {
-      console.error(`[ALERT:error] [CustomerCall] could not finish call ${row.id} — the owner gets no outcome email:`, updErr.message);
-      return { finalized: false, reason: "update_failed" };
-    }
-    if (!Array.isArray(updated) || updated.length === 0) return { finalized: false, reason: "raced" };
-
-    await deps.notifyCallCompleted({
-      callId: row.id,
-      organizationId: row.organization_id,
-      assistantId: row.assistant_id,
-      callerPhone: row.caller_phone,
-      status: webhookStatus,
-      durationSeconds,
-      transcript: "",
-      endedReason,
-      callType: CUSTOMER_NOTIFY_CALL_TYPE,
-    });
-    console.log(`[CustomerCall] finished call=${row.id} twilio=${twilioStatus} → ${rowStatus}`);
-    return { finalized: true, reason: endedReason };
+    return await finishCustomerCall(
+      row,
+      {
+        twilioStatus,
+        durationSeconds: Math.max(0, Math.round(Number(body.CallDuration) || 0)),
+        answeredBy: typeof body.AnsweredBy === "string" && body.AnsweredBy ? body.AnsweredBy : row.metadata?.notify?.answered_by,
+      },
+      deps
+    );
   } catch (err) {
-    console.error(`[CustomerCall] status handling threw (call=${token.callId}):`, err instanceof Error ? err.message : String(err));
+    console.error(`[ALERT:error] [CustomerCall] status handling threw (call=${token.callId}) — the sweeper will retry:`, err instanceof Error ? err.message : String(err));
     return { finalized: false, reason: "threw" };
   }
 }
 
-/** @param {unknown} v */
-function isNotifyPurpose(v) {
-  return typeof v === "string" && NOTIFY_PURPOSES.includes(v);
+/** A customer call still open this long after it was placed was lost (ring + AMD + 5 minutes ≈ 6). */
+const STUCK_AFTER_MS = 15 * 60 * 1000;
+/** Older than this, a call Twilio can't tell us about is finished as failed anyway. */
+const GIVE_UP_AFTER_MS = 2 * 60 * 60 * 1000;
+const SWEEP_LIMIT = 20;
+
+/**
+ * @typedef {FinishDeps & { hasLiveSession: (callSid: string) => boolean, fetchTwilioCall: (sid: string) => Promise<{ status?: string, duration?: string|number|null, answeredBy?: string|null }|null> }} SweepDeps
+ */
+
+/**
+ * The backstop for a lost or failed status callback (silent lens N1): customer
+ * calls still open long after they could have ended, with no live session here,
+ * are finished from Twilio's own record of the call. Run every few minutes by
+ * server.js. Never throws.
+ * @param {SweepDeps} deps
+ * @returns {Promise<{ swept: number, checked: number }>}
+ */
+async function sweepStuckCustomerCalls(deps) {
+  const nowMs = (deps.now || Date.now)();
+  let swept = 0;
+  let checked = 0;
+  try {
+    const { data: rows, error } = await deps.supabase
+      .from("calls")
+      .select("id, organization_id, assistant_id, vapi_call_id, caller_phone, status, created_at, metadata")
+      .eq("metadata->>call_type", CUSTOMER_NOTIFY_CALL_TYPE)
+      .in("status", ["queued", "ringing", "in-progress"])
+      .lt("created_at", new Date(nowMs - STUCK_AFTER_MS).toISOString())
+      .order("created_at", { ascending: true })
+      .limit(SWEEP_LIMIT);
+    if (error || !Array.isArray(rows)) {
+      console.error("[ALERT:error] [CustomerCall] sweep: open customer calls unreadable:", error?.message || "no rows array");
+      return { swept, checked };
+    }
+    for (const row of rows) {
+      checked += 1;
+      const sid = typeof row.vapi_call_id === "string" && row.vapi_call_id.startsWith("sh_") ? row.vapi_call_id.slice(3) : null;
+      if (!sid || deps.hasLiveSession(sid)) continue;
+      let twilio = null;
+      try {
+        twilio = await deps.fetchTwilioCall(sid);
+      } catch (err) {
+        console.warn(`[CustomerCall] sweep: Twilio's record of ${sid} unreadable: ${twilioErrorSummary(err)}`);
+      }
+      const status = twilio && typeof twilio.status === "string" ? twilio.status : null;
+      if (status && !TERMINAL_TWILIO_STATUSES.has(status)) continue; // Twilio says it's still going
+      const old = nowMs - Date.parse(row.created_at) > GIVE_UP_AFTER_MS;
+      if (!status && !old) continue; // try again next sweep
+      const result = await finishCustomerCall(
+        row,
+        {
+          twilioStatus: status || "failed",
+          durationSeconds: Math.max(0, Math.round(Number(twilio?.duration) || 0)),
+          answeredBy: twilio?.answeredBy || row.metadata?.notify?.answered_by,
+          extra: { swept: true, ...(status ? {} : { twilio_status: "unknown" }) },
+        },
+        deps
+      );
+      if (result.finalized) swept += 1;
+    }
+  } catch (err) {
+    console.error("[ALERT:error] [CustomerCall] sweep threw:", err instanceof Error ? err.message : String(err));
+  }
+  if (swept) console.warn(`[CustomerCall] sweep finished ${swept} customer call(s) nobody had finished`);
+  return { swept, checked };
 }
 
 module.exports = {
   CALL_BLOCK_REASONS,
   NOTIFY_PURPOSES,
+  TIMES_OF_DAY,
   CUSTOMER_NOTIFY_CALL_TYPE,
   CALL_OUTCOMES,
   CALLING_START_HOUR,
@@ -936,7 +1153,10 @@ module.exports = {
   isCustomerCallsEnabled,
   isNotifyPurpose,
   withinCallingHours,
+  auE164Of,
   matchesBookingPhone,
+  parseTimeWindow,
+  twilioErrorSummary,
   mintCustomerCallToken,
   verifyCustomerCallToken,
   checkCustomerCall,
@@ -945,6 +1165,12 @@ module.exports = {
   handleCustomerCallTwiml,
   markCustomerCallStarted,
   loadNotifyBriefing,
+  recordDoNotCall,
+  markSetupFailed,
+  finishCustomerCall,
+  sweepStuckCustomerCalls,
+  STUCK_AFTER_MS,
+  GIVE_UP_AFTER_MS,
   notifyMetadata,
   finalStatusFor,
   handleCustomerCallStatus,

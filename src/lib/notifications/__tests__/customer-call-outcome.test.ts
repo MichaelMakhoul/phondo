@@ -51,7 +51,7 @@ const REPORT: CallOutcomeReport = {
   customer: "Jane Smith",
   phone: "+61412345678",
   bookingWhen: "Wednesday, October 28 at 2:30 PM",
-  result: { kind: "answered", seconds: 130, endedOnAFault: false },
+  result: { kind: "answered", seconds: 130, endedOnAFault: false, sureItWasAPerson: true },
   diary: [{ kind: "moved", from: "Wednesday, October 28 at 2:30 PM", when: "Thursday, October 29 at 3:00 PM" }],
   assistantOutcome: "rebooked",
   assistantNote: "Moved to Thursday",
@@ -92,14 +92,21 @@ describe("sendCustomerCallOutcomeNotification", () => {
   it("every result has its own words, in the subject and the body", async () => {
     vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
     const cases: Array<[CallResult, string, string]> = [
-      [{ kind: "voicemail" }, "left a voicemail", "Their voicemail picked up and the assistant left a message."],
+      [{ kind: "voicemail", playedToEnd: true }, "left a voicemail", "Their voicemail picked up and the assistant left a message."],
+      [{ kind: "voicemail", playedToEnd: false }, "left a voicemail", "the assistant left a message (we couldn&#39;t confirm it played to the end)."],
+      // Silent lens G1: a voicemail that took no message never reads as one left.
+      [{ kind: "voicemail_not_left" }, "voicemail, no message left", "Their voicemail picked up, but the assistant couldn&#39;t leave a message — give them a ring."],
+      // Silent lens N4: our own setup failure never reads as the customer hanging up.
+      [{ kind: "failed_on_our_side" }, "the call failed on our side", "They picked up, but the call failed on our side before the assistant could speak — please give them a ring."],
+      // Silent lens N7: an AMD "unknown" is never stated as a person answering.
+      [{ kind: "answered", seconds: 70, endedOnAFault: false, sureItWasAPerson: false }, "they answered", "The call connected (the phone system couldn&#39;t tell whether a person or a voicemail answered — the summary says what happened) — the call lasted 1 min 10 s."],
       [{ kind: "no_answer" }, "no answer", "No answer, and no message left."],
       [{ kind: "busy" }, "their line was busy", "Their line was busy. Nothing was said."],
       [{ kind: "dropped" }, "they hung up straight away", "They picked up but the call ended before the assistant spoke."],
       [{ kind: "cut_off", seconds: 45 }, "the call was cut off", "The call was cut off on our side after 45 s"],
       // The body's lines go through escapeHtml, so an apostrophe arrives as &#39;.
       [{ kind: "failed" }, "the call didn't go through", "The call didn&#39;t go through. Nothing was said."],
-      [{ kind: "answered", seconds: 61, endedOnAFault: true }, "they answered", "the call lasted 1 min 1 s. It ended on a fault on our side, so check the recording."],
+      [{ kind: "answered", seconds: 61, endedOnAFault: true, sureItWasAPerson: true }, "they answered", "the call lasted 1 min 1 s. It ended on a fault on our side, so check the recording."],
     ];
     for (const [result, short, line] of cases) {
       resendSend.mockClear();
@@ -114,7 +121,7 @@ describe("sendCustomerCallOutcomeNotification", () => {
     vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
     await sendCustomerCallOutcomeNotification({
       organizationId: ORG,
-      report: { ...REPORT, purpose: "cancelled", result: { kind: "voicemail" }, diary: [{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", stillBooked: false }], assistantOutcome: null, assistantNote: null, summary: null, voicemailText: "Hi Jane, your booking has been cancelled." },
+      report: { ...REPORT, purpose: "cancelled", result: { kind: "voicemail", playedToEnd: true }, diary: [{ kind: "unchanged", when: "Wednesday, October 28 at 2:30 PM", stillBooked: false }], assistantOutcome: null, assistantNote: null, summary: null, voicemailText: "Hi Jane, your booking has been cancelled." },
     });
     let html = sent()[0].html;
     expect(html).toContain("to tell them their booking on Wednesday, October 28 at 2:30 PM was cancelled");
@@ -140,7 +147,7 @@ describe("sendCustomerCallOutcomeNotification", () => {
     const evil = `<img src=x onerror="alert(1)">&"'`;
     await sendCustomerCallOutcomeNotification({
       organizationId: ORG,
-      report: { ...REPORT, customer: evil, phone: evil, bookingWhen: evil, diary: [{ kind: "moved", from: evil, when: evil }], assistantNote: evil, summary: evil, voicemailText: evil, assistantOutcome: evil },
+      report: { ...REPORT, customer: evil, phone: evil, bookingWhen: evil, diary: [{ kind: "moved", from: evil, when: evil }], assistantNote: evil, summary: evil, voicemailText: evil, assistantOutcome: "other" },
     });
     const [mail] = sent();
     expect(mail.html).not.toContain("<img src=x");

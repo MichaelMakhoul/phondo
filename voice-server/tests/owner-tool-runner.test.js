@@ -1505,7 +1505,7 @@ describe("SCRUM-598: owner_call_customer through the runner", () => {
     const s = makeSession();
     const d = makeDeps(prB);
     await captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: { appointment_id: "a1", purpose: "confirm" } }, d.deps));
-    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ["owner_call_customer|a1|confirm"]);
+    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ["owner_call_customer|a1|confirm|||"]);
     assistantTurn(s);
     ownerSpeaks(s);
     await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: { appointment_id: "a1", purpose: "find_new_time", confirmed: true } }, d.deps)));
@@ -1514,7 +1514,7 @@ describe("SCRUM-598: owner_call_customer through the runner", () => {
 
   it("an answered read-back places the call: success, the cache untouched, the summary from the data", async () => {
     const s = makeSession();
-    armConfirmed(s, "owner_call_customer|a1|confirm");
+    armConfirmed(s, "owner_call_customer|a1|confirm|||");
     const d = makeDeps(prB);
     let ret;
     await settled(() => captureConsole(async () => { ret = await runOwnerToolCall(s, { name: "owner_call_customer", args: { appointment_id: "a1", purpose: "confirm", confirmed: true } }, d.deps); }));
@@ -1527,6 +1527,25 @@ describe("SCRUM-598: owner_call_customer through the runner", () => {
     assert.equal(buildOwnerCallSummary(s.toolCallAudit), "Owner call: Called Jane Smith to confirm Wednesday, October 28 at 2:30 PM.");
   });
 
+  it("a yes to one window never places a call with another (security lens F2): every field is in the key", async () => {
+    const s = makeSession();
+    const d = makeDeps(prB);
+    const read = { appointment_id: "a1", purpose: "find_new_time", earliest_date: "2026-11-02", latest_date: "2026-11-06", time_of_day: "morning" };
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: read }, d.deps));
+    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ["owner_call_customer|a1|find_new_time|2026-11-02|2026-11-06|morning"]);
+    assistantTurn(s);
+    ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: { ...read, time_of_day: "evening", confirmed: true } }, d.deps)));
+    assert.equal(d.calls.at(-1).args.confirmed, false, "a different window goes on unconfirmed");
+    const s2 = makeSession();
+    const d2 = makeDeps(prB);
+    await captureConsole(() => runOwnerToolCall(s2, { name: "owner_call_customer", args: read }, d2.deps));
+    assistantTurn(s2);
+    ownerSpeaks(s2);
+    await settled(() => captureConsole(() => runOwnerToolCall(s2, { name: "owner_call_customer", args: { ...read, confirmed: true } }, d2.deps)));
+    assert.equal(d2.calls.at(-1).args.confirmed, true, "the same window confirms");
+  });
+
   it("a confirm with no read-back is forwarded unconfirmed (PR B answers with the read-back)", async () => {
     const s = makeSession();
     const d = makeDeps(prB);
@@ -1537,13 +1556,14 @@ describe("SCRUM-598: owner_call_customer through the runner", () => {
 
   it("the stored line for finding a new time, and with data missing", () => {
     assert.equal(describeOwnerToolCall("owner_call_customer", {}, "", true, { outcome: "calling", customer_name: "Jane Smith", when: "Friday", purpose: "find_new_time" }), "Called Jane Smith to find a new time for Friday");
-    assert.equal(describeOwnerToolCall("owner_call_customer", {}, "", true, { outcome: "calling" }), "Called a customer to confirm their booking");
+    assert.equal(describeOwnerToolCall("owner_call_customer", {}, "", true, { outcome: "calling" }), "Called a customer about their booking", "a purpose this side doesn't know is said plainly, never guessed");
+    assert.equal(describeOwnerToolCall("owner_call_customer", {}, "", true, { outcome: "calling", customer_name: "Jane Smith", when: "Friday", purpose: "confirm" }), "Called Jane Smith to confirm Friday");
     assert.equal(describeOwnerToolCall("owner_call_customer", {}, "", false, CALLING.data), null, "an unplaced call is no line");
   });
 
   it("a call interrupted after it went out: the notice says the call IS being placed", async () => {
     const s = makeSession();
-    armConfirmed(s, "owner_call_customer|a1|confirm");
+    armConfirmed(s, "owner_call_customer|a1|confirm|||");
     const told = [];
     let release;
     const deps = { executeToolCall: () => new Promise((resolve) => { release = resolve; }), scheduleCache: { invalidate: () => {} }, sendText: (text) => told.push(text) };

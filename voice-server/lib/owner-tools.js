@@ -127,9 +127,18 @@ const ownerToolDefinitions = [
             enum: ["confirm", "find_new_time"],
             description: "confirm: check they're still OK for the booking. find_new_time: agree a new time with them and move it.",
           },
-          note: {
+          earliest_date: {
             type: "string",
-            description: "find_new_time only, optional: the owner's guidance on times, in their words (e.g. \"next week, mornings\"). The assistant uses it to choose times and never reads it out.",
+            description: "find_new_time only, optional: the first day the new time may be on, as YYYY-MM-DD in the business's timezone (\"next week\" is next Monday).",
+          },
+          latest_date: {
+            type: "string",
+            description: "find_new_time only, optional: the last day the new time may be on, as YYYY-MM-DD.",
+          },
+          time_of_day: {
+            type: "string",
+            enum: ["morning", "afternoon", "evening", "any"],
+            description: "find_new_time only, optional: when in the day the owner wants the new time.",
           },
           confirmed: {
             type: "boolean",

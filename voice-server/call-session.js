@@ -250,12 +250,13 @@ class CallSession {
     this.notifyOutcome = null;     // what record_call_outcome recorded
     /** @type {string | null} */
     this.notifyVoicemailText = null; // the message a voicemail-mode call leaves (stored on the row)
-    /** @type {{ customerName: string|null, startTime: string, previousStartTime: string|null, ownerNote: string|null } | null} */
+    /** @type {{ customerName: string|null, startTime: string, previousStartTime: string|null, window: import("./lib/customer-call").TimeWindow|null } | null} */
     this.notifyBriefing = null;    // what the call is about, read when it was picked up (loadNotifyBriefing)
     /** @type {string | null} */
     this.notifyStartedAt = null;   // when the stream started (re-sent at the end: completeCallRecord replaces metadata)
     this.notifyVoicemailDone = false; // the voicemail has been spoken; the call ends once Twilio has played it
     this.notifyAudioSent = false;     // the customer call's assistant audio has started reaching Twilio
+    this.notifyVoicemailPlayed = false; // Twilio echoed the voicemail's playback mark: the whole message played
     // SCRUM-587: the owner confirmation gate's clock (lib/owner-tool-runner.js
     // readBackVerdict), moved ONLY by lib/owner-turn-stamps.js on owner
     // sessions. The turn count only ever goes up — never reset mid-call, or an

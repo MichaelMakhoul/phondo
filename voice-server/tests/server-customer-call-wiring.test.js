@@ -67,7 +67,7 @@ const NOTIFY = Object.freeze({
   mode: "conversation",
   answeredBy: "human",
 });
-const BRIEFING = Object.freeze({ customerName: "Jane Smith", startTime: START, previousStartTime: null, ownerNote: null });
+const BRIEFING = Object.freeze({ customerName: "Jane Smith", startTime: START, previousStartTime: null, window: null });
 
 function makeContext({ language = "en" } = {}) {
   return {
@@ -170,8 +170,8 @@ describe("SCRUM-598: the customer call's Gemini setup, run for real", () => {
   it("a move says where it moved from; finding a new time carries the owner's note", () => {
     const moved = assemble(makeSession({ notify: { ...NOTIFY, purpose: "moved" }, briefing: { ...BRIEFING, previousStartTime: "2026-10-26T22:00:00Z" } }));
     assert.match(moved.geminiSystemPrompt, /has moved Jane's booking from Tuesday 27 October at 9:00 am to Wednesday 28 October at 2:30 pm/);
-    const find = assemble(makeSession({ notify: { ...NOTIFY, purpose: "find_new_time" }, briefing: { ...BRIEFING, ownerNote: "next week, mornings" } }));
-    assert.match(find.geminiSystemPrompt, /guidance on times: "next week, mornings"/);
+    const find = assemble(makeSession({ notify: { ...NOTIFY, purpose: "find_new_time" }, briefing: { ...BRIEFING, window: { earliest: "2026-11-02", latest: "2026-11-06", timeOfDay: "morning" } } }));
+    assert.match(find.geminiSystemPrompt, /would like the new time between Monday 2 November and Friday 6 November, in the morning/);
   });
 
   it("a non-English assistant may say the opener in its language, names kept", () => {
@@ -234,7 +234,8 @@ function makeCallbacks(session, o = {}) {
     noteOwnerSpeech,
     noteCancelledOwnerToolCalls: () => {},
     notifyPrompt,
-    customerCall,
+    customerCall: { ...customerCall, recordDoNotCall: o.recordDoNotCall || (async () => true) },
+    getSupabase: () => ({ client: "supabase" }),
     endVoicemailAfterPlayback: (...a) => calls.push(["endVoicemailAfterPlayback", ...a]),
     console: recordingConsole(lines),
   };
@@ -260,6 +261,17 @@ describe("SCRUM-598: the customer call's callbacks, run for real", () => {
     assert.match(ret.message, /^Use one of these outcomes: confirmed, rebooked, declined, will_call_back, wrong_person, do_not_call, other\./);
     assert.equal(s.notifyOutcome, null);
     assert.deepEqual(s.toolCallAudit.map((a) => [a.name, a.successful]), [["record_call_outcome", false]]);
+  });
+
+  it("silent lens N3: do_not_call is kept on the row at once, and no later outcome overwrites it", async () => {
+    const s = makeSession();
+    const persisted = [];
+    const { cbs } = makeCallbacks(s, { recordDoNotCall: async (...a) => { persisted.push(a[1]); return true; } });
+    await cbs.onToolCall({ id: "t1", name: "record_call_outcome", args: { outcome: "do_not_call", note: "asked not to be called" } });
+    assert.deepEqual(persisted, [s.notify]);
+    await cbs.onToolCall({ id: "t2", name: "record_call_outcome", args: { outcome: "confirmed" } });
+    assert.deepEqual(s.notifyOutcome, { outcome: "do_not_call", note: "asked not to be called" });
+    assert.equal(persisted.length, 1);
   });
 
   it("on any other call the tool doesn't exist", async () => {
@@ -309,8 +321,13 @@ function runRecordSection(session, o = {}) {
     session, context: makeContext(), callerPhone: session.callerPhone, callSid: "CA-notify",
     createCallRecord: async (...a) => { calls.push(["createCallRecord", ...a]); return "new-row"; },
     customerCall: {
-      loadNotifyBriefing: async (...a) => { calls.push(["loadNotifyBriefing", ...a.slice(1)]); return o.briefing === undefined ? { ...BRIEFING, ownerNote: "mornings" } : o.briefing; },
-      markCustomerCallStarted: async (...a) => { calls.push(["markCustomerCallStarted", ...a.slice(1)]); return { marked: o.marked !== false, startedAt: "2026-10-27T03:00:01.000Z" }; },
+      loadNotifyBriefing: async (...a) => { calls.push(["loadNotifyBriefing", ...a.slice(1)]); return o.briefing === undefined ? { ...BRIEFING } : o.briefing; },
+      markCustomerCallStarted: async (...a) => {
+        calls.push(["markCustomerCallStarted", ...a.slice(1)]);
+        const reason = o.markReason || "ok";
+        return { marked: reason === "ok", startedAt: "2026-10-27T03:00:01.000Z", reason };
+      },
+      markSetupFailed: async (...a) => { calls.push(["markSetupFailed", ...a.slice(1)]); return true; },
     },
     getSupabase: () => ({ client: "supabase" }),
     liveCustomerCalls: live,
@@ -322,23 +339,23 @@ function runRecordSection(session, o = {}) {
 }
 
 describe("SCRUM-598: the session takes over the row the call was placed with", () => {
-  it("briefing first, then the queued row goes in-progress — no new row", async () => {
+  it("briefing first, then the claimed row goes in-progress — no new row", async () => {
     const s = makeSession({ briefing: null });
     const r = await runRecordSection(s);
     assert.deepEqual(r.calls.map((c) => c[0]), ["loadNotifyBriefing", "markCustomerCallStarted"]);
     assert.deepEqual(r.calls[0][1], s.notify);
     assert.equal(s.callRecordId, NOTIFY.callId);
-    assert.equal(s.notify.ownerNote, "mornings", "the row keeps the owner's note when the session rewrites it");
-    assert.deepEqual(s.notifyBriefing, { ...BRIEFING, ownerNote: "mornings" });
+    assert.deepEqual(s.notifyBriefing, { ...BRIEFING });
     assert.equal(s.notifyStartedAt, "2026-10-27T03:00:01.000Z");
     assert.ok(r.live.has("CA-notify"), "still live: the status callback leaves it to this session");
   });
 
-  it("no briefing: the call ends with nothing said and the status callback finishes the row", async () => {
+  it("no briefing: the call ends with nothing said, stamped as our failure, and the status callback finishes the row", async () => {
     const s = makeSession({ briefing: null });
     const r = await runRecordSection(s, { briefing: null });
     assert.notEqual(r.ret, "done");
-    assert.deepEqual(r.calls.map((c) => c[0]), ["loadNotifyBriefing", "twilio.close"]);
+    assert.deepEqual(r.calls.map((c) => c[0]), ["loadNotifyBriefing", "markSetupFailed", "twilio.close"], "stamped BEFORE the line drops (the status callback reads it)");
+    assert.equal(r.calls[1][2], "no-briefing");
     assert.equal(s.callRecordId, null, "the session never took the row");
     assert.equal(s.callFailed, true);
     assert.equal(s.endedReason, "customer-call-no-briefing");
@@ -346,12 +363,23 @@ describe("SCRUM-598: the session takes over the row the call was placed with", (
     assert.ok(r.lines.some((l) => l.includes("[ALERT:error]")));
   });
 
-  it("a row no longer queued is logged and the session goes on", async () => {
+  it("a row its TwiML fetch didn't claim isn't this session's (security lens H1): the call ends without touching it", async () => {
     const s = makeSession({ briefing: null });
-    const r = await runRecordSection(s, { marked: false });
+    const r = await runRecordSection(s, { markReason: "not_claimable" });
+    assert.notEqual(r.ret, "done");
+    assert.equal(s.callRecordId, null, "never takes the row over, so cleanup never writes it");
+    assert.equal(s.endedReason, "customer-call-not-claimable");
+    assert.ok(r.calls.some((c) => c[0] === "twilio.close"));
+    assert.equal(r.calls.some((c) => c[0] === "markSetupFailed"), false, "never stamps a row that isn't ours");
+    assert.equal(r.live.has("CA-notify"), false);
+  });
+
+  it("a failed start write goes on (the TwiML claim already guarded the call)", async () => {
+    const s = makeSession({ briefing: null });
+    const r = await runRecordSection(s, { markReason: "db_error" });
     assert.equal(r.ret, "done");
     assert.equal(s.callRecordId, NOTIFY.callId);
-    assert.ok(r.lines.some((l) => l.startsWith("warn|") && l.includes("was not queued")));
+    assert.ok(r.lines.some((l) => l.startsWith("warn|") && l.includes("couldn't be marked started")));
   });
 
   it("any other call creates its row exactly as before", async () => {
@@ -457,9 +485,11 @@ describe("SCRUM-598: post-call for a customer call, run for real", () => {
     assert.equal(live.has(s.callSid), false);
   });
 
-  it("a voicemail: no analysis or claim scan, outcome 'voicemail', and the message left is kept", async () => {
+  it("a voicemail spoken and played: no analysis or claim scan, outcome 'voicemail', the message kept", async () => {
     const s = ended(makeSession({ notify: { ...NOTIFY, mode: "voicemail", answeredBy: "machine_end_beep" } }));
     s.notifyVoicemailText = "Hi Jane, this is the AI assistant at Copperline Plumbing.";
+    s.notifyVoicemailDone = true;
+    s.notifyVoicemailPlayed = true;
     s.endedReason = "customer-call-voicemail-left";
     const { cleanupSession, calls } = makeCleanup(s);
     await cleanupSession();
@@ -468,8 +498,39 @@ describe("SCRUM-598: post-call for a customer call, run for real", () => {
     const fields = calls.find((c) => c[0] === "completeCallRecord")[2];
     assert.equal(fields.outcome, "voicemail");
     assert.equal(fields.notify.voicemail_text, "Hi Jane, this is the AI assistant at Copperline Plumbing.");
+    assert.equal(fields.notify.voicemail_played, true);
     assert.equal(fields.notify.ended_reason, "customer-call-voicemail-left");
     assert.equal("outcome" in fields.notify, false, "no outcome recorded on a voicemail");
+  });
+
+  it("silent lens G1: a voicemail never spoken is never 'voicemail' — and its script isn't kept as 'the message left'", async () => {
+    const s = ended(makeSession({ notify: { ...NOTIFY, mode: "voicemail", answeredBy: "machine_end_beep" } }));
+    s.notifyVoicemailText = "Hi Jane, this is the AI assistant at Copperline Plumbing.";
+    s.endedReason = "customer-call-voicemail-not-spoken";
+    s.callFailed = true;
+    const { cleanupSession, calls } = makeCleanup(s);
+    await cleanupSession();
+    const fields = calls.find((c) => c[0] === "completeCallRecord")[2];
+    assert.equal(fields.outcome, "failed");
+    assert.equal("voicemail_text" in fields.notify, false);
+    const spokenUnplayed = ended(makeSession({ notify: { ...NOTIFY, mode: "voicemail", answeredBy: "machine_end_beep" } }));
+    spokenUnplayed.notifyVoicemailText = "Hi Jane.";
+    spokenUnplayed.notifyVoicemailDone = true;
+    const c2 = makeCleanup(spokenUnplayed);
+    await c2.cleanupSession();
+    const f2 = c2.calls.find((c) => c[0] === "completeCallRecord")[2];
+    assert.equal(f2.outcome, "voicemail");
+    assert.equal(f2.notify.voicemail_played, false, "spoken, but Twilio never confirmed it played to the end");
+  });
+
+  it("silent lens N2: a record that can't be written pages, and call-completed never emails off the stale row", async () => {
+    const s = ended(makeSession());
+    const { cleanupSession, calls, lines, live } = makeCleanup(s, { failWrites: 2 });
+    await cleanupSession();
+    assert.equal(calls.filter((c) => c[0] === "completeCallRecord").length, 2);
+    assert.equal(calls.some((c) => c[0] === "notifyCallCompleted"), false);
+    assert.ok(lines.some((l) => l.includes("[ALERT:error]") && l.includes("record was not written")));
+    assert.equal(live.has(s.callSid), false, "released, so the status callback (or the sweeper) finishes it");
   });
 
   it("a failed write is retried once (call-completed's email reads the row)", async () => {
@@ -509,22 +570,25 @@ function loadRoutes(o = {}) {
   const calls = [];
   const lines = [];
   const timers = [];
+  const intervals = [];
   const app = { post: (route, handler) => { handlers[route] = handler; } };
   const scope = {
     app,
     timingSafeEqualStr,
     INTERNAL_API_SECRET: "internal-secret",
     customerCall: {
+      isCustomerCallsEnabled: (env) => env.OWNER_CUSTOMER_CALLS_ENABLED === "true",
+      sweepStuckCustomerCalls: async (...a) => { calls.push(["sweep", ...a]); return { swept: 0, checked: 0 }; },
       checkCustomerCall: async (...a) => { calls.push(["check", ...a]); return o.check || { ok: true, plan: {} }; },
       placeCustomerCall: async (...a) => { calls.push(["place", ...a]); return o.place || { placed: true, callId: "c-1", callSid: "CA1" }; },
       handleCustomerCallTwiml: async (...a) => { calls.push(["twiml", ...a]); return "<Response/>"; },
       handleCustomerCallStatus: async (...a) => { calls.push(["status", ...a]); return { finalized: true, reason: "x" }; },
     },
     getSupabase: () => ({ client: "supabase" }),
-    process: { env: { GEMINI_API_KEY: o.geminiKey === undefined ? "g-key" : o.geminiKey } },
+    process: { env: { GEMINI_API_KEY: o.geminiKey === undefined ? "g-key" : o.geminiKey, ...(o.enabled ? { OWNER_CUSTOMER_CALLS_ENABLED: "true" } : {}) } },
     DEMO_ORG_ID: "demo-org",
     getTwilioRestClient: () => {
-      const fn = (sid) => ({ update: async (p) => { calls.push(["twilio.update", sid, p]); } });
+      const fn = (sid) => ({ update: async (p) => { calls.push(["twilio.update", sid, p]); }, fetch: async () => { calls.push(["twilio.fetch", sid]); return { status: "completed" }; } });
       fn.create = async (p) => { calls.push(["twilio.create", p]); return { sid: "CA1" }; };
       return { calls: Object.assign(fn, { create: fn.create }) };
     },
@@ -537,6 +601,7 @@ function loadRoutes(o = {}) {
     notifyCallCompleted: async (...a) => { calls.push(["notifyCallCompleted", ...a]); },
     WebSocket: { OPEN: 1 },
     setTimeout: (fn, ms) => { timers.push({ fn, ms }); return { unref: () => {} }; },
+    setInterval: (fn, ms) => { intervals.push({ fn, ms }); return { unref: () => {} }; },
     console: recordingConsole(lines),
   };
   const exported = runSlice({
@@ -545,7 +610,7 @@ function loadRoutes(o = {}) {
     scope,
     names: ["liveCustomerCalls", "hangUpNotifyCall", "endVoicemailAfterPlayback", "NOTIFY_VOICEMAIL_MARK"],
   });
-  return { handlers, calls, lines, timers, ...exported };
+  return { handlers, calls, lines, timers, intervals, ...exported };
 }
 function fakeRes() {
   const res = { statusCode: 200, body: undefined, type: undefined };
@@ -627,6 +692,24 @@ describe("SCRUM-598: the customer-call routes, run for real", () => {
     assert.deepEqual(r.calls.find((c) => c[0] === "notifyCallCompleted"), ["notifyCallCompleted", "http://next.internal", "internal-secret", { callId: "c-1" }]);
   });
 
+  it("silent lens N1: every 5 minutes the sweeper finishes customer calls nobody finished — only while calls are on", async () => {
+    const off = loadRoutes();
+    assert.equal(off.intervals.length, 1);
+    assert.equal(off.intervals[0].ms, 5 * 60 * 1000);
+    off.intervals[0].fn();
+    await sleep(0);
+    assert.equal(off.calls.some((c) => c[0] === "sweep"), false, "calls switched off: nothing to sweep");
+    const on = loadRoutes({ enabled: true });
+    on.intervals[0].fn();
+    await sleep(0);
+    const deps = on.calls.find((c) => c[0] === "sweep")[1];
+    on.liveCustomerCalls.add("CA-live");
+    assert.equal(deps.hasLiveSession("CA-live"), true);
+    await deps.fetchTwilioCall("CA9");
+    await deps.notifyCallCompleted({ callId: "c-9" });
+    assert.ok(on.calls.some((c) => c[0] === "notifyCallCompleted" && c[3]?.callId === "c-9"));
+  });
+
   it("the voicemail hangs up when Twilio echoes its mark, or after the backstop", () => {
     const r = loadRoutes();
     const ws = { readyState: 1, sent: [], closed: [], send(m) { this.sent.push(JSON.parse(m)); }, close(...a) { this.closed.push(a); this.readyState = 3; } };
@@ -649,7 +732,18 @@ describe("SCRUM-598: the customer-call routes, run for real", () => {
 // ─── The mark echo and the never-spoken backstop ────────────────────────────
 
 describe("SCRUM-598: the voicemail's hang-up triggers, run for real", () => {
-  it("the mark echo of a voicemail hangs up; other marks don't", () => {
+  it("the mark echo of a voicemail marks it played, then hangs up; other marks don't", () => {
+    const played = { notify: { mode: "voicemail", callId: "c" }, fastState: null };
+    const runOnce = (session, name) => {
+      runSlice({
+        from: 'case "mark": {',
+        to: 'case "stop": {',
+        scope: { session, msg: { event: "mark", mark: { name } }, twilioWs: {}, hangUpNotifyCall: () => {}, NOTIFY_VOICEMAIL_MARK: "notify-voicemail-done", onFastRestMark: () => {}, onFastMark: () => {}, console: recordingConsole([]) },
+        wrap: (code) => `switch (msg.event) {\n${code}\n}`,
+      });
+    };
+    runOnce(played, "notify-voicemail-done");
+    assert.equal(played.notifyVoicemailPlayed, true);
     const run = (session, name) => {
       const hung = [];
       runSlice({
@@ -704,5 +798,12 @@ describe("SCRUM-598: the voicemail's hang-up triggers, run for real", () => {
     assert.equal(b.hung.length, 0);
     assert.equal(run({ notify: { mode: "conversation" } }).timers.length, 0, "a conversation has Twilio's 5-minute limit instead");
     assert.equal(run({ notify: null }).timers.length, 0);
+  });
+});
+
+describe("SCRUM-598: the shutdown drain waits for customer calls to finish (silent lens N1)", () => {
+  it("exits only once no session is left AND no customer call is still finishing", () => {
+    const shutdown = sliceOf("async function gracefulShutdown(signal) {", 'process.on("SIGTERM"');
+    assert.match(shutdown, /if \(sessions\.size === 0 && liveCustomerCalls\.size === 0\) \{/);
   });
 });

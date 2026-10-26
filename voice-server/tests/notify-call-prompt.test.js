@@ -62,6 +62,10 @@ describe("buildVoicemailScript", () => {
     assert.equal(vm("find_new_time"), `Hi Jane, this is the AI assistant at Bob's Plumbing. We need to move your booking on ${WHEN}. Please call us back on this number so we can find a time that suits you. Thanks, bye.`);
   });
 
+  it("every purpose is named; an unknown one throws instead of guessing (types lens T2)", () => {
+    assert.throws(() => vm("upsell"), /unknown notify purpose/);
+  });
+
   it("never claims a time it doesn't have, and works without a name", () => {
     assert.match(vm("moved", { when: null }), /has been moved\. Please call us back on this number for the new time\./);
     assert.doesNotMatch(vm("cancelled", { when: null }), / on null|undefined/);
@@ -124,10 +128,14 @@ describe("buildNotifyCallSection", () => {
     assert.doesNotMatch(find, /guidance on times/, "no note, no guidance line");
   });
 
-  it("the owner's note guides which times to offer, flattened and never read out", () => {
-    const s = section({ purpose: "find_new_time", ownerNote: 'next week,\n mornings "only"' });
-    assert.match(s, /Bob's Plumbing's guidance on times: "next week, mornings 'only'"\. Use it to choose which times to offer; never read it out\./);
-    assert.doesNotMatch(section({ purpose: "cancelled", ownerNote: "next week" }), /guidance on times/, "only finding a new time uses it");
+  it("finding a new time words its window from the structured fields — no owner text reaches the call", () => {
+    const w = (window) => section({ purpose: "find_new_time", window });
+    assert.match(w({ earliest: "2026-11-02", latest: "2026-11-06", timeOfDay: "morning" }), /would like the new time between Monday 2 November and Friday 6 November, in the morning: offer times in that window first, and if none suit, ask what would\./);
+    assert.match(w({ earliest: "2026-11-02", latest: null, timeOfDay: "any" }), /would like the new time from Monday 2 November: offer/);
+    assert.match(w({ earliest: null, latest: "2026-11-06", timeOfDay: "afternoon" }), /would like the new time by Friday 6 November, in the afternoon: offer/);
+    assert.match(w({ earliest: null, latest: null, timeOfDay: "evening" }), /would like the new time in the evening: offer/);
+    assert.doesNotMatch(w(null), /would like the new time/);
+    assert.doesNotMatch(section({ purpose: "cancelled", window: { earliest: "2026-11-02", latest: null, timeOfDay: "any" } }), /would like the new time/, "only finding a new time uses it");
   });
 
   it("only this customer's bookings; uses the name on file; honours 'don't call me again'", () => {

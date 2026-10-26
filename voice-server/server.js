@@ -1342,6 +1342,19 @@ app.post("/internal/retranscribe", async (req, res) => {
 
 /** CallSids whose notify session is running in this process (the status callback leaves those to it). */
 const liveCustomerCalls = new Set();
+/** How often the sweeper looks for customer calls nobody finished (silent lens N1). */
+const CUSTOMER_CALL_SWEEP_MS = 5 * 60 * 1000;
+setInterval(() => {
+  if (!customerCall.isCustomerCallsEnabled(process.env) || !INTERNAL_API_URL || !INTERNAL_API_SECRET) return;
+  customerCall
+    .sweepStuckCustomerCalls({
+      supabase: getSupabase(),
+      hasLiveSession: (sid) => liveCustomerCalls.has(sid),
+      fetchTwilioCall: (sid) => getTwilioRestClient().calls(sid).fetch(),
+      notifyCallCompleted: (payload) => notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, payload),
+    })
+    .catch((err) => console.error("[CustomerCall] sweep threw:", err && err.message));
+}, CUSTOMER_CALL_SWEEP_MS).unref();
 /** The Twilio mark sent after a voicemail's last audio: its echo means the message has played. */
 const NOTIFY_VOICEMAIL_MARK = "notify-voicemail-done";
 /** A spoken voicemail whose mark never echoes still ends this long after it was spoken. */
@@ -1992,10 +2005,14 @@ wss.on("connection", (twilioWs) => {
                   notify: customerCall.notifyMetadata(s.notify, {
                     ...(s.notifyStartedAt ? { stream_started_at: s.notifyStartedAt } : {}),
                     ...(s.notifyOutcome ? { outcome: s.notifyOutcome.outcome, note: s.notifyOutcome.note } : {}),
-                    ...(s.notifyVoicemailText ? { voicemail_text: s.notifyVoicemailText } : {}),
+                    // Silent lens G1: the message counts as left only once it was spoken,
+                    // and the email says whether Twilio confirmed it played to the end.
+                    ...(s.notifyVoicemailDone && s.notifyVoicemailText
+                      ? { voicemail_text: s.notifyVoicemailText, voicemail_played: s.notifyVoicemailPlayed === true }
+                      : {}),
                     ended_reason: endedReason,
                   }),
-                  outcome: s.notify.mode === "voicemail" ? "voicemail" : "answered",
+                  outcome: s.notify.mode === "voicemail" ? (s.notifyVoicemailDone ? "voicemail" : "failed") : "answered",
                 }
               : {}),
           });
@@ -2025,6 +2042,11 @@ wss.on("connection", (twilioWs) => {
       } else {
         console.error(`[ALERT:error] [OwnerCall] owner call record not written — call-completed webhook skipped (callSid=${s.callSid}, callId=${s.callRecordId}, org=${s.organizationId})`);
       }
+    } else if (s.notify && !recordWritten) {
+      // SCRUM-598 (silent lens N2): call-completed would email "the call didn't go
+      // through" off the stale row. The row stays in progress: once this session is
+      // released, Twilio's status callback (or the sweeper) finishes it as cut off.
+      console.error(`[ALERT:error] [CustomerCall] call ${s.notify.callId}'s record was not written after its conversation — it will be finished as cut off`);
     } else if (INTERNAL_API_URL && INTERNAL_API_SECRET && s.organizationId) {
       notifyCallCompleted(INTERNAL_API_URL, INTERNAL_API_SECRET, {
         callId: s.callRecordId,
@@ -2240,6 +2262,7 @@ wss.on("connection", (twilioWs) => {
             // customer — it just ends, and the status callback finishes the queued row.
             if (session.notify) {
               console.error(`[ALERT:error] [CustomerCall] no call context for call=${session.notify.callId} — ending the call`);
+              await customerCall.markSetupFailed(getSupabase(), session.notify, "no-call-context");
               liveCustomerCalls.delete(callSid);
               twilioWs.close();
               return;
@@ -2258,6 +2281,7 @@ wss.on("connection", (twilioWs) => {
             console.error(`[ALERT:error] [CustomerCall] the line now belongs to another org — ending call=${session.notify.callId}`);
             session.callFailed = true;
             session.endedReason = "customer-call-org-mismatch";
+            await customerCall.markSetupFailed(getSupabase(), session.notify, "org-mismatch");
             liveCustomerCalls.delete(callSid); // the status callback finishes the queued row
             twilioWs.close();
             return;
@@ -2575,18 +2599,29 @@ wss.on("connection", (twilioWs) => {
               console.error(`[ALERT:error] [CustomerCall] no briefing for call=${session.notify.callId} — ending the call`);
               session.callFailed = true;
               session.endedReason = "customer-call-no-briefing";
+              await customerCall.markSetupFailed(getSupabase(), session.notify, "no-briefing");
               liveCustomerCalls.delete(callSid); // the status callback finishes the queued row
               twilioWs.close();
               return;
             }
             session.notifyBriefing = briefing;
-            session.notify.ownerNote = briefing.ownerNote;
-            // The row was written when the call was placed: this session completes it.
-            session.callRecordId = session.notify.callId;
+            // The row its TwiML fetch claimed (ringing) goes in-progress, and this session
+            // completes it. A row in any other state isn't this session's (security lens
+            // H1): the call ends without touching it. A failed write goes on — the TwiML
+            // claim already guarded the call.
             const started = await customerCall.markCustomerCallStarted(getSupabase(), session.notify);
             if (!session) return;
+            if (started.reason === "not_claimable") {
+              console.error(`[ALERT:error] [CustomerCall] call ${session.notify.callId} wasn't waiting for this stream — ending it`);
+              session.callFailed = true;
+              session.endedReason = "customer-call-not-claimable";
+              liveCustomerCalls.delete(callSid);
+              twilioWs.close();
+              return;
+            }
+            session.callRecordId = session.notify.callId;
             session.notifyStartedAt = started.startedAt;
-            if (!started.marked) console.warn(`[CustomerCall] call ${session.notify.callId} was not queued any more — the session goes on`);
+            if (!started.marked) console.warn(`[CustomerCall] call ${session.notify.callId} couldn't be marked started — the session goes on`);
           } else {
             try {
               const callRecordId = await createCallRecord({
@@ -2825,7 +2860,7 @@ wss.on("connection", (twilioWs) => {
                   previousWhen: notifyBriefing.previousStartTime
                     ? notifyPrompt.formatWhen(notifyBriefing.previousStartTime, context.organization.timezone)
                     : null,
-                  ownerNote: notifyBriefing.ownerNote,
+                  window: notifyBriefing.window,
                   voicemailScript: notifyVoicemailScript || "",
                   canTransfer: false,
                 });
@@ -2990,8 +3025,15 @@ wss.on("connection", (twilioWs) => {
                     if (!parsed) {
                       return { message: `Use one of these outcomes: ${customerCall.CALL_OUTCOMES.join(", ")}. Then say goodbye and call end_call.` };
                     }
+                    // "Don't call me again" is never overwritten by a later outcome, and is kept
+                    // on the row at once (silent lens N3): a restart can't lose it.
+                    if (session.notifyOutcome?.outcome === "do_not_call" && parsed.outcome !== "do_not_call") {
+                      console.log(`[CustomerCall] outcome ${parsed.outcome} ignored — do_not_call stands for call=${session.notify.callId}`);
+                      return { message: "Noted. Now say goodbye and call end_call." };
+                    }
                     session.notifyOutcome = parsed;
                     console.log(`[CustomerCall] outcome ${parsed.outcome} for call=${session.notify.callId}`);
+                    if (parsed.outcome === "do_not_call") await customerCall.recordDoNotCall(getSupabase(), session.notify);
                     return { message: "Noted. Now say goodbye and call end_call." };
                   }
 
@@ -3895,6 +3937,7 @@ wss.on("connection", (twilioWs) => {
           // SCRUM-598: Twilio has played the voicemail to its end — hang up.
           if (session?.notify?.mode === "voicemail" && msg.mark?.name === NOTIFY_VOICEMAIL_MARK) {
             console.log(`[CustomerCall] voicemail played — hanging up call=${session.notify.callId}`);
+            session.notifyVoicemailPlayed = true;
             hangUpNotifyCall(session, twilioWs);
             break;
           }
@@ -8317,7 +8360,9 @@ async function gracefulShutdown(signal) {
 
   // Poll until no active sessions remain, then flush Sentry and exit clean
   const pollInterval = setInterval(async () => {
-    if (sessions.size === 0) {
+    // SCRUM-598 (silent lens N1): a customer call leaves `sessions` when its cleanup
+    // STARTS; liveCustomerCalls empties only once its record and call-completed are done.
+    if (sessions.size === 0 && liveCustomerCalls.size === 0) {
       clearInterval(pollInterval);
       clearTimeout(hardCutoff);
       console.log("[Shutdown] All sessions drained — exiting cleanly");

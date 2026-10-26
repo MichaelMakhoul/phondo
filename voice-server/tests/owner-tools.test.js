@@ -25,7 +25,7 @@ describe("owner tool declarations", () => {
     assert.deepEqual(Object.keys(byName.owner_list_appointments.parameters.properties).sort(), ["date", "range"]);
     assert.deepEqual(Object.keys(byName.owner_reschedule_appointment.parameters.properties).sort(), ["appointment_id", "confirmed", "new_datetime", "notify_customer"]);
     assert.deepEqual(Object.keys(byName.owner_cancel_appointment.parameters.properties).sort(), ["appointment_id", "confirmed", "notify_customer", "reason"]);
-    assert.deepEqual(Object.keys(byName.owner_call_customer.parameters.properties).sort(), ["appointment_id", "confirmed", "note", "purpose"]);
+    assert.deepEqual(Object.keys(byName.owner_call_customer.parameters.properties).sort(), ["appointment_id", "confirmed", "earliest_date", "latest_date", "purpose", "time_of_day"]);
   });
   it("SCRUM-598: owner_call_customer — two purposes, the same two-call gate, and never a substitute for notify_customer on a change", () => {
     const t = byName.owner_call_customer;
@@ -37,7 +37,10 @@ describe("owner tool declarations", () => {
     assert.ok(t.description.includes("First call WITHOUT confirmed: nothing happens"));
     assert.ok(t.description.indexOf("WITHOUT confirmed") < t.description.indexOf("confirmed=true"));
     assert.ok(t.description.includes("calling | needs_confirmation | not_available | not_found | external_calendar — only 'calling' means the call is being placed"));
-    assert.ok(t.parameters.properties.note.description.includes("never reads it out"));
+    // Security lens F2: the window is structured — no free-text field reaches the customer call.
+    assert.deepEqual(t.parameters.properties.time_of_day.enum, ["morning", "afternoon", "evening", "any"]);
+    assert.ok(t.parameters.properties.earliest_date.description.includes("YYYY-MM-DD"));
+    assert.ok(!("note" in t.parameters.properties));
     assert.ok(ot.OWNER_WRITE_TOOL_NAMES.includes("owner_call_customer"), "the confirmation gate guards it");
     assert.ok(!ot.OWNER_CHANGE_TOOL_NAMES.includes("owner_call_customer"), "it changes no booking");
     assert.deepEqual([...ot.OWNER_CHANGE_TOOL_NAMES], ["owner_reschedule_appointment", "owner_cancel_appointment"]);
