@@ -149,8 +149,6 @@ const RANGE_LABEL = new Map([
  * model just acted on can land a beat AFTER the confirm call. Only that waits.
  */
 const CONFIRM_SETTLE_MS = 1500;
-/** SCRUM-601: talked-past refusals in one call at which the gate pages anyway — once. */
-const TALKED_PAST_PAGE_AT = 3;
 const CONFIRM_POLL_MS = 100;
 
 /**
@@ -450,46 +448,24 @@ async function applyConfirmationGate(session, name, args, audit, now) {
   // again, which re-arms the key. Refused AGAIN after that re-arm, the gate
   // may be turning away a change the owner did confirm (a broken turn clock,
   // as on a pipeline failover) — that pages, ids only.
-  //
-  // SCRUM-601: except when the model talked past its own read-back — spoke again
-  // after it (an answer, a reply in another language), so that the owner's yes
-  // came after a later turn. That voids the read-back by design and only warns.
-  // It is told apart from a clock counting on its own (SF1: a filler counted as
-  // a turn after the yes) by who spoke last: after a talk-past the owner did (the
-  // yes), after a miscount the model did. The yes can trail the confirm, so that
-  // gets the same settle wait. Should every confirm still look talked past (a
-  // clock counting twice before the yes), the TALKED_PAST_PAGE_AT-th pages once.
-  // The re-arm is read and spent before any wait, so a parallel confirm of the
-  // same key is a first refusal.
+  // SCRUM-601: once per call. The 27 Oct session paged twice, each time for
+  // the model confirming after it talked past its own read-back. The stamps
+  // can't tell that apart from a miscounted turn on every pipeline (a
+  // filler counted with the confirm looks the same — SF1), so this never
+  // guesses: the one page names both, and the call's transcript decides.
+  // The owner prompt has the model read back again after any other reply,
+  // which is what keeps talk-past refusals rare.
   const reArmed = key !== null && confirmRefusals(session).get(key) === true;
-  if (key !== null) confirmRefusals(session).set(key, false);
-  const entry = pendingEntry();
-  const turnsSinceArm = entry && isStamp(entry.seq) && isStamp(session.assistantTurnSeq) ? session.assistantTurnSeq - entry.seq : null;
-  let talkedPast = false;
-  if (reArmed && turnsSinceArm !== null && turnsSinceArm > 1) {
-    for (let settle = 0; !ownerSpokeLast(session) && settle < CONFIRM_SETTLE_MS; settle += CONFIRM_POLL_MS) await sleep(CONFIRM_POLL_MS);
-    talkedPast = ownerSpokeLast(session);
-  }
-  if (talkedPast) session.ownerConfirmTalkedPast = (Number.isInteger(session.ownerConfirmTalkedPast) ? session.ownerConfirmTalkedPast : 0) + 1;
-  if (talkedPast && session.ownerConfirmTalkedPast === TALKED_PAST_PAGE_AT) {
-    console.error(`[ALERT:error] [OwnerTools] ${name}: ${TALKED_PAST_PAGE_AT} confirmations this call were refused as coming after other replies — the turn clock may be miscounting (org=${session.organizationId}, callSid=${session.callSid})`);
-  } else if (talkedPast) {
-    console.warn(`[OwnerTools] ${name}: refused again — the model spoke ${turnsSinceArm - 1} more time(s) after its read-back, so that read-back no longer counts. callSid=${session.callSid}`);
+  if (reArmed && session.ownerConfirmGatePaged !== true) {
+    session.ownerConfirmGatePaged = true;
+    console.error(`[ALERT:error] [OwnerTools] ${name}: a confirmation re-armed by PR B's read-back was refused again — the gate may be blocking a change the owner confirmed, or the model confirmed after talking past its read-back; the call's transcript tells which (org=${session.organizationId}, callSid=${session.callSid})`);
   } else if (reArmed) {
-    console.error(`[ALERT:error] [OwnerTools] ${name}: a confirmation re-armed by PR B's read-back was refused again — the gate may be blocking a change the owner confirmed (org=${session.organizationId}, callSid=${session.callSid})`);
+    console.warn(`[OwnerTools] ${name}: a confirmation re-armed by PR B's read-back was refused again — this call has paged already. callSid=${session.callSid}`);
   } else {
     console.warn(`[OwnerTools] ${name} came with confirmed=true but no read-back of that change has been answered by the owner — forwarded as confirmed=false. callSid=${session.callSid}`);
   }
+  if (key !== null) confirmRefusals(session).set(key, false);
   return { ...args, confirmed: false };
-}
-
-/**
- * Did the owner speak after the model's last counted turn? (Owner speech is
- * stamped at the start of an utterance, once per assistant turn.)
- * @param {any} session
- */
-function ownerSpokeLast(session) {
-  return isStamp(session.lastOwnerSpeechAt) && isStamp(session.lastAssistantTurnAt) && session.lastOwnerSpeechAt > session.lastAssistantTurnAt;
 }
 
 /**

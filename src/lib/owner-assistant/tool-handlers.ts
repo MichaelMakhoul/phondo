@@ -1184,9 +1184,10 @@ function bookingReadBackRule(shownPhone: string, notes: string | null): string {
 /**
  * A number as it is read back: the national format in its groups ("0412 345 678",
  * "02 9555 1234", "(415) 555-1234"), or null when it isn't one of the org's country's.
+ * Exported for the voice-server parity test: the gate must match it to the said form.
  * @param e164OrRaw the number as it will be saved
  */
-function spokenPhone(e164OrRaw: string, country: string | null): string | null {
+export function spokenPhone(e164OrRaw: string, country: string | null): string | null {
   if (country === "AU" && /^\+61\d{9}$/.test(e164OrRaw)) return formatPhoneForCountry(`0${e164OrRaw.slice(3)}`, "AU");
   if (country === "US" && /^\+1\d{10}$/.test(e164OrRaw)) return formatPhoneForCountry(e164OrRaw.slice(2), "US");
   return null;

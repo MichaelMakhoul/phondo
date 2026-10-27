@@ -561,66 +561,40 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
     assert.ok(!paged[0].text.includes(ID), "never a tool argument in a log line");
     assert.equal(lines.filter((l) => l.level === "warn").length, 1, "the page replaces the warning, it does not add to it");
   });
-  // SCRUM-601: the 27 Oct browser session paged twice because Gemini spoke again after its
-  // read-back (an answer, a reply in French) before confirming — the turn clock was fine.
-  it("refused again after a re-arm when the model has spoken MORE than once since the read-back: a warning (the clock is running), never a page", async () => {
+  // SCRUM-601: the 27 Oct browser session paged twice, each time for Gemini confirming
+  // after it talked past its own read-back. The stamps can't tell that from a miscounted
+  // turn (SF1: a filler counted with the confirm), so the gate never guesses: one page per
+  // call, naming both causes; every later refused-again in that call only warns.
+  it("refused again after a re-arm: one page per call, naming both causes; the next one in that call only warns", async () => {
     const s = makeSession(); const d = makeDeps(prB);
     await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" }); // arms
-    await confirmCancel(s, d); // refused; PR B re-arms with its read-back
-    assistantTurn(s); // the read-back
-    ownerSpeaks(s); // the owner says something
-    assistantTurn(s); // ...and the model answers with something else — the read-back is void
-    ownerSpeaks(s);
-    await settled(() => confirmCancel(s, d)); // refused again
-    assert.equal(d.calls.at(-1).args.confirmed, false);
-    assert.deepEqual(alerts(lines), [], lines.map((l) => l.text).join("\n"));
-    assert.ok(lines.some((l) => l.level === "warn" && l.text.includes("refused again — the model spoke 1 more time(s) after its read-back, so that read-back no longer counts. callSid=CA1")));
-  });
-  // Silent-failure lens (SCRUM-601): an over-counting clock — a filler counted as a turn
-  // AFTER the owner's yes (SF1, the bug this page was added for) — also shows two turns
-  // since the re-arm. Who spoke last tells it apart: here the model did.
-  it("two turns since the re-arm but the MODEL spoke last (a turn counted after the yes): pages at the first refusal, as before", async () => {
-    const s = makeSession(); const d = makeDeps(prB);
-    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
     await confirmCancel(s, d); // refused → re-armed
-    assistantTurn(s); ownerSpeaks(s); // the read-back, then "yes"
-    assistantTurn(s); // ...and a filler counted as a turn after the yes
-    await settled(() => confirmCancel(s, d));
+    assistantTurn(s); ownerSpeaks(s); assistantTurn(s); ownerSpeaks(s); // the model talked past its read-back
+    await settled(() => confirmCancel(s, d)); // refused again → pages
+    assistantTurn(s); ownerSpeaks(s); assistantTurn(s); ownerSpeaks(s);
+    await settled(() => confirmCancel(s, d)); // and again → a warning
     assert.equal(d.calls.at(-1).args.confirmed, false);
     const paged = alerts(lines);
     assert.equal(paged.length, 1, lines.map((l) => l.text).join("\n"));
-    assert.ok(paged[0].text.includes("a confirmation re-armed by PR B's read-back was refused again"));
-    assert.equal(s.ownerConfirmTalkedPast, undefined, "not counted as a talk-past");
+    assert.ok(paged[0].text.includes("the gate may be blocking a change the owner confirmed, or the model confirmed after talking past its read-back; the call's transcript tells which (org=org-1, callSid=CA1)"), paged[0].text);
+    assert.ok(lines.some((l) => l.level === "warn" && l.text.includes("a confirmation re-armed by PR B's read-back was refused again — this call has paged already. callSid=CA1")));
+    assert.equal(s.ownerConfirmGatePaged, true);
   });
-  it("a talk-past whose yes is stamped DURING the settle wait only warns (the yes can trail the confirm)", async () => {
-    const s = makeSession(); const d = makeDeps(prB);
-    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
-    await confirmCancel(s, d); // refused → re-armed
-    assistantTurn(s); ownerSpeaks(s); assistantTurn(s); // read-back, owner, the model's other reply — the yes not yet heard
-    await settled(() => { setTimeout(() => ownerSpeaks(s), 300); return confirmCancel(s, d); });
-    assert.equal(d.calls.at(-1).args.confirmed, false);
-    assert.deepEqual(alerts(lines), [], lines.map((l) => l.text).join("\n"));
-    assert.equal(s.ownerConfirmTalkedPast, 1);
-  });
-  it("two confirms of the same re-armed key at once page once: the re-arm is spent before the settle wait", async () => {
-    const s = makeSession(); const d = makeDeps(prB);
-    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
-    await confirmCancel(s, d); // refused → re-armed
-    assistantTurn(s); ownerSpeaks(s); assistantTurn(s); // the model spoke last
-    await settled(() => Promise.all([confirmCancel(s, d), confirmCancel(s, d)]));
-    assert.equal(alerts(lines).length, 1, lines.map((l) => l.text).join("\n"));
-  });
-  it("a clock counting twice BEFORE the yes (every re-armed confirm looks talked past) pages on the third such refusal in a call — once", async () => {
-    const s = makeSession(); const d = makeDeps(prB);
-    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" }); // arms
-    await confirmCancel(s, d); // refused → re-armed
-    for (let i = 1; i <= 4; i += 1) {
-      assistantTurn(s); assistantTurn(s); ownerSpeaks(s); // the read-back counted twice, then "yes"
-      await settled(() => confirmCancel(s, d)); // refused again → PR B re-arms
-      assert.equal(alerts(lines).length, i < 3 ? 0 : 1, `after refusal ${i}: ${lines.map((l) => l.text).join("\n")}`);
+  // Silent-failure lens: a miscounted turn after the owner's yes (SF1) must page at its
+  // FIRST refused-again — whatever the stamps look like, and without any extra wait.
+  it("a turn counted after the owner's yes (SF1) pages at the first refused-again — the refusal path adds no wait", async () => {
+    for (const lateYes of [false, true]) {
+      lines.length = 0;
+      const s = makeSession(); const d = makeDeps(prB);
+      await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+      await confirmCancel(s, d); // refused → re-armed
+      assistantTurn(s); if (!lateYes) ownerSpeaks(s); // the read-back, then "yes" (or its transcript comes late)
+      assistantTurn(s); // a filler counted as a turn with the confirm
+      if (lateYes) ownerSpeaks(s);
+      await confirmCancel(s, d); // NOT settled(): two turns since the re-arm means no settle wait — this must resolve on its own
+      assert.equal(d.calls.at(-1).args.confirmed, false);
+      assert.equal(alerts(lines).length, 1, `lateYes=${lateYes}: ${lines.map((l) => l.text).join("\n")}`);
     }
-    assert.ok(alerts(lines)[0].text.includes("3 confirmations this call were refused as coming after other replies — the turn clock may be miscounting (org=org-1, callSid=CA1)"), alerts(lines)[0].text);
-    assert.equal(s.ownerConfirmTalkedPast, 4);
   });
   it("refused again after a re-arm when the read-back was heard but no answer was ever stamped: still pages (the owner's yes may be lost)", async () => {
     const s = makeSession(); const d = makeDeps(prB);
@@ -1923,4 +1897,89 @@ describe("test lens round 3: the advice when an interrupted block or callback ne
       assert.ok(!told[0].includes(wrong), told[0]);
     });
   }
+});
+
+// SCRUM-601 mutation-lens killers (survivors V5, V12, V13, V15, V16, V17 of the test review).
+describe("SCRUM-601: which refused-again confirms page", () => {
+  const prB = (name, args) => (name === "owner_cancel_appointment" ? (args.confirmed === true ? CANCELLED : NEEDS_CONFIRMATION) : { message: "ok", data: {} });
+  let lines;
+  beforeEach(() => { lines = []; });
+  const run = (s, d, name, args) => captureConsole(() => runOwnerToolCall(s, { name, args }, d.deps)).then((l) => { lines.push(...l); });
+  const confirmCancel = (s, d, id) => run(s, d, "owner_cancel_appointment", { appointment_id: id, confirmed: true });
+  /** The model reads back, the owner speaks, the model says something else, the owner speaks: that read-back is void. */
+  const talkPast = (s) => { assistantTurn(s); ownerSpeaks(s); assistantTurn(s); ownerSpeaks(s); };
+
+  it("a turn clock that isn't a number at all still pages on the first refusal after a re-arm, even after the owner answered", async () => {
+    for (const [label, breakIt] of [["assistantTurnSeq missing", (s) => { delete s.assistantTurnSeq; }], ["assistantTurnSeq a string", (s) => { s.assistantTurnSeq = "3"; }]]) {
+      lines = [];
+      const s = makeSession(); breakIt(s); const d = makeDeps(prB);
+      await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" }); // arms
+      await confirmCancel(s, d, "a1"); // refused (fails closed) → PR B re-arms
+      ownerSpeaks(s); // the owner says yes — the broken clock can't tell
+      await settled(() => confirmCancel(s, d, "a1")); // refused again after that re-arm
+      assert.equal(d.calls.at(-1).args.confirmed, false, label);
+      assert.equal(alerts(lines).length, 1, `${label}: ${lines.map((l) => l.text).join("\n")}`);
+    }
+  });
+
+  it("a FIRST refusal never pages, however many turns since its read-back: four writes talked past once each only warn", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    for (const id of ["a1", "a2", "a3", "a4"]) {
+      await run(s, d, "owner_cancel_appointment", { appointment_id: id }); // arms
+      talkPast(s);
+      await settled(() => confirmCancel(s, d, id)); // refused — this write was never re-armed
+      assert.equal(d.calls.at(-1).args.confirmed, false, id);
+    }
+    assert.deepEqual(alerts(lines), [], lines.map((l) => l.text).join("\n"));
+    assert.equal(lines.filter((l) => l.level === "warn" && l.text.includes("no read-back of that change has been answered")).length, 4);
+    assert.equal(s.ownerConfirmGatePaged, undefined);
+  });
+
+  it("once per CALL: refused-agains of different writes page once in all, and a confirm that goes through in between resets nothing", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" }); // arms
+    await confirmCancel(s, d, "a1"); // first refusal → re-armed
+    talkPast(s);
+    await settled(() => confirmCancel(s, d, "a1")); // refused again → the call's page
+    assert.equal(alerts(lines).length, 1);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a2" }); // another write: read back, answered, confirmed
+    assistantTurn(s); ownerSpeaks(s);
+    await settled(() => confirmCancel(s, d, "a2"));
+    assert.equal(d.calls.at(-1).args.confirmed, true, "a2 goes through");
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a3" }); // a third write
+    await confirmCancel(s, d, "a3"); // first refusal → re-armed
+    talkPast(s);
+    await settled(() => confirmCancel(s, d, "a3")); // refused again — this call has paged
+    assert.equal(alerts(lines).length, 1, lines.map((l) => l.text).join("\n"));
+    assert.ok(lines.some((l) => l.level === "warn" && l.text.includes("this call has paged already")));
+    // A new call pages afresh.
+    const next = makeSession({ callSid: "CA2" }); const d2 = makeDeps(prB);
+    await run(next, d2, "owner_cancel_appointment", { appointment_id: "a1" });
+    await confirmCancel(next, d2, "a1");
+    talkPast(next);
+    await settled(() => confirmCancel(next, d2, "a1"));
+    assert.equal(alerts(lines).length, 2);
+    assert.ok(alerts(lines)[1].text.includes("callSid=CA2"));
+  });
+});
+
+describe("SCRUM-601: a booking's number however it's written — the read-back's national form confirms, and a US number with a digit too many keeps its 1", () => {
+  const prB = (name, args) => (args.confirmed === true ? { success: true, message: "Done.", data: { outcome: "booked" } } : { success: false, message: "Read this back…", data: { outcome: "needs_confirmation" } });
+  const BOOK = { customer_name: "Jane Smith", customer_phone: "0412 345 678", start: "2026-10-29T14:00", notes: "Hot water unit leaking" };
+  /** Arm a booking with `readBack`, the read-back is heard and answered, then confirm it with `confirmedAs`: what was forwarded. */
+  async function confirmedWith(readBack, confirmedAs) {
+    const s = makeSession(); const d = makeDeps(prB);
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: readBack } }, d.deps));
+    assistantTurn(s); ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: confirmedAs, confirmed: true, notify_customer: "none" } }, d.deps)));
+    return d.calls.at(-1).args.confirmed;
+  }
+
+  it("an AU landline confirmed as the read-back now writes it (02 9555 1234) is the number armed as +61 2 9555 1234", async () => {
+    assert.equal(await confirmedWith("+61 2 9555 1234", "02 9555 1234"), true);
+  });
+
+  it("a US number with a digit too many keeps its 1: a yes to one never confirms the other", async () => {
+    assert.equal(await confirmedWith("415 555 1234 5", "1 415 555 1234 5"), false);
+  });
 });

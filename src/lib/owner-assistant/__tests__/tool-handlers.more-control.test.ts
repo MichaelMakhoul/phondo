@@ -873,3 +873,39 @@ describe("SCRUM-601: the booking's read-back says the number that will be SAVED"
     expect(vi.mocked(handleBookAppointment).mock.calls[0][1]).toMatchObject({ phone: "+61412345378" });
   });
 });
+
+// SCRUM-601 mutation-lens killers (survivors W5, W6, W15 of the test review).
+describe("SCRUM-601: a foreign number keeps its country code, and every result names the number as saved", () => {
+  const US_ORG = { data: { timezone: "America/New_York", country: "US" }, error: null };
+  const WORDS = ["oh", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+  /** The digits a read-back has the model say, from its spelled-out groups ("plus one-four-one, …" → "+141…"), however they're grouped. */
+  const digitsSaid = (message: string) =>
+    (/in its groups: "([^"]+)"/.exec(message)?.[1] ?? "")
+      .replace(/plus /g, "+")
+      .split(/[-, ]+/)
+      .map((w) => (w.startsWith("+") ? `+${WORDS.indexOf(w.slice(1))}` : String(WORDS.indexOf(w))))
+      .join("");
+
+  it("a number from outside the org's country, written in E.164, is read back with its country code — never as an org-country national number", async () => {
+    // An AU number on a US org's booking is saved as +61412345678: never read back as "0412 345 678".
+    db.queues.organizations = [US_ORG];
+    const us = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: "+61412345678" }, ctx);
+    expect(String((us.data as Record<string, unknown>).customer_phone).replace(/\D/g, "")).toBe("61412345678");
+    expect(digitsSaid(us.message)).toBe("+61412345678");
+    // A US number on an AU org's booking is saved as +14155551234: never read back as "(415) 555-1234".
+    db.queues.organizations = [AU_ORG];
+    const au = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: "+14155551234" }, ctx);
+    expect(String((au.data as Record<string, unknown>).customer_phone).replace(/\D/g, "")).toBe("14155551234");
+    expect(digitsSaid(au.message)).toBe("+14155551234");
+  });
+
+  it("the booking handed back again (its result never came back) names the number as it was saved and read back, however the owner said it", async () => {
+    const EARLIER = { id: NEW_ID, attendee_name: "Jane Smith", attendee_phone: "+61412345678", confirmation_code: "654321", practitioners: { name: "Alex" } };
+    db.queues.appointments = [{ data: [EARLIER], error: null }];
+    db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
+    db.queues.appointment_confirmations = [{ data: { status: "sent" }, error: null }];
+    const r = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: "+61 412 345 678", confirmed: true, notify_customer: "text" }, ctx);
+    expect(handleBookAppointment).not.toHaveBeenCalled();
+    expect(r.data).toMatchObject({ outcome: "booked", appointment_id: NEW_ID, customer_phone: "0412 345 678" });
+  });
+});
