@@ -23,6 +23,7 @@ import {
 import { phonesMatchForOwnership } from "@/lib/calendar/appointment-verification";
 import { confirmationIdempotencyKey } from "@/lib/sms/caller-sms";
 import { parsePhoneToE164 } from "@/lib/phone/normalize";
+import { formatPhoneForCountry } from "@/lib/country-config";
 import { pickName, snapshotForAudit, MAX_BOOKING_HORIZON_MS } from "@/lib/calendar/appointment-lifecycle";
 import { partitionRescheduleChanges } from "@/lib/calendar/reschedule-core";
 import { performRescheduleLeg } from "@/lib/calendar/reschedule-leg";
@@ -1139,6 +1140,39 @@ const callbackDoneData = (d: OwnerCallbackDoneData) => d as unknown as Record<st
 
 /** The notes the owner gives a new booking: one short line. */
 const BOOKING_NOTES_MAX = 200;
+const DIGIT_WORDS = ["oh", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+
+/**
+ * A number as it is said aloud, digit by digit in its groups: "0412 345 678" →
+ * "oh-four-one-two, three-four-five, six-seven-eight"; a leading + is "plus".
+ */
+function digitsAloud(shown: string): string {
+  const groups = shown.match(/\+?\d+/g) ?? [];
+  return groups
+    .map((g) => `${g.startsWith("+") ? "plus " : ""}${Array.from(g.replace("+", ""), (d) => DIGIT_WORDS[Number(d)]).join("-")}`)
+    .join(", ");
+}
+
+/**
+ * SCRUM-601: what a booking's read-back must say out loud — the number (its real digits,
+ * spelled out here so the model never says them from memory or from an example), the
+ * note, and any name that isn't plain. Only these let the owner catch a mishearing before
+ * it is saved: a real session saved a wrong digit because the number was never said.
+ */
+function bookingReadBackRule(shownPhone: string): string {
+  return ` Say the phone number back digit by digit, in its groups: "${digitsAloud(shownPhone)}". Say the note if there is one, and spell back letter by letter any name that isn't a common one, or that the owner corrected.`;
+}
+
+/**
+ * A number as it is read back: the national format in its groups ("0412 345 678",
+ * "02 9555 1234", "(415) 555-1234"), or null when it isn't one of the org's country's.
+ * @param e164OrRaw the number as it will be saved
+ */
+function spokenPhone(e164OrRaw: string, country: string | null): string | null {
+  if (country === "AU" && /^\+61\d{9}$/.test(e164OrRaw)) return formatPhoneForCountry(`0${e164OrRaw.slice(3)}`, "AU");
+  if (country === "US" && /^\+1\d{10}$/.test(e164OrRaw)) return formatPhoneForCountry(e164OrRaw.slice(2), "US");
+  return null;
+}
 /** A block's title, from the owner's reason. */
 const BLOCK_TITLE_MAX = 80;
 const DEFAULT_BLOCK_TITLE = "Time off";
@@ -1247,7 +1281,13 @@ export async function handleOwnerBookAppointment(
   if (serviceTypeId && !service) return invalidDetails("I couldn't find that service type. Check the SERVICE TYPES list, or leave it out.");
 
   const when = formatWhen(start, tz);
-  const shownPhone = sanitizeCustomerText(phone, PHONE_MAX) ?? phone;
+  // The owner says the number the way people do ("0412 345 678"); the diary keeps it
+  // in E.164 like the receptionist's bookings (caller ID) when it parses in the org's
+  // country, and as said otherwise.
+  const bookedPhone = (org.country === "AU" || org.country === "US" ? parsePhoneToE164(phone, org.country) : null) ?? phone;
+  // SCRUM-601: read back as the number that will be SAVED, in its groups — a misheard
+  // digit is heard there (a real session saved 0412 345 378 for a spoken 678).
+  const shownPhone = spokenPhone(bookedPhone, org.country) ?? sanitizeCustomerText(phone, PHONE_MAX) ?? phone;
   const base = { customer_name: customer, customer_phone: shownPhone, when, ...(service ? { service } : {}) };
 
   // As for a change: a confirm needs the owner's answer on telling the customer. A
@@ -1261,13 +1301,13 @@ export async function handleOwnerBookAppointment(
     if (args.confirmed === true && !contactWays(contact)) {
       method = "none";
     } else {
-      const change = `book ${customer} (${shownPhone}) for ${service ? `${service} on ` : ""}${when}${notes ? ` — notes: "${notes}"` : ""}`;
+      const change = `book ${customer} on ${shownPhone} for ${service ? `${service} on ` : ""}${when}${notes ? ` — notes: "${notes}"` : ""}`;
       return {
         success: false,
         message:
           args.confirmed === true
             ? askContactMessage(customer, contact, "owner_book_appointment")
-            : readBackMessage(change, customer, contact, "owner_book_appointment", "booked"),
+            : readBackMessage(change, customer, contact, "owner_book_appointment", "booked") + bookingReadBackRule(shownPhone),
         data: bookData({
           outcome: "needs_confirmation",
           ...base,
@@ -1278,11 +1318,6 @@ export async function handleOwnerBookAppointment(
       };
     }
   }
-
-  // The owner says the number the way people do ("0412 345 678"); the diary keeps it
-  // in E.164 like the receptionist's bookings (caller ID) when it parses in the org's
-  // country, and as said otherwise.
-  const bookedPhone = (org.country === "AU" || org.country === "US" ? parsePhoneToE164(phone, org.country) : null) ?? phone;
 
   /**
    * The booking from a moment ago, handed back AS IT STANDS (its stored name, service

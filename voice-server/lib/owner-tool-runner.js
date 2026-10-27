@@ -149,6 +149,8 @@ const RANGE_LABEL = new Map([
  * model just acted on can land a beat AFTER the confirm call. Only that waits.
  */
 const CONFIRM_SETTLE_MS = 1500;
+/** SCRUM-601: refusals "after other replies" in one call before the gate pages anyway. */
+const TALKED_PAST_PAGE_AT = 3;
 const CONFIRM_POLL_MS = 100;
 
 /**
@@ -294,7 +296,13 @@ function confirmationKey(name, args) {
   const phoneDigits = (v) => {
     if (typeof v !== "string") return null;
     const d = v.replace(/\D/g, "");
-    return (/^61\d{9}$/.test(d) ? `0${d.slice(2)}` : d) || null;
+    // One number however it's written: +61 4… is 04…, and +1 415… is (415)… (the
+    // read-back gives the national form, which the model may copy into its confirm).
+    // Only a real US shape drops its 1 — area code and exchange never start 0 or 1 —
+    // so "1 0412 345 678" stays a different number from 0412 345 678.
+    if (/^61\d{9}$/.test(d)) return `0${d.slice(2)}`;
+    if (/^1[2-9]\d{2}[2-9]\d{6}$/.test(d)) return d.slice(1);
+    return d || null;
   };
   // SCRUM-599: the new writes name no existing booking — every field the read-back gave
   // is the key, so a yes to one booking, block or note never makes another. JSON keeps
@@ -438,7 +446,19 @@ async function applyConfirmationGate(session, name, args, audit, now) {
   // again, which re-arms the key. Refused AGAIN after that re-arm, the gate
   // may be turning away a change the owner did confirm (a broken turn clock,
   // as on a pipeline failover) — that pages, ids only.
-  if (key !== null && confirmRefusals(session).get(key) === true) {
+  // SCRUM-601: more than one assistant turn since the re-arm means the turn clock IS
+  // running — the model spoke again after its read-back, which voids it (as designed) —
+  // so that only warns. A clock that never moves still pages at once, and one that
+  // miscounts (every confirm "talked past") pages on the TALKED_PAST_PAGE_AT-th.
+  const entry = pendingEntry();
+  const turnsSinceArm = entry && isStamp(entry.seq) && isStamp(session.assistantTurnSeq) ? session.assistantTurnSeq - entry.seq : null;
+  const talkedPast = key !== null && confirmRefusals(session).get(key) === true && turnsSinceArm !== null && turnsSinceArm > 1;
+  if (talkedPast) session.ownerConfirmTalkedPast = (Number.isInteger(session.ownerConfirmTalkedPast) ? session.ownerConfirmTalkedPast : 0) + 1;
+  if (talkedPast && session.ownerConfirmTalkedPast < TALKED_PAST_PAGE_AT) {
+    console.warn(`[OwnerTools] ${name}: refused again — the model spoke ${turnsSinceArm - 1} more time(s) after its read-back, so that read-back no longer counts (the turn clock is running). callSid=${session.callSid}`);
+  } else if (talkedPast) {
+    console.error(`[ALERT:error] [OwnerTools] ${name}: ${session.ownerConfirmTalkedPast} confirmations this call were refused as coming after other replies — the turn clock may be miscounting (org=${session.organizationId}, callSid=${session.callSid})`);
+  } else if (key !== null && confirmRefusals(session).get(key) === true) {
     console.error(`[ALERT:error] [OwnerTools] ${name}: a confirmation re-armed by PR B's read-back was refused again — the gate may be blocking a change the owner confirmed (org=${session.organizationId}, callSid=${session.callSid})`);
   } else {
     console.warn(`[OwnerTools] ${name} came with confirmed=true but no read-back of that change has been answered by the owner — forwarded as confirmed=false. callSid=${session.callSid}`);

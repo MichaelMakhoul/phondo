@@ -561,6 +561,42 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
     assert.ok(!paged[0].text.includes(ID), "never a tool argument in a log line");
     assert.equal(lines.filter((l) => l.level === "warn").length, 1, "the page replaces the warning, it does not add to it");
   });
+  // SCRUM-601: the 27 Oct browser session paged twice because Gemini spoke again after its
+  // read-back (an answer, a reply in French) before confirming — the turn clock was fine.
+  it("refused again after a re-arm when the model has spoken MORE than once since the read-back: a warning (the clock is running), never a page", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" }); // arms
+    await confirmCancel(s, d); // refused; PR B re-arms with its read-back
+    assistantTurn(s); // the read-back
+    ownerSpeaks(s); // the owner says something
+    assistantTurn(s); // ...and the model answers with something else — the read-back is void
+    ownerSpeaks(s);
+    await settled(() => confirmCancel(s, d)); // refused again
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+    assert.deepEqual(alerts(lines), [], lines.map((l) => l.text).join("\n"));
+    assert.ok(lines.some((l) => l.level === "warn" && l.text.includes("refused again — the model spoke 1 more time(s) after its read-back, so that read-back no longer counts (the turn clock is running)")));
+  });
+  it("a turn clock that miscounts (every re-armed confirm 'talked past') pages on the third such refusal in a call — once", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" }); // arms
+    await confirmCancel(s, d); // refused → re-armed
+    for (let i = 1; i <= 4; i += 1) {
+      assistantTurn(s); ownerSpeaks(s); assistantTurn(s); ownerSpeaks(s); // two turns since each re-arm
+      await settled(() => confirmCancel(s, d)); // refused again → PR B re-arms
+      assert.equal(alerts(lines).length, i < 3 ? 0 : i - 2, `after refusal ${i}: ${lines.map((l) => l.text).join("\n")}`);
+    }
+    assert.ok(alerts(lines)[0].text.includes("3 confirmations this call were refused as coming after other replies — the turn clock may be miscounting (org=org-1, callSid=CA1)"), alerts(lines)[0].text);
+    assert.equal(s.ownerConfirmTalkedPast, 4);
+  });
+  it("refused again after a re-arm when the read-back was heard but no answer was ever stamped: still pages (the owner's yes may be lost)", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    await confirmCancel(s, d); // refused → re-armed
+    assistantTurn(s); // the read-back is heard — and the owner's answer never gets stamped
+    await settled(() => confirmCancel(s, d));
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+    assert.equal(alerts(lines).length, 1);
+  });
   it("a key refused twice WITHOUT a re-arm in between (PR B answered something else) only warns", async () => {
     const s = makeSession();
     const NOT_FOUND = { success: false, message: "I can't find that job.", data: { outcome: "not_found", customer_notified: false } };
@@ -1611,8 +1647,21 @@ describe("SCRUM-599: booking, blocking and marking done go through the same gate
     assert.equal(d.calls.at(-1).args.confirmed, true, "the same booking, written differently, confirms");
   });
 
+  // SCRUM-601: the read-back gives the number in its national form, which the model may
+  // copy into its confirm — the same number however it's written.
+  it("a US number confirmed as the read-back wrote it ((415) 555-1234) is the number armed as +1 415 555 1234", async () => {
+    const s = makeSession();
+    const d = makeDeps(prB);
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: "+1 415 555 1234" } }, d.deps));
+    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ['owner_book_appointment|["jane smith","4155551234","2026-10-29T14:00","","hot water unit leaking"]']);
+    assistantTurn(s);
+    ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: "(415) 555-1234", confirmed: true, notify_customer: "none" } }, d.deps)));
+    assert.equal(d.calls.at(-1).args.confirmed, true);
+  });
+
   it("a yes to one booking never makes another: a different time, person, number, service or note goes on unconfirmed", async () => {
-    for (const change of [{ start: "2026-10-29T15:00" }, { customer_name: "Jane Smyth" }, { customer_phone: "0412 345 679" }, { service_type_id: "svc-1" }, { notes: "Blocked drain" }]) {
+    for (const change of [{ start: "2026-10-29T15:00" }, { customer_name: "Jane Smyth" }, { customer_phone: "0412 345 679" }, { customer_phone: "1 0412 345 678" }, { service_type_id: "svc-1" }, { notes: "Blocked drain" }]) {
       const s = makeSession();
       const d = makeDeps(prB);
       await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: BOOK }, d.deps));
