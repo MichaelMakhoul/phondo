@@ -119,7 +119,7 @@ describe("owner_book_appointment", () => {
     expect(r.message).toContain(`Read this back and get a clear yes before changing anything: book Jane Smith on 0412 345 678 for ${WHEN} — notes: "Hot water unit leaking".`);
     // SCRUM-601: the read-back must SAY the number (a real session saved a misheard digit), the note, and spell an unusual name.
     expect(r.message).toMatch(/ Say the phone number back digit by digit, in its groups: "oh-four-one-two, three-four-five, six-seven-eight"\. Say the note\. Spell back letter by letter any name that isn't a common one, or that the owner corrected — once, not again on a repeated read-back unless it changed\.$/);
-    expect(r.message).toContain(`In the same question, ask whether to let Jane Smith know: by text, or not tell them — or, if the owner already said, don't ask again: say their choice in the read-back ("…and not tell them, right?").`);
+    expect(r.message).toContain(`In the same question, ask whether to let Jane Smith know: by text, or not tell them — or, if the owner already said, don't ask again: say their choice in the read-back ("…and text them, right?" or "…and not tell them, right?").`);
     expect(r.message).toContain('call owner_book_appointment again with confirmed=true and notify_customer set to their answer: "text", "none"');
     expect(r.data).toEqual({ outcome: "needs_confirmation", customer_name: "Jane Smith", customer_phone: "0412 345 678", when: WHEN, contact_options: ["text", "none"], customer_notified: false });
     expect(checkCustomerCall).not.toHaveBeenCalled(); // a call about a new booking isn't offered

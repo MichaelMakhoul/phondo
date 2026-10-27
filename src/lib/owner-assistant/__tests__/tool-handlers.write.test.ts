@@ -730,7 +730,7 @@ describe("SCRUM-597: every change asks whether to let the customer know", () => 
     const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME }, ctx);
     expect(r.data).toMatchObject({ outcome: "needs_confirmation", contact_options: ["text", "none"] });
     expect((r.data as any).contact_note).toBeUndefined();
-    expect(r.message).toContain(`In the same question, ask whether to let Jane Smith know: by text, or not tell them — or, if the owner already said, don't ask again: say their choice in the read-back ("…and not tell them, right?").`);
+    expect(r.message).toContain(`In the same question, ask whether to let Jane Smith know: by text, or not tell them — or, if the owner already said, don't ask again: say their choice in the read-back ("…and text them, right?" or "…and not tell them, right?").`);
     expect(r.message).not.toMatch(/leave it/);
     expect(r.message).toContain('notify_customer set to their answer: "text", "none"');
     const optOut = db.log.find((o) => o.table === "caller_sms_optouts");
@@ -928,6 +928,8 @@ describe("SCRUM-598: 'call' on a change — offered only when the voice server s
     expect(checkCustomerCall).toHaveBeenCalledWith({ organizationId: ORG, appointmentId: APPT, purpose: "moved", phone: "+61412345678", requestedByCallId: CALL });
     // Clients lens M8: the owner hears what a call does before choosing.
     expect(r.message).toContain("by call (a call also checks the new time suits them), or not tell them");
+    // SCRUM-601: the owner's already-said choice is read back from the ways that work — here a call.
+    expect(r.message).toContain(`say their choice in the read-back ("…and call them, right?" or "…and not tell them, right?").`);
     expect(placeCustomerCall).not.toHaveBeenCalled();
   });
 

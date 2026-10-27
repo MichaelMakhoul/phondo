@@ -557,7 +557,8 @@ describe("buildOwnerPrompt — SCRUM-601: what the 27 Oct session got wrong", ()
     assert.ok(!suffix.includes("never drop the change"));
   });
   it("the owner who already said whether to tell the customer isn't asked again — their choice is read back", () => {
-    assert.ok(p.includes(`If the owner already said whether to tell them ("move it, don't tell him"), don't ask again: say their choice in the read-back ("…and not tell him, right?").`));
+    assert.ok(p.includes(`If the owner already said whether to tell them ("move it, don't tell him"), don't ask again: say their choice in the read-back ("…and text him, right?" or "…and not tell him, right?").`));
+    assert.ok(buildOwnerGeminiSuffix().includes("offering only data.contact_options (if the owner already said, say their choice instead of asking)"));
   });
   it("the block tool only when the owner asks for a block", () => {
     assert.ok(p.includes("Use it only when the owner asks to block out or close off time — never offer it for anything else."));

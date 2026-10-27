@@ -478,7 +478,9 @@ function readBackMessage(change: string, customer: string, contact: ContactOptio
     return `Read this back and get a clear yes before changing anything: ${change}. Telling ${customer} isn't possible from here${why}: say so in a few words (for example "I can't text them")${offerNumber}. If the owner confirms, call ${tool} again with confirmed=true and notify_customer "none".`;
   }
   const note = contact.note ? ` ${contact.note}` : "";
-  return `Read this back and get a clear yes before changing anything: ${change}. In the same question, ask whether to let ${customer} know: by ${ways}${callDoes}, or not tell them — or, if the owner already said, don't ask again: say their choice in the read-back ("…and not tell them, right?").${note} If the owner confirms, call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
+  // Both sides as the example, so "already said" never leans toward one guess.
+  const told = contact.options.includes("text") ? "text" : "call";
+  return `Read this back and get a clear yes before changing anything: ${change}. In the same question, ask whether to let ${customer} know: by ${ways}${callDoes}, or not tell them — or, if the owner already said, don't ask again: say their choice in the read-back ("…and ${told} them, right?" or "…and not tell them, right?").${note} If the owner confirms, call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
 }
 
 /**
