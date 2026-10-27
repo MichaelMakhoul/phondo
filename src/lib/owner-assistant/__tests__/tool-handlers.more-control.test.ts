@@ -909,3 +909,21 @@ describe("SCRUM-601: a foreign number keeps its country code, and every result n
     expect(r.data).toMatchObject({ outcome: "booked", appointment_id: NEW_ID, customer_phone: "0412 345 678" });
   });
 });
+
+// SCRUM-601 mutation-lens killers, round 2 (survivors A1, A10).
+describe("SCRUM-601 round 2: how a read-back groups digits, and a blank note", () => {
+  it("a five-digit run is said in threes like any run longer than four — 'up to four as one' is a ceiling", async () => {
+    // A UK number given in its national form, on an AU org: read back as said, in its groups.
+    const r = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: "01632 960123" }, ctx);
+    expect(r.message).toContain(' in its groups: "oh-one-six, three-two, nine-six-oh, one-two-three".');
+  });
+
+  it("a note that is only spaces or invisible characters is no note: the read-back says \"no job note\", never \"Say the note.\"", async () => {
+    for (const blank of ["   ", "\u200b"]) {
+      db.queues.organizations = [AU_ORG];
+      const r = await handleOwnerBookAppointment(ORG, { ...BOOK, notes: blank }, ctx);
+      expect(r.message, JSON.stringify(blank)).toContain(`There's no job note: say "no job note", so the owner can add one.`);
+      expect(r.message, JSON.stringify(blank)).not.toContain("Say the note.");
+    }
+  });
+});

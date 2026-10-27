@@ -591,7 +591,17 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
       assistantTurn(s); if (!lateYes) ownerSpeaks(s); // the read-back, then "yes" (or its transcript comes late)
       assistantTurn(s); // a filler counted as a turn with the confirm
       if (lateYes) ownerSpeaks(s);
-      await confirmCancel(s, d); // NOT settled(): two turns since the re-arm means no settle wait — this must resolve on its own
+      // Timers mocked and never ticked: any wait on the refusal path would hang here (test lens r2 G7).
+      mock.timers.enable({ apis: ["setTimeout"] });
+      try {
+        let done = false;
+        const p = confirmCancel(s, d).then(() => { done = true; });
+        await flush();
+        assert.equal(done, true, `lateYes=${lateYes}: the refusal resolved with no timer tick`);
+        await p;
+      } finally {
+        mock.timers.reset();
+      }
       assert.equal(d.calls.at(-1).args.confirmed, false);
       assert.equal(alerts(lines).length, 1, `lateYes=${lateYes}: ${lines.map((l) => l.text).join("\n")}`);
     }
@@ -1981,5 +1991,24 @@ describe("SCRUM-601: a booking's number however it's written — the read-back's
 
   it("a US number with a digit too many keeps its 1: a yes to one never confirms the other", async () => {
     assert.equal(await confirmedWith("415 555 1234 5", "1 415 555 1234 5"), false);
+  });
+});
+
+// SCRUM-601 mutation-lens killer, round 2 (survivor B9).
+describe("SCRUM-601 round 2: space around a booking's number never changes which number it is", () => {
+  const prB = (name, args) => (args.confirmed === true ? { success: true, message: "Done.", data: { outcome: "booked" } } : { success: false, message: "Read this back…", data: { outcome: "needs_confirmation" } });
+  const BOOK = { customer_name: "Jane Smith", start: "2026-10-29T14:00", notes: "Hot water unit leaking" };
+  /** Arm a booking with `readBack`, the read-back is heard and answered, then confirm it with `confirmedAs`: what was forwarded. */
+  async function confirmedWith(readBack, confirmedAs) {
+    const s = makeSession(); const d = makeDeps(prB);
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: readBack } }, d.deps));
+    assistantTurn(s); ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: confirmedAs, confirmed: true, notify_customer: "none" } }, d.deps)));
+    return d.calls.at(-1).args.confirmed;
+  }
+
+  it("a + number written with a space before it keeps its +: confirmed as written goes through, and its +1 twin never does", async () => {
+    assert.equal(await confirmedWith(" +64 9 555 1234", "+64 9 555 1234"), true);
+    assert.equal(await confirmedWith(" +64 9 555 1234", "+1 649 555 1234"), false);
   });
 });
