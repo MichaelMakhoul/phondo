@@ -561,6 +561,60 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
     assert.ok(!paged[0].text.includes(ID), "never a tool argument in a log line");
     assert.equal(lines.filter((l) => l.level === "warn").length, 1, "the page replaces the warning, it does not add to it");
   });
+  // SCRUM-601: the 27 Oct browser session paged twice, each time for Gemini confirming
+  // after it talked past its own read-back. The stamps can't tell that from a miscounted
+  // turn (SF1: a filler counted with the confirm), so the gate never guesses: one page per
+  // call, naming both causes; every later refused-again in that call only warns.
+  it("refused again after a re-arm: one page per call, naming both causes; the next one in that call only warns", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" }); // arms
+    await confirmCancel(s, d); // refused → re-armed
+    assistantTurn(s); ownerSpeaks(s); assistantTurn(s); ownerSpeaks(s); // the model talked past its read-back
+    await settled(() => confirmCancel(s, d)); // refused again → pages
+    assistantTurn(s); ownerSpeaks(s); assistantTurn(s); ownerSpeaks(s);
+    await settled(() => confirmCancel(s, d)); // and again → a warning
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+    const paged = alerts(lines);
+    assert.equal(paged.length, 1, lines.map((l) => l.text).join("\n"));
+    assert.ok(paged[0].text.includes("the gate may be blocking a change the owner confirmed, or the model confirmed after talking past its read-back; the call's transcript tells which (org=org-1, callSid=CA1)"), paged[0].text);
+    assert.ok(lines.some((l) => l.level === "warn" && l.text.includes("a confirmation re-armed by PR B's read-back was refused again — this call has paged already. callSid=CA1")));
+    assert.equal(s.ownerConfirmGatePaged, true);
+  });
+  // Silent-failure lens: a miscounted turn after the owner's yes (SF1) must page at its
+  // FIRST refused-again — whatever the stamps look like, and without any extra wait.
+  it("a turn counted after the owner's yes (SF1) pages at the first refused-again — the refusal path adds no wait", async () => {
+    for (const lateYes of [false, true]) {
+      lines.length = 0;
+      const s = makeSession(); const d = makeDeps(prB);
+      await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+      await confirmCancel(s, d); // refused → re-armed
+      assistantTurn(s); if (!lateYes) ownerSpeaks(s); // the read-back, then "yes" (or its transcript comes late)
+      assistantTurn(s); // a filler counted as a turn with the confirm
+      if (lateYes) ownerSpeaks(s);
+      // Timers mocked and never ticked: any wait on the refusal path would hang here (test lens r2 G7).
+      mock.timers.enable({ apis: ["setTimeout"] });
+      try {
+        let done = false;
+        const p = confirmCancel(s, d).then(() => { done = true; });
+        await flush();
+        assert.equal(done, true, `lateYes=${lateYes}: the refusal resolved with no timer tick`);
+        await p;
+      } finally {
+        mock.timers.reset();
+      }
+      assert.equal(d.calls.at(-1).args.confirmed, false);
+      assert.equal(alerts(lines).length, 1, `lateYes=${lateYes}: ${lines.map((l) => l.text).join("\n")}`);
+    }
+  });
+  it("refused again after a re-arm when the read-back was heard but no answer was ever stamped: still pages (the owner's yes may be lost)", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    await confirmCancel(s, d); // refused → re-armed
+    assistantTurn(s); // the read-back is heard — and the owner's answer never gets stamped
+    await settled(() => confirmCancel(s, d));
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+    assert.equal(alerts(lines).length, 1);
+  });
   it("a key refused twice WITHOUT a re-arm in between (PR B answered something else) only warns", async () => {
     const s = makeSession();
     const NOT_FOUND = { success: false, message: "I can't find that job.", data: { outcome: "not_found", customer_notified: false } };
@@ -1611,8 +1665,37 @@ describe("SCRUM-599: booking, blocking and marking done go through the same gate
     assert.equal(d.calls.at(-1).args.confirmed, true, "the same booking, written differently, confirms");
   });
 
+  // SCRUM-601: the read-back gives the number in its national form, which the model may
+  // copy into its confirm — the same number however it's written.
+  it("one number however it's written: the forms the booking path saves as one share a key; different numbers never do", async () => {
+    const keyFor = async (phone) => {
+      const s = makeSession(); const d = makeDeps(prB);
+      await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: phone } }, d.deps));
+      return JSON.parse([...s.ownerPendingConfirmations.keys()][0].slice("owner_book_appointment|".length))[1];
+    };
+    for (const same of ["0412 345 678", "+61 412 345 678", "61412345678", "412 345 678"]) assert.equal(await keyFor(same), "0412345678", same);
+    for (const same of ["(415) 555-1234", "+1 415 555 1234", "1 415 555 1234", "+1 415 155 1234".replace("155", "555")]) assert.equal(await keyFor(same), "4155551234", same);
+    assert.equal(await keyFor("+1 415 155 1234"), "4151551234", "an exchange starting 1 is still a US number");
+    // Never one key for two numbers:
+    assert.equal(await keyFor("1 0412 345 678"), "10412345678");
+    assert.equal(await keyFor("+64 9 555 1234"), "+6495551234", "NZ keeps its +");
+    assert.equal(await keyFor("+1 649 555 1234"), "6495551234", "…so it is not the Turks & Caicos number with the same digits");
+    assert.equal(await keyFor("+412 345 678"), "+412345678", "a + number is never read as an AU national one");
+  });
+
+  it("a US number confirmed as the read-back wrote it ((415) 555-1234) is the number armed as +1 415 555 1234", async () => {
+    const s = makeSession();
+    const d = makeDeps(prB);
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: "+1 415 555 1234" } }, d.deps));
+    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ['owner_book_appointment|["jane smith","4155551234","2026-10-29T14:00","","hot water unit leaking"]']);
+    assistantTurn(s);
+    ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: "(415) 555-1234", confirmed: true, notify_customer: "none" } }, d.deps)));
+    assert.equal(d.calls.at(-1).args.confirmed, true);
+  });
+
   it("a yes to one booking never makes another: a different time, person, number, service or note goes on unconfirmed", async () => {
-    for (const change of [{ start: "2026-10-29T15:00" }, { customer_name: "Jane Smyth" }, { customer_phone: "0412 345 679" }, { service_type_id: "svc-1" }, { notes: "Blocked drain" }]) {
+    for (const change of [{ start: "2026-10-29T15:00" }, { customer_name: "Jane Smyth" }, { customer_phone: "0412 345 679" }, { customer_phone: "1 0412 345 678" }, { service_type_id: "svc-1" }, { notes: "Blocked drain" }]) {
       const s = makeSession();
       const d = makeDeps(prB);
       await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: BOOK }, d.deps));
@@ -1824,4 +1907,108 @@ describe("test lens round 3: the advice when an interrupted block or callback ne
       assert.ok(!told[0].includes(wrong), told[0]);
     });
   }
+});
+
+// SCRUM-601 mutation-lens killers (survivors V5, V12, V13, V15, V16, V17 of the test review).
+describe("SCRUM-601: which refused-again confirms page", () => {
+  const prB = (name, args) => (name === "owner_cancel_appointment" ? (args.confirmed === true ? CANCELLED : NEEDS_CONFIRMATION) : { message: "ok", data: {} });
+  let lines;
+  beforeEach(() => { lines = []; });
+  const run = (s, d, name, args) => captureConsole(() => runOwnerToolCall(s, { name, args }, d.deps)).then((l) => { lines.push(...l); });
+  const confirmCancel = (s, d, id) => run(s, d, "owner_cancel_appointment", { appointment_id: id, confirmed: true });
+  /** The model reads back, the owner speaks, the model says something else, the owner speaks: that read-back is void. */
+  const talkPast = (s) => { assistantTurn(s); ownerSpeaks(s); assistantTurn(s); ownerSpeaks(s); };
+
+  it("a turn clock that isn't a number at all still pages on the first refusal after a re-arm, even after the owner answered", async () => {
+    for (const [label, breakIt] of [["assistantTurnSeq missing", (s) => { delete s.assistantTurnSeq; }], ["assistantTurnSeq a string", (s) => { s.assistantTurnSeq = "3"; }]]) {
+      lines = [];
+      const s = makeSession(); breakIt(s); const d = makeDeps(prB);
+      await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" }); // arms
+      await confirmCancel(s, d, "a1"); // refused (fails closed) → PR B re-arms
+      ownerSpeaks(s); // the owner says yes — the broken clock can't tell
+      await settled(() => confirmCancel(s, d, "a1")); // refused again after that re-arm
+      assert.equal(d.calls.at(-1).args.confirmed, false, label);
+      assert.equal(alerts(lines).length, 1, `${label}: ${lines.map((l) => l.text).join("\n")}`);
+    }
+  });
+
+  it("a FIRST refusal never pages, however many turns since its read-back: four writes talked past once each only warn", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    for (const id of ["a1", "a2", "a3", "a4"]) {
+      await run(s, d, "owner_cancel_appointment", { appointment_id: id }); // arms
+      talkPast(s);
+      await settled(() => confirmCancel(s, d, id)); // refused — this write was never re-armed
+      assert.equal(d.calls.at(-1).args.confirmed, false, id);
+    }
+    assert.deepEqual(alerts(lines), [], lines.map((l) => l.text).join("\n"));
+    assert.equal(lines.filter((l) => l.level === "warn" && l.text.includes("no read-back of that change has been answered")).length, 4);
+    assert.notEqual(s.ownerConfirmGatePaged, true);
+  });
+
+  it("once per CALL: refused-agains of different writes page once in all, and a confirm that goes through in between resets nothing", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" }); // arms
+    await confirmCancel(s, d, "a1"); // first refusal → re-armed
+    talkPast(s);
+    await settled(() => confirmCancel(s, d, "a1")); // refused again → the call's page
+    assert.equal(alerts(lines).length, 1);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a2" }); // another write: read back, answered, confirmed
+    assistantTurn(s); ownerSpeaks(s);
+    await settled(() => confirmCancel(s, d, "a2"));
+    assert.equal(d.calls.at(-1).args.confirmed, true, "a2 goes through");
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a3" }); // a third write
+    await confirmCancel(s, d, "a3"); // first refusal → re-armed
+    talkPast(s);
+    await settled(() => confirmCancel(s, d, "a3")); // refused again — this call has paged
+    assert.equal(alerts(lines).length, 1, lines.map((l) => l.text).join("\n"));
+    assert.ok(lines.some((l) => l.level === "warn" && l.text.includes("this call has paged already")));
+    // A new call pages afresh.
+    const next = makeSession({ callSid: "CA2" }); const d2 = makeDeps(prB);
+    await run(next, d2, "owner_cancel_appointment", { appointment_id: "a1" });
+    await confirmCancel(next, d2, "a1");
+    talkPast(next);
+    await settled(() => confirmCancel(next, d2, "a1"));
+    assert.equal(alerts(lines).length, 2);
+    assert.ok(alerts(lines)[1].text.includes("callSid=CA2"));
+  });
+});
+
+describe("SCRUM-601: a booking's number however it's written — the read-back's national form confirms, and a US number with a digit too many keeps its 1", () => {
+  const prB = (name, args) => (args.confirmed === true ? { success: true, message: "Done.", data: { outcome: "booked" } } : { success: false, message: "Read this back…", data: { outcome: "needs_confirmation" } });
+  const BOOK = { customer_name: "Jane Smith", customer_phone: "0412 345 678", start: "2026-10-29T14:00", notes: "Hot water unit leaking" };
+  /** Arm a booking with `readBack`, the read-back is heard and answered, then confirm it with `confirmedAs`: what was forwarded. */
+  async function confirmedWith(readBack, confirmedAs) {
+    const s = makeSession(); const d = makeDeps(prB);
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: readBack } }, d.deps));
+    assistantTurn(s); ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: confirmedAs, confirmed: true, notify_customer: "none" } }, d.deps)));
+    return d.calls.at(-1).args.confirmed;
+  }
+
+  it("an AU landline confirmed as the read-back now writes it (02 9555 1234) is the number armed as +61 2 9555 1234", async () => {
+    assert.equal(await confirmedWith("+61 2 9555 1234", "02 9555 1234"), true);
+  });
+
+  it("a US number with a digit too many keeps its 1: a yes to one never confirms the other", async () => {
+    assert.equal(await confirmedWith("415 555 1234 5", "1 415 555 1234 5"), false);
+  });
+});
+
+// SCRUM-601 mutation-lens killer, round 2 (survivor B9).
+describe("SCRUM-601 round 2: space around a booking's number never changes which number it is", () => {
+  const prB = (name, args) => (args.confirmed === true ? { success: true, message: "Done.", data: { outcome: "booked" } } : { success: false, message: "Read this back…", data: { outcome: "needs_confirmation" } });
+  const BOOK = { customer_name: "Jane Smith", start: "2026-10-29T14:00", notes: "Hot water unit leaking" };
+  /** Arm a booking with `readBack`, the read-back is heard and answered, then confirm it with `confirmedAs`: what was forwarded. */
+  async function confirmedWith(readBack, confirmedAs) {
+    const s = makeSession(); const d = makeDeps(prB);
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: readBack } }, d.deps));
+    assistantTurn(s); ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: confirmedAs, confirmed: true, notify_customer: "none" } }, d.deps)));
+    return d.calls.at(-1).args.confirmed;
+  }
+
+  it("a + number written with a space before it keeps its +: confirmed as written goes through, and its +1 twin never does", async () => {
+    assert.equal(await confirmedWith(" +64 9 555 1234", "+64 9 555 1234"), true);
+    assert.equal(await confirmedWith(" +64 9 555 1234", "+1 649 555 1234"), false);
+  });
 });

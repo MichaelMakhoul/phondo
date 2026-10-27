@@ -116,8 +116,10 @@ describe("owner_book_appointment", () => {
     const r = await handleOwnerBookAppointment(ORG, { ...BOOK, notes: "Hot water unit\nleaking" }, ctx);
     expect(r.success).toBe(false);
     expect(r.error).toBeUndefined();
-    expect(r.message).toContain(`Read this back and get a clear yes before changing anything: book Jane Smith (0412 345 678) for ${WHEN} — notes: "Hot water unit leaking".`);
-    expect(r.message).toContain("In the same question, ask whether to let Jane Smith know: by text, or not tell them.");
+    expect(r.message).toContain(`Read this back and get a clear yes before changing anything: book Jane Smith on 0412 345 678 for ${WHEN} — notes: "Hot water unit leaking".`);
+    // SCRUM-601: the read-back must SAY the number (a real session saved a misheard digit), the note, and spell an unusual name.
+    expect(r.message).toMatch(/ Say the phone number back digit by digit, in its groups: "oh-four-one-two, three-four-five, six-seven-eight"\. Say the note\. Spell back letter by letter any name that isn't a common one, or that the owner corrected — once, not again on a repeated read-back unless it changed\.$/);
+    expect(r.message).toContain(`In the same question, ask whether to let Jane Smith know: by text, or not tell them — or, if the owner already said, don't ask again: say their choice in the read-back ("…and text them, right?" or "…and not tell them, right?").`);
     expect(r.message).toContain('call owner_book_appointment again with confirmed=true and notify_customer set to their answer: "text", "none"');
     expect(r.data).toEqual({ outcome: "needs_confirmation", customer_name: "Jane Smith", customer_phone: "0412 345 678", when: WHEN, contact_options: ["text", "none"], customer_notified: false });
     expect(checkCustomerCall).not.toHaveBeenCalled(); // a call about a new booking isn't offered
@@ -212,7 +214,7 @@ describe("owner_book_appointment", () => {
   it("a service type is read org-scoped and active, and named in the read-back; an unknown one is refused before anything is booked", async () => {
     db.queues.service_types = [{ data: { id: SERVICE, name: "Hot water service" }, error: null }];
     const r = await handleOwnerBookAppointment(ORG, { ...BOOK, service_type_id: SERVICE }, ctx);
-    expect(r.message).toContain(`book Jane Smith (0412 345 678) for Hot water service on ${WHEN}.`);
+    expect(r.message).toContain(`book Jane Smith on 0412 345 678 for Hot water service on ${WHEN}.`);
     expect(r.data).toMatchObject({ outcome: "needs_confirmation", service: "Hot water service" });
     expect(filters(opsOn("service_types")[0], "eq")).toEqual([["id", SERVICE], ["organization_id", ORG], ["is_active", true]]);
 
@@ -816,5 +818,112 @@ describe("owner_mark_callback_done", () => {
     db.queues.organizations = [AU_ORG];
     db.queues.callback_requests = [{ data: { ...PENDING, caller_name: null }, error: null }];
     expect((await handleOwnerMarkCallbackDone(ORG, { callback_id: CALLBACK }, ctx)).message).toContain("mark the caller's callback");
+  });
+});
+
+describe("SCRUM-601: the booking's read-back says the number that will be SAVED", () => {
+  it("the number is read back in the national format of what will be stored — whatever way the owner said it", async () => {
+    for (const said of ["0412 345 678", "+61 412 345 678", "61412345678", "0412-345-678"]) {
+      db.queues.organizations = [AU_ORG];
+      const r = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: said }, ctx);
+      expect(r.message, said).toContain(`book Jane Smith on 0412 345 678 for ${WHEN}`);
+      expect(r.data, said).toMatchObject({ customer_phone: "0412 345 678" });
+    }
+  });
+
+  it("a landline reads in its groups; a US number as (415) 555-1234; a number from elsewhere as the owner said it", async () => {
+    db.queues.organizations = [AU_ORG];
+    expect((await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: "+61 2 9555 1234" }, ctx)).data).toMatchObject({ customer_phone: "02 9555 1234" });
+    db.queues.organizations = [{ data: { timezone: "America/New_York", country: "US" }, error: null }];
+    expect((await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: "415 555 1234", start: "2026-10-16T10:00" }, ctx)).data).toMatchObject({ customer_phone: "(415) 555-1234" });
+    db.queues.organizations = [AU_ORG];
+    expect((await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: "+44 20 7946 0958" }, ctx)).data).toMatchObject({ customer_phone: "+44 20 7946 0958" });
+  });
+
+  it("the digits to say are the number's OWN, spelled out — a misheard 378 is said as three-seven-eight, never an example's digits", async () => {
+    const said = async (phone: string, org = AU_ORG) => {
+      db.queues.organizations = [org];
+      return (await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: phone }, ctx)).message;
+    };
+    expect(await said("0412 345 378")).toContain(' in its groups: "oh-four-one-two, three-four-five, three-seven-eight".');
+    expect(await said("+61 2 9555 1234")).toContain(' in its groups: "oh-two, nine-five-five-five, one-two-three-four".');
+    expect(await said("+44 20 7946 0958")).toContain(' in its groups: "plus four-four, two-oh, seven-nine-four-six, oh-nine-five-eight".');
+    expect(await said("415 555 1234", { data: { timezone: "America/New_York", country: "US" }, error: null })).toContain(' in its groups: "four-one-five, five-five-five, one-two-three-four".');
+  });
+
+  it("a booking with no note says so — a note the model dropped is heard missing (27 Oct: 'shower installation' was lost)", async () => {
+    const r = await handleOwnerBookAppointment(ORG, BOOK, ctx); // this block's BOOK has no note
+    expect(r.message).toContain(`. There's no job note: say "no job note", so the owner can add one. Spell back letter by letter`);
+    expect(r.message).not.toContain("Say the note.");
+  });
+
+  it("an unbroken number is said in threes, a lone last digit joining the group before", async () => {
+    const said = async (phone: string, org: typeof AU_ORG) => {
+      db.queues.organizations = [org];
+      return (await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: phone }, ctx)).message;
+    };
+    const US = { data: { timezone: "America/New_York", country: "US" }, error: null };
+    expect(await said("+442079460958", AU_ORG)).toContain(' in its groups: "plus four-four-two, oh-seven-nine, four-six-oh, nine-five-eight".');
+    expect(await said("+61412345678", US)).toContain(' in its groups: "plus six-one-four, one-two-three, four-five-six, seven-eight".');
+    expect(await said("0412345678", US)).toContain(' in its groups: "oh-four-one, two-three-four, five-six-seven-eight".');
+  });
+
+  it("the number read back is the one booked: the confirm saves exactly that number", async () => {
+    await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: "0412 345 378", confirmed: true, notify_customer: "none" }, ctx);
+    expect(vi.mocked(handleBookAppointment).mock.calls[0][1]).toMatchObject({ phone: "+61412345378" });
+  });
+});
+
+// SCRUM-601 mutation-lens killers (survivors W5, W6, W15 of the test review).
+describe("SCRUM-601: a foreign number keeps its country code, and every result names the number as saved", () => {
+  const US_ORG = { data: { timezone: "America/New_York", country: "US" }, error: null };
+  const WORDS = ["oh", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+  /** The digits a read-back has the model say, from its spelled-out groups ("plus one-four-one, …" → "+141…"), however they're grouped. */
+  const digitsSaid = (message: string) =>
+    (/in its groups: "([^"]+)"/.exec(message)?.[1] ?? "")
+      .replace(/plus /g, "+")
+      .split(/[-, ]+/)
+      .map((w) => (w.startsWith("+") ? `+${WORDS.indexOf(w.slice(1))}` : String(WORDS.indexOf(w))))
+      .join("");
+
+  it("a number from outside the org's country, written in E.164, is read back with its country code — never as an org-country national number", async () => {
+    // An AU number on a US org's booking is saved as +61412345678: never read back as "0412 345 678".
+    db.queues.organizations = [US_ORG];
+    const us = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: "+61412345678" }, ctx);
+    expect(String((us.data as Record<string, unknown>).customer_phone).replace(/\D/g, "")).toBe("61412345678");
+    expect(digitsSaid(us.message)).toBe("+61412345678");
+    // A US number on an AU org's booking is saved as +14155551234: never read back as "(415) 555-1234".
+    db.queues.organizations = [AU_ORG];
+    const au = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: "+14155551234" }, ctx);
+    expect(String((au.data as Record<string, unknown>).customer_phone).replace(/\D/g, "")).toBe("14155551234");
+    expect(digitsSaid(au.message)).toBe("+14155551234");
+  });
+
+  it("the booking handed back again (its result never came back) names the number as it was saved and read back, however the owner said it", async () => {
+    const EARLIER = { id: NEW_ID, attendee_name: "Jane Smith", attendee_phone: "+61412345678", confirmation_code: "654321", practitioners: { name: "Alex" } };
+    db.queues.appointments = [{ data: [EARLIER], error: null }];
+    db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
+    db.queues.appointment_confirmations = [{ data: { status: "sent" }, error: null }];
+    const r = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: "+61 412 345 678", confirmed: true, notify_customer: "text" }, ctx);
+    expect(handleBookAppointment).not.toHaveBeenCalled();
+    expect(r.data).toMatchObject({ outcome: "booked", appointment_id: NEW_ID, customer_phone: "0412 345 678" });
+  });
+});
+
+// SCRUM-601 mutation-lens killers, round 2 (survivors A1, A10).
+describe("SCRUM-601 round 2: how a read-back groups digits, and a blank note", () => {
+  it("a five-digit run is said in threes like any run longer than four — 'up to four as one' is a ceiling", async () => {
+    // A UK number given in its national form, on an AU org: read back as said, in its groups.
+    const r = await handleOwnerBookAppointment(ORG, { ...BOOK, customer_phone: "01632 960123" }, ctx);
+    expect(r.message).toContain(' in its groups: "oh-one-six, three-two, nine-six-oh, one-two-three".');
+  });
+
+  it("a note that is only spaces or invisible characters is no note: the read-back says \"no job note\", never \"Say the note.\"", async () => {
+    for (const blank of ["   ", "\u200b"]) {
+      db.queues.organizations = [AU_ORG];
+      const r = await handleOwnerBookAppointment(ORG, { ...BOOK, notes: blank }, ctx);
+      expect(r.message, JSON.stringify(blank)).toContain(`There's no job note: say "no job note", so the owner can add one.`);
+      expect(r.message, JSON.stringify(blank)).not.toContain("Say the note.");
+    }
   });
 });

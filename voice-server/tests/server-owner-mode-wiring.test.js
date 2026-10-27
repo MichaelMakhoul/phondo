@@ -133,7 +133,7 @@ describe("SCRUM-587: owner session — controller-override pins", () => {
   });
 
   it("server.js never writes the gate's clock directly, and CallSession only declares it (never reset mid-call)", () => {
-    for (const field of ["assistantTurnSeq", "lastAssistantTurnAt", "lastAssistantSpeechAt", "lastOwnerSpeechAt", "assistantTurnHadSpeech", "ownerPendingConfirmations", "ownerConfirmSpentSpeechAt"]) {
+    for (const field of ["assistantTurnSeq", "lastAssistantTurnAt", "lastAssistantSpeechAt", "lastOwnerSpeechAt", "assistantTurnHadSpeech", "ownerPendingConfirmations", "ownerConfirmSpentSpeechAt", "ownerConfirmGatePaged"]) {
       assert.doesNotMatch(src, new RegExp(`\\.${field}\\s*(?:[-+*/]?=)(?!=)`), `server.js writes ${field}`);
     }
     const sessionSrc = fs.readFileSync(path.join(__dirname, "..", "call-session.js"), "utf8");
@@ -144,6 +144,7 @@ describe("SCRUM-587: owner session — controller-override pins", () => {
     assert.match(sessionSrc, /this\.assistantTurnHadSpeech = false;/);
     assert.match(sessionSrc, /this\.ownerPendingConfirmations = null;/);
     assert.match(sessionSrc, /this\.ownerConfirmSpentSpeechAt = null;/);
+    assert.match(sessionSrc, /this\.ownerConfirmGatePaged = false;/, "SCRUM-601: declared with the gate's other fields, not paged yet");
     assert.equal((sessionSrc.match(/assistantTurnSeq\s*(?:[-+*/]?=)(?!=)/g) || []).length, 1, "declared once, never reset");
   });
 

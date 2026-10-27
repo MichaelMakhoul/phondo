@@ -41,6 +41,8 @@ const HOURS = { monday: OPEN, tuesday: OPEN, wednesday: OPEN, thursday: OPEN, fr
 const ARGS = { datetime: SLOT, first_name: "Jane", last_name: "Smith", phone: "+61412345678" };
 
 let inserts: any[] = [];
+/** The assistant's prompt_config, as handleBookAppointment reads it for the name rules. */
+let assistantRow: unknown = null;
 /** What the diary check reads (service types, a Cal.com account), per table — and a fault to return instead. */
 let lists: Record<string, unknown[]> = {};
 let faults: Record<string, { code: string }> = {};
@@ -56,7 +58,9 @@ function fakeAdmin() {
           ? { data: { business_hours: HOURS, timezone: "Australia/Sydney" }, error: null }
           : table === "appointments"
             ? { data: { id: "appt-new", confirmation_code: "654321" }, error: null }
-            : { data: null, error: null };
+            : table === "assistants"
+              ? { data: assistantRow, error: null }
+              : { data: null, error: null };
       b.maybeSingle = async () => ({ data: null, error: null });
       b.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
         Promise.resolve(faults[table] ? { data: null, error: faults[table] } : { data: lists[table] ?? [], error: null }).then(resolve, reject);
@@ -68,6 +72,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
   inserts = [];
+  assistantRow = null;
   lists = {};
   faults = {};
   vi.clearAllMocks();
@@ -97,6 +102,20 @@ describe("handleBookAppointment for the owner's assistant", () => {
     expect(inserts[0]).toMatchObject({ metadata: { source: "ai_receptionist" } });
     expect(sendAppointmentNotification).toHaveBeenCalledTimes(1);
     expect(sendAppointmentConfirmationSMS).toHaveBeenCalledTimes(1);
+  });
+
+  // SCRUM-601: every org's default prompt_config requires a last name — the receptionist's
+  // rule for callers. The owner books for a customer they know, by first name if that's all.
+  it("a first name alone books for the owner even when the business requires a last name; the receptionist still asks", async () => {
+    assistantRow = { prompt_config: { fields: [{ id: "first_name", required: true }, { id: "last_name", required: true }] } };
+    const { last_name: _none, ...firstOnly } = ARGS;
+    const owner = await handleBookAppointment(ORG, firstOnly, { callId: OWNER_CALL, ownerBooking: true });
+    expect(owner.success).toBe(true);
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0]).toMatchObject({ attendee_name: "Jane", metadata: { source: "owner_voice" } });
+    const receptionist = await handleBookAppointment(ORG, firstOnly, { callId: OWNER_CALL });
+    expect(receptionist).toMatchObject({ success: false, message: "I also need your last name to complete the booking. What is your last name?" });
+    expect(inserts).toHaveLength(1);
   });
 
   it("an org on Cliniko is refused — never booked there, nothing written", async () => {

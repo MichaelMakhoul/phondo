@@ -269,6 +269,7 @@ class CallSession {
     this.ownerPendingConfirmations = null; // Map of armed read-backs (the runner creates it)
     this.ownerConfirmSpentSpeechAt = null; // the utterance that last confirmed a write
     this.ownerConfirmRefusals = null;      // Map key → re-armed since the gate refused it? (the runner creates it)
+    this.ownerConfirmGatePaged = false;    // SCRUM-601: a refused-again confirm has paged — once per call, later ones warn
     this.ownerToolRunsInFlight = null;     // Set of owner tool calls still running (the runner creates it)
     this.ownerToolRunsSettled = false;     // cleanup stopped waiting for them: a write finishing later pages
     this.ownerCancelledToolCallIds = null; // Set of tool call ids Gemini cancelled (the runner creates it)
