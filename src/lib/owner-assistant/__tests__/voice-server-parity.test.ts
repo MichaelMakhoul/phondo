@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +7,8 @@ import { CALL_OUTCOMES, CALL_PURPOSES, TIMES_OF_DAY, VOICE_CALL_BLOCK_REASONS, c
 import { CUSTOMER_NOTIFY_CALL_TYPE } from "../owner-call";
 import { MACHINE_ANSWERS, buildCallOutcome, callResultOf } from "../call-outcome";
 import { REQUESTED_BY_PATH } from "../recap";
-import { OWNER_TOOL_NAMES } from "../tool-handlers";
+import { OWNER_TOOL_NAMES, spokenPhone } from "../tool-handlers";
+import { parsePhoneToE164 } from "@/lib/phone/normalize";
 
 // SCRUM-597 (types lens F6): the "let them know?" contract lives on both sides — the
 // website's handlers write it, the voice server declares it to the model and reads it
@@ -37,6 +38,7 @@ const customerCall = vs("customer-call.js") as {
 };
 const runner = vs("owner-tool-runner.js") as {
   describeOwnerToolCall: (name: string, args: object, message: string, successful: boolean, data?: unknown) => string | null;
+  runOwnerToolCall: (session: Record<string, any>, call: { name: string; args: Record<string, unknown> }, deps: Record<string, unknown>) => Promise<unknown>;
 };
 
 const writeTool = (name: string) => ownerTools.ownerToolDefinitions.find((d) => d.function.name === name)!.function;
@@ -274,5 +276,66 @@ describe("website ↔ voice server: book, block and mark done", () => {
       const message = booking + contactOutcomeSentence(result, "Dr. J. Smith", "booked");
       expect(runner.describeOwnerToolCall("owner_book_appointment", {}, message, true, { outcome: "booked", customer_contact: result }), JSON.stringify(result)).toBe(booking.replace(/\.$/, "") + tail);
     }
+  });
+});
+
+// SCRUM-601 (test lens gap 2): the website reads a booking's number back in its national
+// form, and the model may copy that form into its confirm. The voice server's gate keys a
+// yes by the number's digits, so each form the read-back gives must confirm the form the
+// owner said — run through the real gate, not a hand-copied list of formats.
+describe("SCRUM-601: the number the read-back gives confirms the number the owner said", () => {
+  const BOOK = { customer_name: "Jane Smith", start: "2026-10-29T14:00", notes: "Leaking tap" };
+  let clock = 0;
+  const stamp = () => (clock = Math.max(Date.now() + 1, clock + 1));
+  /** Arm a booking with the number as said, answer its read-back, confirm with `confirmedAs`: what the gate forwarded. */
+  async function confirmedWith(said: string, confirmedAs: string): Promise<unknown> {
+    const forwarded: Array<Record<string, unknown>> = [];
+    const deps = {
+      executeToolCall: async (_name: string, args: Record<string, unknown>) => {
+        forwarded.push(args);
+        return args.confirmed === true
+          ? { success: true, message: "Booked.", data: { outcome: "booked" } }
+          : { success: false, message: "Read this back…", data: { outcome: "needs_confirmation" } };
+      },
+      scheduleCache: { invalidate: () => {} },
+      now: () => stamp(),
+    };
+    const session: Record<string, any> = {
+      callSid: "CA1", organizationId: "org-1", assistantId: "asst-1", callRecordId: "call-1", ownerMode: true,
+      organization: { timezone: "Australia/Sydney" }, callerPhone: "+61400000001", orgPhoneNumber: "+61255550000",
+      telephonyProvider: "twilio", toolCallAudit: [], ownerToolCalls: 0,
+      assistantTurnSeq: 0, lastAssistantTurnAt: 0, lastAssistantSpeechAt: 0, lastOwnerSpeechAt: 0,
+    };
+    await runner.runOwnerToolCall(session, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: said } }, deps);
+    // The read-back is heard, then the owner says yes.
+    session.lastAssistantSpeechAt = stamp(); session.assistantTurnSeq += 1; session.lastAssistantTurnAt = stamp();
+    session.lastOwnerSpeechAt = stamp();
+    await runner.runOwnerToolCall(session, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: confirmedAs, confirmed: true, notify_customer: "none" } }, deps);
+    return forwarded.at(-1)?.confirmed;
+  }
+
+  for (const [said, country] of [
+    ["0412 345 678", "AU"], ["+61 412 345 678", "AU"], ["61 412 345 678", "AU"], ["412 345 678", "AU"],
+    ["(02) 9555 1234", "AU"], ["+61 2 9555 1234", "AU"],
+    ["415-555-1234", "US"], ["+1 415 555 1234", "US"], ["1 (415) 555-1234", "US"],
+  ] as const) {
+    it(`${country} ${said}: confirmed as the read-back gives it, and as it is saved`, async () => {
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const saved = parsePhoneToE164(said, country);
+      expect(saved, "parses in the org's country").not.toBeNull();
+      const shown = spokenPhone(saved!, country);
+      expect(shown, "read back in the national form").not.toBeNull();
+      expect(await confirmedWith(said, shown!)).toBe(true);
+      expect(await confirmedWith(said, saved!)).toBe(true);
+    });
+  }
+
+  it("a number from elsewhere is read back as said, so confirming it as said goes through — and its +1 twin never does", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(spokenPhone("+64 9 555 1234", "AU")).toBeNull();
+    expect(await confirmedWith("+64 9 555 1234", "+64 9 555 1234")).toBe(true);
+    expect(await confirmedWith("+64 9 555 1234", "+1 649 555 1234")).toBe(false);
   });
 });

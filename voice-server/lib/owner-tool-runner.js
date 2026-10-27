@@ -294,7 +294,17 @@ function confirmationKey(name, args) {
   const phoneDigits = (v) => {
     if (typeof v !== "string") return null;
     const d = v.replace(/\D/g, "");
-    return (/^61\d{9}$/.test(d) ? `0${d.slice(2)}` : d) || null;
+    if (!d) return null;
+    const plus = v.trim().startsWith("+");
+    // One number however it's written — the forms the booking path saves as one
+    // (parsePhoneToE164): +61 4…, 61 4…, 04… and 4… are 04…; +1 415…, 1 415… and
+    // 415… are 415…. The read-back gives the national form, which the model may
+    // copy into its confirm. Anything else keeps its +, so +64 9 555 1234 is never
+    // (649) 555-1234, and "1 0412 345 678" stays apart from 0412 345 678.
+    if (/^61[23478]\d{8}$/.test(d)) return `0${d.slice(2)}`;
+    if (!plus && /^[23478]\d{8}$/.test(d)) return `0${d}`;
+    if (/^1[2-9]\d{9}$/.test(d)) return d.slice(1);
+    return plus ? `+${d}` : d;
   };
   // SCRUM-599: the new writes name no existing booking — every field the read-back gave
   // is the key, so a yes to one booking, block or note never makes another. JSON keeps
@@ -405,7 +415,8 @@ function readBackVerdict(session, entry) {
  * synchronous step as the passing check — before the executor is awaited —
  * so confirmations Gemini runs in parallel (waiting or not) can't share
  * either. Otherwise it goes on as confirmed:false and PR B answers with the
- * read-back; a key refused again after that re-arm pages.
+ * read-back; a key refused again after that re-arm pages (once per call —
+ * later ones in that call warn).
  * @param {any} session
  * @param {string} name
  * @param {Record<string, any>} args
@@ -438,8 +449,19 @@ async function applyConfirmationGate(session, name, args, audit, now) {
   // again, which re-arms the key. Refused AGAIN after that re-arm, the gate
   // may be turning away a change the owner did confirm (a broken turn clock,
   // as on a pipeline failover) — that pages, ids only.
-  if (key !== null && confirmRefusals(session).get(key) === true) {
-    console.error(`[ALERT:error] [OwnerTools] ${name}: a confirmation re-armed by PR B's read-back was refused again — the gate may be blocking a change the owner confirmed (org=${session.organizationId}, callSid=${session.callSid})`);
+  // SCRUM-601: once per call. The 27 Oct session paged twice, each time for
+  // the model confirming after it talked past its own read-back. The stamps
+  // can't tell that apart from a miscounted turn on every pipeline (a
+  // filler counted with the confirm looks the same — SF1), so this never
+  // guesses: the one page names both, and the call's transcript decides.
+  // The owner prompt has the model read back again after any other reply,
+  // which is what keeps talk-past refusals rare.
+  const reArmed = key !== null && confirmRefusals(session).get(key) === true;
+  if (reArmed && session.ownerConfirmGatePaged !== true) {
+    session.ownerConfirmGatePaged = true;
+    console.error(`[ALERT:error] [OwnerTools] ${name}: a confirmation re-armed by PR B's read-back was refused again — the gate may be blocking a change the owner confirmed, or the model confirmed after talking past its read-back; the call's transcript tells which (org=${session.organizationId}, callSid=${session.callSid})`);
+  } else if (reArmed) {
+    console.warn(`[OwnerTools] ${name}: a confirmation re-armed by PR B's read-back was refused again — this call has paged already. callSid=${session.callSid}`);
   } else {
     console.warn(`[OwnerTools] ${name} came with confirmed=true but no read-back of that change has been answered by the owner — forwarded as confirmed=false. callSid=${session.callSid}`);
   }

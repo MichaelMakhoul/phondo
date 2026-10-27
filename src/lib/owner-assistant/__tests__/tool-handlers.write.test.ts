@@ -730,7 +730,7 @@ describe("SCRUM-597: every change asks whether to let the customer know", () => 
     const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME }, ctx);
     expect(r.data).toMatchObject({ outcome: "needs_confirmation", contact_options: ["text", "none"] });
     expect((r.data as any).contact_note).toBeUndefined();
-    expect(r.message).toContain("In the same question, ask whether to let Jane Smith know: by text, or not tell them.");
+    expect(r.message).toContain(`In the same question, ask whether to let Jane Smith know: by text, or not tell them — or, if the owner already said, don't ask again: say their choice in the read-back ("…and text them, right?" or "…and not tell them, right?").`);
     expect(r.message).not.toMatch(/leave it/);
     expect(r.message).toContain('notify_customer set to their answer: "text", "none"');
     const optOut = db.log.find((o) => o.table === "caller_sms_optouts");
@@ -928,6 +928,8 @@ describe("SCRUM-598: 'call' on a change — offered only when the voice server s
     expect(checkCustomerCall).toHaveBeenCalledWith({ organizationId: ORG, appointmentId: APPT, purpose: "moved", phone: "+61412345678", requestedByCallId: CALL });
     // Clients lens M8: the owner hears what a call does before choosing.
     expect(r.message).toContain("by call (a call also checks the new time suits them), or not tell them");
+    // SCRUM-601: the owner's already-said choice is read back from the ways that work — here a call.
+    expect(r.message).toContain(`say their choice in the read-back ("…and call them, right?" or "…and not tell them, right?").`);
     expect(placeCustomerCall).not.toHaveBeenCalled();
   });
 
@@ -1130,5 +1132,24 @@ describe("SCRUM-598: owner_call_customer", () => {
     const r = await ask({ confirmed: true });
     expect(r.data).toMatchObject({ outcome: "rate_limited" });
     expect(placeCustomerCall).not.toHaveBeenCalled();
+  });
+});
+
+// SCRUM-601 mutation-lens killer, round 2 (survivor A12).
+describe("SCRUM-601 round 2: with a text and a call both offered, the 'already said' example is the text", () => {
+  const AU_ORG = { data: { timezone: TZ, country: "AU" }, error: null };
+  beforeEach(() => {
+    db.queues.organizations = [AU_ORG];
+    vi.mocked(checkCustomerCall).mockResolvedValue({ canCall: true });
+    process.env.CALLER_SMS_ENABLED = "true";
+  });
+  afterEach(() => {
+    delete process.env.CALLER_SMS_ENABLED;
+  });
+
+  it("a move's read-back offering a text and a call gives 'text' as the example, never nudging the model toward placing a call", async () => {
+    const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME }, ctx);
+    expect(r.data).toMatchObject({ outcome: "needs_confirmation", contact_options: ["text", "call", "none"] });
+    expect(r.message).toContain(`say their choice in the read-back ("…and text them, right?" or "…and not tell them, right?").`);
   });
 });

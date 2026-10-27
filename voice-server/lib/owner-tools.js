@@ -190,8 +190,8 @@ const ownerToolDefinitions = [
       parameters: {
         type: "object",
         properties: {
-          customer_name: { type: "string", description: "The customer's full name, as the owner said it." },
-          customer_phone: { type: "string", description: "The customer's phone number. Ask the owner for it if they didn't say it — never make one up." },
+          customer_name: { type: "string", description: "The customer's name as the owner said it — a first name alone is fine if that's all the owner has." },
+          customer_phone: { type: "string", description: "The customer's phone number. Ask the owner for it if they didn't say it — never make one up. The read-back says it back digit by digit, so a misheard digit is caught." },
           start: { type: "string", description: `The start ${LOCAL_TIME}.` },
           service_type_id: { type: "string", description: "Optional: the ID of the service from the SERVICE TYPES list in your instructions. Never a name." },
           notes: { type: "string", description: "Optional short note for the job in the owner's words — what's wrong, and the address if they give one (for example \"hot water unit leaking, 12 Smith St\")." },

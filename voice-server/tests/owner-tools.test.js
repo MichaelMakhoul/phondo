@@ -199,6 +199,9 @@ describe("SCRUM-599: owner_book_appointment, owner_block_time, owner_mark_callba
     assert.deepEqual(byName.owner_book_appointment.parameters.properties.notify_customer.enum, ["text", "none"]);
     assert.ok(byName.owner_book_appointment.description.includes("a call isn't offered for a new booking"));
     assert.ok(byName.owner_book_appointment.parameters.properties.customer_phone.description.includes("never make one up"));
+    // SCRUM-601: a first name is enough, and the number is read back digit by digit.
+    assert.ok(byName.owner_book_appointment.parameters.properties.customer_name.description.includes("a first name alone is fine if that's all the owner has"));
+    assert.ok(byName.owner_book_appointment.parameters.properties.customer_phone.description.includes("The read-back says it back digit by digit, so a misheard digit is caught."));
   });
   it("say which outcomes mean it happened", () => {
     assert.ok(byName.owner_book_appointment.description.includes("booked | needs_confirmation | invalid_details | invalid_time | not_booked | rate_limited | external_calendar — only 'booked' means it happened"));

@@ -523,3 +523,44 @@ describe("buildOwnerPrompt — SCRUM-599: booking, blocking and marking done", (
     assert.ok(!p.includes("guidance on times as note"));
   });
 });
+
+// SCRUM-601: the owner's first browser session with the new tools (27 Oct) — a misheard
+// digit saved unheard, a demanded surname, a reply in French, a "no" that dropped a move,
+// and an unasked-for block offer.
+describe("buildOwnerPrompt — SCRUM-601: what the 27 Oct session got wrong", () => {
+  const p = buildOwnerPrompt(base);
+  const suffix = buildOwnerGeminiSuffix();
+  it("English unless the owner asks — said up front and in the final rule", () => {
+    assert.ok(p.includes("LANGUAGE: speak English. Switch only when the owner asks you to — never because a name, a word or a mishearing sounds like another language."));
+    assert.ok(suffix.includes("SPEAK ENGLISH unless the owner asks for another language — a name or a misheard word is never a reason to switch."));
+  });
+  it("a booking's read-back says the number digit by digit, the note, and spells an unusual or corrected name", () => {
+    assert.ok(p.includes("a booking's phone number DIGIT BY DIGIT in its groups — the digits the tool's message spells out, never from memory (a misheard digit is only caught here) —"));
+    // No example digits anywhere: a model that parrots an example would cover the very mishearing this catches.
+    assert.ok(!/(oh|zero|one|two|three|four|five|six|seven|eight|nine)-(oh|zero|one|two|three|four|five|six|seven|eight|nine)/i.test(p + suffix));
+    assert.ok(p.includes('and the note — for a booking with none, say "no job note" so the owner can add one'));
+    assert.ok(p.includes("(and, in the same question, whether to text them, unless the owner already said: then say their choice)"));
+    assert.ok(p.includes("Spell back letter by letter any name that isn't a common one, and any name the owner corrected — once per booking, not again on a repeated read-back unless it changed."));
+    assert.ok(suffix.includes(`A NEW BOOKING'S READ-BACK says the phone number digit by digit (the digits the tool's message spells out), the note (or "no job note"), and spells any unusual or corrected name once.`));
+  });
+  it("a first name alone is enough for a booking", () => {
+    assert.ok(p.includes("the customer's name (a first name alone is fine if that's all the owner has — never insist on a surname)"));
+    assert.ok(!p.includes("the customer's full name"));
+  });
+  it("any other reply between a read-back and the yes voids it: a fresh read-back first (the gate refuses otherwise)", () => {
+    assert.ok(p.includes("If you say anything else between your read-back and the owner's yes — an answer, a clarification, a question back — that read-back no longer counts: call the tool again WITHOUT confirmed for a fresh one, and confirm only after a yes to THAT one."));
+    assert.ok(p.includes("anything else you say between the read-back and the yes means calling it again WITHOUT confirmed first."));
+    assert.ok(suffix.includes("ANY OTHER REPLY BETWEEN A READ-BACK AND THE YES VOIDS IT: call the tool again WITHOUT confirmed, read that back, and confirm only after a yes to it."));
+  });
+  it("a bare no to the two-part question is asked about either way — never a guess in either direction", () => {
+    assert.ok(suffix.includes(`A bare "no" or "leave it" to "change it, and tell them?" is unclear — never guess either way: call the tool again WITHOUT confirmed and ask "Do you mean don't change it, or change it but don't tell them?"`));
+    assert.ok(!suffix.includes("never drop the change"));
+  });
+  it("the owner who already said whether to tell the customer isn't asked again — their choice is read back", () => {
+    assert.ok(p.includes(`If the owner already said whether to tell them ("move it, don't tell him"), don't ask again: say their choice in the read-back ("…and text him, right?" or "…and not tell him, right?").`));
+    assert.ok(buildOwnerGeminiSuffix().includes("offering only data.contact_options (if the owner already said, say their choice instead of asking)"));
+  });
+  it("the block tool only when the owner asks for a block", () => {
+    assert.ok(p.includes("Use it only when the owner asks to block out or close off time — never offer it for anything else."));
+  });
+});
