@@ -478,7 +478,7 @@ function readBackMessage(change: string, customer: string, contact: ContactOptio
     return `Read this back and get a clear yes before changing anything: ${change}. Telling ${customer} isn't possible from here${why}: say so in a few words (for example "I can't text them")${offerNumber}. If the owner confirms, call ${tool} again with confirmed=true and notify_customer "none".`;
   }
   const note = contact.note ? ` ${contact.note}` : "";
-  return `Read this back and get a clear yes before changing anything: ${change}. In the same question, ask whether to let ${customer} know: by ${ways}${callDoes}, or not tell them.${note} If the owner confirms, call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
+  return `Read this back and get a clear yes before changing anything: ${change}. In the same question, ask whether to let ${customer} know: by ${ways}${callDoes}, or not tell them — or, if the owner already said, don't ask again: say their choice in the read-back ("…and not tell them, right?").${note} If the owner confirms, call ${tool} again with confirmed=true and notify_customer set to their answer: ${contact.options.map((m) => `"${m}"`).join(", ")}.`;
 }
 
 /**
@@ -1142,25 +1142,41 @@ const callbackDoneData = (d: OwnerCallbackDoneData) => d as unknown as Record<st
 const BOOKING_NOTES_MAX = 200;
 const DIGIT_WORDS = ["oh", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
 
+/** A run of digits in groups the ear can check: up to four as one, longer in threes (a lone last digit joins the group before). */
+function digitGroups(run: string): string[] {
+  if (run.length <= 4) return [run];
+  const groups = run.match(/\d{1,3}/g) ?? [];
+  const last = groups.length - 1;
+  if (last > 0 && groups[last].length === 1) groups.splice(last - 1, 2, groups[last - 1] + groups[last]);
+  return groups;
+}
+
 /**
  * A number as it is said aloud, digit by digit in its groups: "0412 345 678" →
- * "oh-four-one-two, three-four-five, six-seven-eight"; a leading + is "plus".
+ * "oh-four-one-two, three-four-five, six-seven-eight"; a leading + is "plus", and an
+ * unbroken run ("+442079460958") is said in threes.
  */
 function digitsAloud(shown: string): string {
-  const groups = shown.match(/\+?\d+/g) ?? [];
-  return groups
-    .map((g) => `${g.startsWith("+") ? "plus " : ""}${Array.from(g.replace("+", ""), (d) => DIGIT_WORDS[Number(d)]).join("-")}`)
+  const said = (run: string) => Array.from(run, (d) => DIGIT_WORDS[Number(d)]).join("-");
+  return (shown.match(/\+?\d+/g) ?? [])
+    .flatMap((part) => {
+      const plus = part.startsWith("+");
+      const groups = digitGroups(plus ? part.slice(1) : part).map(said);
+      return plus ? [`plus ${groups[0]}`, ...groups.slice(1)] : groups;
+    })
     .join(", ");
 }
 
 /**
  * SCRUM-601: what a booking's read-back must say out loud — the number (its real digits,
  * spelled out here so the model never says them from memory or from an example), the
- * note, and any name that isn't plain. Only these let the owner catch a mishearing before
- * it is saved: a real session saved a wrong digit because the number was never said.
+ * note or that there is none (a note the model dropped is then heard missing), and any
+ * name that isn't plain. Only these let the owner catch a mishearing before it is saved:
+ * a real session saved a wrong digit, and dropped a note, without either being said.
  */
-function bookingReadBackRule(shownPhone: string): string {
-  return ` Say the phone number back digit by digit, in its groups: "${digitsAloud(shownPhone)}". Say the note if there is one, and spell back letter by letter any name that isn't a common one, or that the owner corrected.`;
+function bookingReadBackRule(shownPhone: string, notes: string | null): string {
+  const note = notes ? "Say the note." : `There's no job note: say "no job note", so the owner can add one.`;
+  return ` Say the phone number back digit by digit, in its groups: "${digitsAloud(shownPhone)}". ${note} Spell back letter by letter any name that isn't a common one, or that the owner corrected — once, not again on a repeated read-back unless it changed.`;
 }
 
 /**
@@ -1307,7 +1323,7 @@ export async function handleOwnerBookAppointment(
         message:
           args.confirmed === true
             ? askContactMessage(customer, contact, "owner_book_appointment")
-            : readBackMessage(change, customer, contact, "owner_book_appointment", "booked") + bookingReadBackRule(shownPhone),
+            : readBackMessage(change, customer, contact, "owner_book_appointment", "booked") + bookingReadBackRule(shownPhone, notes),
         data: bookData({
           outcome: "needs_confirmation",
           ...base,

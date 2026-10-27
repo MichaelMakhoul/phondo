@@ -730,7 +730,7 @@ describe("SCRUM-597: every change asks whether to let the customer know", () => 
     const r = await handleOwnerRescheduleAppointment(ORG, { appointment_id: APPT, new_datetime: NEW_TIME }, ctx);
     expect(r.data).toMatchObject({ outcome: "needs_confirmation", contact_options: ["text", "none"] });
     expect((r.data as any).contact_note).toBeUndefined();
-    expect(r.message).toContain("In the same question, ask whether to let Jane Smith know: by text, or not tell them.");
+    expect(r.message).toContain(`In the same question, ask whether to let Jane Smith know: by text, or not tell them — or, if the owner already said, don't ask again: say their choice in the read-back ("…and not tell them, right?").`);
     expect(r.message).not.toMatch(/leave it/);
     expect(r.message).toContain('notify_customer set to their answer: "text", "none"');
     const optOut = db.log.find((o) => o.table === "caller_sms_optouts");

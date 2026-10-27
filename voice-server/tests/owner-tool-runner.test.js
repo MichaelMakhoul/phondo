@@ -574,16 +574,50 @@ describe("runOwnerToolCall — structural confirmation gate", () => {
     await settled(() => confirmCancel(s, d)); // refused again
     assert.equal(d.calls.at(-1).args.confirmed, false);
     assert.deepEqual(alerts(lines), [], lines.map((l) => l.text).join("\n"));
-    assert.ok(lines.some((l) => l.level === "warn" && l.text.includes("refused again — the model spoke 1 more time(s) after its read-back, so that read-back no longer counts (the turn clock is running)")));
+    assert.ok(lines.some((l) => l.level === "warn" && l.text.includes("refused again — the model spoke 1 more time(s) after its read-back, so that read-back no longer counts. callSid=CA1")));
   });
-  it("a turn clock that miscounts (every re-armed confirm 'talked past') pages on the third such refusal in a call — once", async () => {
+  // Silent-failure lens (SCRUM-601): an over-counting clock — a filler counted as a turn
+  // AFTER the owner's yes (SF1, the bug this page was added for) — also shows two turns
+  // since the re-arm. Who spoke last tells it apart: here the model did.
+  it("two turns since the re-arm but the MODEL spoke last (a turn counted after the yes): pages at the first refusal, as before", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    await confirmCancel(s, d); // refused → re-armed
+    assistantTurn(s); ownerSpeaks(s); // the read-back, then "yes"
+    assistantTurn(s); // ...and a filler counted as a turn after the yes
+    await settled(() => confirmCancel(s, d));
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+    const paged = alerts(lines);
+    assert.equal(paged.length, 1, lines.map((l) => l.text).join("\n"));
+    assert.ok(paged[0].text.includes("a confirmation re-armed by PR B's read-back was refused again"));
+    assert.equal(s.ownerConfirmTalkedPast, undefined, "not counted as a talk-past");
+  });
+  it("a talk-past whose yes is stamped DURING the settle wait only warns (the yes can trail the confirm)", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    await confirmCancel(s, d); // refused → re-armed
+    assistantTurn(s); ownerSpeaks(s); assistantTurn(s); // read-back, owner, the model's other reply — the yes not yet heard
+    await settled(() => { setTimeout(() => ownerSpeaks(s), 300); return confirmCancel(s, d); });
+    assert.equal(d.calls.at(-1).args.confirmed, false);
+    assert.deepEqual(alerts(lines), [], lines.map((l) => l.text).join("\n"));
+    assert.equal(s.ownerConfirmTalkedPast, 1);
+  });
+  it("two confirms of the same re-armed key at once page once: the re-arm is spent before the settle wait", async () => {
+    const s = makeSession(); const d = makeDeps(prB);
+    await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" });
+    await confirmCancel(s, d); // refused → re-armed
+    assistantTurn(s); ownerSpeaks(s); assistantTurn(s); // the model spoke last
+    await settled(() => Promise.all([confirmCancel(s, d), confirmCancel(s, d)]));
+    assert.equal(alerts(lines).length, 1, lines.map((l) => l.text).join("\n"));
+  });
+  it("a clock counting twice BEFORE the yes (every re-armed confirm looks talked past) pages on the third such refusal in a call — once", async () => {
     const s = makeSession(); const d = makeDeps(prB);
     await run(s, d, "owner_cancel_appointment", { appointment_id: "a1" }); // arms
     await confirmCancel(s, d); // refused → re-armed
     for (let i = 1; i <= 4; i += 1) {
-      assistantTurn(s); ownerSpeaks(s); assistantTurn(s); ownerSpeaks(s); // two turns since each re-arm
+      assistantTurn(s); assistantTurn(s); ownerSpeaks(s); // the read-back counted twice, then "yes"
       await settled(() => confirmCancel(s, d)); // refused again → PR B re-arms
-      assert.equal(alerts(lines).length, i < 3 ? 0 : i - 2, `after refusal ${i}: ${lines.map((l) => l.text).join("\n")}`);
+      assert.equal(alerts(lines).length, i < 3 ? 0 : 1, `after refusal ${i}: ${lines.map((l) => l.text).join("\n")}`);
     }
     assert.ok(alerts(lines)[0].text.includes("3 confirmations this call were refused as coming after other replies — the turn clock may be miscounting (org=org-1, callSid=CA1)"), alerts(lines)[0].text);
     assert.equal(s.ownerConfirmTalkedPast, 4);
@@ -1649,6 +1683,22 @@ describe("SCRUM-599: booking, blocking and marking done go through the same gate
 
   // SCRUM-601: the read-back gives the number in its national form, which the model may
   // copy into its confirm — the same number however it's written.
+  it("one number however it's written: the forms the booking path saves as one share a key; different numbers never do", async () => {
+    const keyFor = async (phone) => {
+      const s = makeSession(); const d = makeDeps(prB);
+      await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: phone } }, d.deps));
+      return JSON.parse([...s.ownerPendingConfirmations.keys()][0].slice("owner_book_appointment|".length))[1];
+    };
+    for (const same of ["0412 345 678", "+61 412 345 678", "61412345678", "412 345 678"]) assert.equal(await keyFor(same), "0412345678", same);
+    for (const same of ["(415) 555-1234", "+1 415 555 1234", "1 415 555 1234", "+1 415 155 1234".replace("155", "555")]) assert.equal(await keyFor(same), "4155551234", same);
+    assert.equal(await keyFor("+1 415 155 1234"), "4151551234", "an exchange starting 1 is still a US number");
+    // Never one key for two numbers:
+    assert.equal(await keyFor("1 0412 345 678"), "10412345678");
+    assert.equal(await keyFor("+64 9 555 1234"), "+6495551234", "NZ keeps its +");
+    assert.equal(await keyFor("+1 649 555 1234"), "6495551234", "…so it is not the Turks & Caicos number with the same digits");
+    assert.equal(await keyFor("+412 345 678"), "+412345678", "a + number is never read as an AU national one");
+  });
+
   it("a US number confirmed as the read-back wrote it ((415) 555-1234) is the number armed as +1 415 555 1234", async () => {
     const s = makeSession();
     const d = makeDeps(prB);

@@ -149,7 +149,7 @@ const RANGE_LABEL = new Map([
  * model just acted on can land a beat AFTER the confirm call. Only that waits.
  */
 const CONFIRM_SETTLE_MS = 1500;
-/** SCRUM-601: refusals "after other replies" in one call before the gate pages anyway. */
+/** SCRUM-601: talked-past refusals in one call at which the gate pages anyway — once. */
 const TALKED_PAST_PAGE_AT = 3;
 const CONFIRM_POLL_MS = 100;
 
@@ -296,13 +296,17 @@ function confirmationKey(name, args) {
   const phoneDigits = (v) => {
     if (typeof v !== "string") return null;
     const d = v.replace(/\D/g, "");
-    // One number however it's written: +61 4… is 04…, and +1 415… is (415)… (the
-    // read-back gives the national form, which the model may copy into its confirm).
-    // Only a real US shape drops its 1 — area code and exchange never start 0 or 1 —
-    // so "1 0412 345 678" stays a different number from 0412 345 678.
-    if (/^61\d{9}$/.test(d)) return `0${d.slice(2)}`;
-    if (/^1[2-9]\d{2}[2-9]\d{6}$/.test(d)) return d.slice(1);
-    return d || null;
+    if (!d) return null;
+    const plus = v.trim().startsWith("+");
+    // One number however it's written — the forms the booking path saves as one
+    // (parsePhoneToE164): +61 4…, 61 4…, 04… and 4… are 04…; +1 415…, 1 415… and
+    // 415… are 415…. The read-back gives the national form, which the model may
+    // copy into its confirm. Anything else keeps its +, so +64 9 555 1234 is never
+    // (649) 555-1234, and "1 0412 345 678" stays apart from 0412 345 678.
+    if (/^61[23478]\d{8}$/.test(d)) return `0${d.slice(2)}`;
+    if (!plus && /^[23478]\d{8}$/.test(d)) return `0${d}`;
+    if (/^1[2-9]\d{9}$/.test(d)) return d.slice(1);
+    return plus ? `+${d}` : d;
   };
   // SCRUM-599: the new writes name no existing booking — every field the read-back gave
   // is the key, so a yes to one booking, block or note never makes another. JSON keeps
@@ -446,25 +450,46 @@ async function applyConfirmationGate(session, name, args, audit, now) {
   // again, which re-arms the key. Refused AGAIN after that re-arm, the gate
   // may be turning away a change the owner did confirm (a broken turn clock,
   // as on a pipeline failover) — that pages, ids only.
-  // SCRUM-601: more than one assistant turn since the re-arm means the turn clock IS
-  // running — the model spoke again after its read-back, which voids it (as designed) —
-  // so that only warns. A clock that never moves still pages at once, and one that
-  // miscounts (every confirm "talked past") pages on the TALKED_PAST_PAGE_AT-th.
+  //
+  // SCRUM-601: except when the model talked past its own read-back — spoke again
+  // after it (an answer, a reply in another language), so that the owner's yes
+  // came after a later turn. That voids the read-back by design and only warns.
+  // It is told apart from a clock counting on its own (SF1: a filler counted as
+  // a turn after the yes) by who spoke last: after a talk-past the owner did (the
+  // yes), after a miscount the model did. The yes can trail the confirm, so that
+  // gets the same settle wait. Should every confirm still look talked past (a
+  // clock counting twice before the yes), the TALKED_PAST_PAGE_AT-th pages once.
+  // The re-arm is read and spent before any wait, so a parallel confirm of the
+  // same key is a first refusal.
+  const reArmed = key !== null && confirmRefusals(session).get(key) === true;
+  if (key !== null) confirmRefusals(session).set(key, false);
   const entry = pendingEntry();
   const turnsSinceArm = entry && isStamp(entry.seq) && isStamp(session.assistantTurnSeq) ? session.assistantTurnSeq - entry.seq : null;
-  const talkedPast = key !== null && confirmRefusals(session).get(key) === true && turnsSinceArm !== null && turnsSinceArm > 1;
+  let talkedPast = false;
+  if (reArmed && turnsSinceArm !== null && turnsSinceArm > 1) {
+    for (let settle = 0; !ownerSpokeLast(session) && settle < CONFIRM_SETTLE_MS; settle += CONFIRM_POLL_MS) await sleep(CONFIRM_POLL_MS);
+    talkedPast = ownerSpokeLast(session);
+  }
   if (talkedPast) session.ownerConfirmTalkedPast = (Number.isInteger(session.ownerConfirmTalkedPast) ? session.ownerConfirmTalkedPast : 0) + 1;
-  if (talkedPast && session.ownerConfirmTalkedPast < TALKED_PAST_PAGE_AT) {
-    console.warn(`[OwnerTools] ${name}: refused again — the model spoke ${turnsSinceArm - 1} more time(s) after its read-back, so that read-back no longer counts (the turn clock is running). callSid=${session.callSid}`);
+  if (talkedPast && session.ownerConfirmTalkedPast === TALKED_PAST_PAGE_AT) {
+    console.error(`[ALERT:error] [OwnerTools] ${name}: ${TALKED_PAST_PAGE_AT} confirmations this call were refused as coming after other replies — the turn clock may be miscounting (org=${session.organizationId}, callSid=${session.callSid})`);
   } else if (talkedPast) {
-    console.error(`[ALERT:error] [OwnerTools] ${name}: ${session.ownerConfirmTalkedPast} confirmations this call were refused as coming after other replies — the turn clock may be miscounting (org=${session.organizationId}, callSid=${session.callSid})`);
-  } else if (key !== null && confirmRefusals(session).get(key) === true) {
+    console.warn(`[OwnerTools] ${name}: refused again — the model spoke ${turnsSinceArm - 1} more time(s) after its read-back, so that read-back no longer counts. callSid=${session.callSid}`);
+  } else if (reArmed) {
     console.error(`[ALERT:error] [OwnerTools] ${name}: a confirmation re-armed by PR B's read-back was refused again — the gate may be blocking a change the owner confirmed (org=${session.organizationId}, callSid=${session.callSid})`);
   } else {
     console.warn(`[OwnerTools] ${name} came with confirmed=true but no read-back of that change has been answered by the owner — forwarded as confirmed=false. callSid=${session.callSid}`);
   }
-  if (key !== null) confirmRefusals(session).set(key, false);
   return { ...args, confirmed: false };
+}
+
+/**
+ * Did the owner speak after the model's last counted turn? (Owner speech is
+ * stamped at the start of an utterance, once per assistant turn.)
+ * @param {any} session
+ */
+function ownerSpokeLast(session) {
+  return isStamp(session.lastOwnerSpeechAt) && isStamp(session.lastAssistantTurnAt) && session.lastOwnerSpeechAt > session.lastAssistantTurnAt;
 }
 
 /**
