@@ -126,7 +126,7 @@ export function OwnerAssistantBubble() {
             </Button>
           </div>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-            <p className="text-sm">Ask about your bookings and messages, or move or cancel a job.</p>
+            <p className="text-sm">Ask about your bookings and messages, book, move or cancel a job, block out time, or mark a callback done.</p>
             <p className="text-xs text-muted-foreground">
               Changes are real: it reads every change back and waits for your yes, then tells you whether the customer was told. Sessions last up to 8 minutes.
             </p>

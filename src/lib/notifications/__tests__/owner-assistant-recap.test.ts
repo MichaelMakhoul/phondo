@@ -86,10 +86,10 @@ describe("sendOwnerAssistantRecapNotification", () => {
     expect(queried.some((q) => q.table === "notification_preferences")).toBe(false);
     const [mail] = sent();
     expect(mail.to).toBe("owner@example.com");
-    expect(mail.subject).toBe("Your assistant changed 4 bookings — please check");
+    expect(mail.subject).toBe("Your assistant made 4 changes — please check");
     expect(mail.html).toContain("What your assistant changed");
     expect(mail.html).toContain("Your assistant made 4 changes in your dashboard.");
-    expect(mail.html).toContain("This list comes from your diary and our text log, not from what the AI said.");
+    expect(mail.html).toContain("This list comes from your diary, your callbacks and our text log, not from what the AI said.");
     expect(mail.html).toContain("Cancelled <strong>Michael Dunn</strong>'s job on Monday, October 26 at 12:30 PM");
     expect(mail.html).toContain("Moved <strong>Jane Smith</strong>'s job from Wednesday, October 28 at 9:00 AM to Thursday, October 29 at 2:00 PM");
     expect(mail.html).toContain("Booked <strong>Raj Patel</strong> for Friday, October 30 at 11:00 AM");
@@ -100,13 +100,16 @@ describe("sendOwnerAssistantRecapNotification", () => {
     expect(mail.html).toContain("fix it in Appointments and let the customer know");
     expect(mail.html).toContain('href="https://app.example.test/appointments"');
     expect(mail.html).toContain(`href="https://app.example.test/calls/${CALL}"`);
+    // Bookings only: no links to the places blocks and callbacks are fixed.
+    expect(mail.html).not.toContain("/settings/scheduling");
+    expect(mail.html).not.toContain('/callbacks"');
   });
 
   it("one change reads in the singular; a phone session says 'on your assistant line'", async () => {
     vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
     await sendOwnerAssistantRecapNotification({ organizationId: ORG, callId: CALL, channel: "phone", items: ITEMS.slice(0, 1) });
     const [mail] = sent();
-    expect(mail.subject).toBe("Your assistant changed 1 booking — please check");
+    expect(mail.subject).toBe("Your assistant made 1 change — please check");
     expect(mail.html).toContain("Your assistant made 1 change on your assistant line.");
   });
 
@@ -154,5 +157,71 @@ describe("SCRUM-597: an unreadable org timezone", () => {
     const [withNote, without] = sent();
     expect(withNote.html).toContain("Times are shown in Sydney time — we couldn&#39;t read your business&#39;s timezone.".replace(/&#39;/g, "'"));
     expect(without.html).not.toContain("Times are shown in Sydney time");
+  });
+});
+
+// SCRUM-599: time blocked out and callbacks marked done are in the recap too.
+describe("SCRUM-599: blocks and callbacks in the recap", () => {
+  const BLOCK: OwnerRecapItem = { change: "blocked", when: "Friday, October 30 from 1:00 PM to 5:00 PM", practitioner: null, title: "Quote visit" };
+  const CALLBACK: OwnerRecapItem = { change: "callback_done", customer: "Sue Brown", reason: "Blocked drain" };
+
+  it("a block reads 'for everyone' with its title, and says the jobs already booked stay booked", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
+    await sendOwnerAssistantRecapNotification({ organizationId: ORG, callId: CALL, channel: "phone", items: [BLOCK] });
+    const [mail] = sent();
+    expect(mail.subject).toBe("Your assistant made 1 change — please check");
+    expect(mail.html).toContain("Blocked out <strong>Friday, October 30 from 1:00 PM to 5:00 PM</strong> for everyone — &ldquo;Quote visit&rdquo;");
+    // Clients lens T10: true whether or not any jobs were in the way.
+    expect(mail.html).toContain("If any jobs were already booked then, they're still booked — check the diary. To remove the block: Settings → Scheduling.");
+    // No booking changed: no "let the customer know", and the link goes where blocks are removed.
+    expect(mail.html).toContain("fix it in your dashboard.");
+    expect(mail.html).not.toContain("let the customer know");
+    expect(mail.html).toContain('href="https://app.example.test/settings/scheduling"');
+  });
+
+  it("a staff member's block names them; the default title is left out", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
+    await sendOwnerAssistantRecapNotification({ organizationId: ORG, callId: CALL, channel: "web", items: [{ ...BLOCK, practitioner: "Alex", title: "Time off" } as OwnerRecapItem] });
+    const html = sent()[0].html;
+    expect(html).toContain("Blocked out <strong>Friday, October 30 from 1:00 PM to 5:00 PM</strong> for Alex<br/>");
+    expect(html).not.toContain("&ldquo;Time off&rdquo;");
+  });
+
+  it("a callback marked done names the caller and the reason, and says where it went", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
+    await sendOwnerAssistantRecapNotification({ organizationId: ORG, callId: CALL, channel: "web", items: [ITEMS[0], CALLBACK] });
+    const [mail] = sent();
+    expect(mail.subject).toBe("Your assistant made 2 changes — please check");
+    expect(mail.html).toContain("Marked <strong>Sue Brown</strong>&#39;s callback as done (&ldquo;Blocked drain&rdquo;)");
+    expect(mail.html).toContain("It's now under Completed in Callbacks — if they still need a call, their details are there.");
+    // A booking changed too: its fix line stays, and the Callbacks link is added.
+    expect(mail.html).toContain("fix it in Appointments and let the customer know.");
+    expect(mail.html).toContain('href="https://app.example.test/callbacks"');
+  });
+
+  it("escapes the customer-written values in block and callback rows", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
+    const evil = `<img src=x onerror="alert(1)">`;
+    await sendOwnerAssistantRecapNotification({
+      organizationId: ORG, callId: CALL, channel: "web",
+      items: [{ change: "blocked", when: evil, practitioner: evil, title: evil }, { change: "callback_done", customer: evil, reason: evil }],
+    });
+    const html = sent()[0].html;
+    expect(html).not.toContain("<img src=x");
+    expect(html).not.toContain('onerror="');
+    expect(html.match(/&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/g)?.length).toBe(5);
+  });
+});
+
+describe("SCRUM-599 test lens: the closing line", () => {
+  it("K60: a call whose only change was a new booking says to fix it in Appointments and tell the customer", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(OWNER_FOUND) as any);
+    await sendOwnerAssistantRecapNotification({
+      organizationId: ORG, callId: CALL, channel: "phone",
+      items: [{ change: "booked", customer: "Raj Patel", when: "Friday, October 30 at 11:00 AM", told: "not_told" }],
+    });
+    const html = sent()[0].html;
+    expect(html).toContain("fix it in Appointments and let the customer know.");
+    expect(html).not.toContain("fix it in your dashboard");
   });
 });

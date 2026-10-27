@@ -126,13 +126,16 @@ export async function getContactOptions(
   return notes.length ? { options, note: notes.join(" ") } : { options };
 }
 
+/** What the contact is about. SCRUM-599: "booked" is a new job the owner booked (text only — no call). */
+export type ContactKind = "cancelled" | "moved" | "booked";
+
 export interface ContactRequest {
   orgId: string;
   method: ContactMethod;
-  kind: "cancelled" | "moved";
-  /** The booking the contact is about: the cancelled one, or the NEW leg of a move. */
+  kind: ContactKind;
+  /** The booking the contact is about: the cancelled one, the NEW leg of a move, or the new booking. */
   appointmentId: string;
-  /** Its start: the cancelled time, or the new time. */
+  /** Its start: the cancelled time, the new time, or the booked time. */
   startTime: Date;
   phone: string | null | undefined;
   country: string | null | undefined;
@@ -163,6 +166,9 @@ const OWNER_REQUESTED = { ownerRequested: true } as const;
 export async function contactCustomer(req: ContactRequest, deps: ContactDeps = {}): Promise<CustomerContactResult> {
   if (req.method === "none") return { method: "none", status: "not_requested" };
   if (req.method === "call") {
+    // A call is about a cancel or a move; a new booking is never offered one (the
+    // handler asks again), so this is only a net.
+    if (req.kind === "booked") return { method: "call", status: "not_placed", reason: "invalid_request" };
     // The voice server re-checks everything at the moment of dialling (hours, caps,
     // the booking's state and number) — the read-back was a separate request.
     try {
@@ -195,7 +201,16 @@ export async function contactCustomer(req: ContactRequest, deps: ContactDeps = {
     const result =
       req.kind === "cancelled"
         ? await (deps.sendCancellation ?? sendCancellationSMS)(req.orgId, text.phone, req.startTime, req.timezone, req.appointmentId, OWNER_REQUESTED)
-        : await (deps.sendConfirmation ?? sendAppointmentConfirmationSMS)(req.orgId, text.phone, req.startTime, req.timezone, undefined, req.appointmentId, { ...OWNER_REQUESTED, moved: true });
+        : await (deps.sendConfirmation ?? sendAppointmentConfirmationSMS)(
+            req.orgId,
+            text.phone,
+            req.startTime,
+            req.timezone,
+            undefined,
+            req.appointmentId,
+            // A new booking gets the plain confirmation; a move says it's the new time.
+            req.kind === "moved" ? { ...OWNER_REQUESTED, moved: true } : OWNER_REQUESTED
+          );
     if (result?.sent) return { method: "text", status: "sent" };
     return { method: "text", status: "not_sent", reason: result?.reason || result?.status || "not_sent" };
   } catch (err) {
@@ -212,19 +227,23 @@ export async function contactCustomer(req: ContactRequest, deps: ContactDeps = {
  * The sentence after a change, saying exactly what happened to the customer. The
  * model repeats it; it never claims a contact the result doesn't confirm.
  */
-export function contactOutcomeSentence(result: CustomerContactResult, customer: string, kind: "cancelled" | "moved"): string {
+export function contactOutcomeSentence(result: CustomerContactResult, customer: string, kind: ContactKind): string {
+  // SCRUM-599 (clients lens T2): never offer to read back a new booking's number — the owner just said it.
+  const offerNumber = kind === "booked" ? "" : " I can read you their number if you want to tell them yourself.";
   switch (result.status) {
     case "sent":
       return ` I've texted ${customer} to let them know.`;
     case "not_sent": {
       const why = (BLOCK_WHY as Record<string, string>)[result.reason] ?? SEND_WHY[result.reason] ?? "the text didn't go through";
-      return ` I couldn't text ${customer}: ${why}. I can read you their number if you want to tell them yourself.`;
+      return ` I couldn't text ${customer}: ${why}.${offerNumber}`;
     }
     case "calling":
       // Clients lens M8: the owner hears what the call will do, not only that it's happening.
       return kind === "cancelled"
         ? ` I'm calling ${customer} now to let them know, and to offer them another time. You'll get an email when the call's done.`
-        : ` I'm calling ${customer} now to tell them the new time and check it suits. You'll get an email when the call's done.`;
+        : kind === "moved"
+          ? ` I'm calling ${customer} now to tell them the new time and check it suits. You'll get an email when the call's done.`
+          : ` I'm calling ${customer} now about the booking. You'll get an email when the call's done.`;
     case "not_placed":
       if (result.reason === "calls_disabled") {
         return ` I can't call customers yet, so I haven't let ${customer} know. I can read you their number if you want to tell them yourself.`;
@@ -235,6 +254,6 @@ export function contactOutcomeSentence(result: CustomerContactResult, customer: 
       return ` I couldn't call ${customer}: ${callWhy(result.reason)}. I can read you their number if you want to tell them yourself.`;
     case "not_requested":
       // Not "as you asked": with nothing to choose, the owner may never have been asked.
-      return ` I haven't let ${customer} know. I can read you their number if you want to tell them yourself.`;
+      return ` I haven't let ${customer} know.${offerNumber}`;
   }
 }

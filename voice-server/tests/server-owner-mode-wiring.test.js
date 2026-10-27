@@ -200,7 +200,7 @@ const fakeSentry = (calls) => ({
 const { CallSession } = require("../call-session");
 const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require("../lib/owner-prompt");
 const { buildOwnerTools } = require("../lib/owner-tools");
-const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, CANCELLED_BEFORE_SENT_MESSAGE, LOOP_EXHAUSTED_MESSAGE, OWNER_MAX_TOOL_CALLS } = require("../lib/owner-tool-runner");
+const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, CANCELLED_BEFORE_SENT_MESSAGE, LOOP_EXHAUSTED_MESSAGE, OWNER_MAX_TOOL_ROUNDS } = require("../lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("../lib/owner-turn-stamps");
 const { forwardingFallbackEligible } = require("../lib/transfer-eligibility");
 const { maskPhone } = require("../lib/mask-phone");
@@ -406,7 +406,11 @@ describe("SCRUM-587: the assembled owner prompt, run for real", () => {
     const r = await assemblePrompts({ owner: true });
     const firstMessageLine = `\n\nIMPORTANT — YOUR FIRST MESSAGE: When the call connects, you will receive a short text message. Immediately respond by speaking the following greeting (word for word, naturally and warmly): "Hi Dave, what do you need?" — Then wait for the caller to respond. Do NOT add anything extra. Do NOT invent a receptionist name — you are an AI assistant.`;
     assert.equal(r.geminiSystemPrompt, r.classicPrompt + firstMessageLine + buildOwnerGeminiSuffix());
-    for (const marker of CUSTOMER_MARKERS) assert.ok(!r.geminiSystemPrompt.includes(marker), `customer text in the owner prompt: ${marker}`);
+    // A tool name counts only standing alone — never inside an owner tool's name (owner_book_appointment).
+    for (const marker of CUSTOMER_MARKERS) {
+      const present = /^[a-z_]+$/.test(marker) ? new RegExp(`(?<![a-z_])${marker}`).test(r.geminiSystemPrompt) : r.geminiSystemPrompt.includes(marker);
+      assert.ok(!present, `customer text in the owner prompt: ${marker}`);
+    }
   });
 
   it("Gemini: owner tools, owner greeting, no disclosure (not even evaluated)", async () => {
@@ -875,7 +879,7 @@ function makeClassic(o = {}) {
     scheduleCache: { invalidate: () => {}, applyDelta: () => {} },
     noteAssistantSpeech,
     noteAssistantTurnEnd,
-    OWNER_MAX_TOOL_CALLS,
+    OWNER_MAX_TOOL_ROUNDS,
     ownerToolLoopReply,
     getErrorMsg: (lang, key) => `ERR:${key}`,
     detectExpectedInput: () => "general",
@@ -1014,7 +1018,7 @@ describe("SCRUM-587: classic pipeline, run for real", () => {
     await c2.handleUserSpeech(err, twilio, "cancel Bob's job on Friday");
     assert.equal(err.assistantTurnSeq, 0, "an apology is not a read-back");
     const loop = makeSession({ owner: true });
-    const c3 = makeClassic({ steps: Array.from({ length: OWNER_MAX_TOOL_CALLS }, () => ({ tools: [{ name: "owner_list_messages", arguments: "{}" }] })) });
+    const c3 = makeClassic({ steps: Array.from({ length: OWNER_MAX_TOOL_ROUNDS }, () => ({ tools: [{ name: "owner_list_messages", arguments: "{}" }] })) });
     await c3.handleUserSpeech(loop, twilio, "any messages for me today?");
     assert.equal(loop.assistantTurnSeq, 0, "the loop-exhausted fallback is not a read-back");
   });
@@ -1060,7 +1064,7 @@ describe("SCRUM-587: classic owner turns get the owner tool cap, and never hear 
     assert.equal(spokenBy(c).at(-1), "ERR:repeatRequest");
     assert.ok(c.lines.some((l) => l.includes("[Pipeline] Tool call loop exhausted after 3 iterations")), c.lines.join("\n"));
   });
-  it(`an owner turn that runs out (${OWNER_MAX_TOOL_CALLS} rounds) right after a successful change: the owner hears its result, and it is logged at error level`, async (t) => {
+  it(`an owner turn that runs out (${OWNER_MAX_TOOL_ROUNDS} rounds) right after a successful change: the owner hears its result, and it is logged at error level`, async (t) => {
     const errors = [];
     t.mock.method(console, "error", (...a) => errors.push(util.format(...a)));
     t.mock.method(console, "warn", () => {});
@@ -1068,22 +1072,22 @@ describe("SCRUM-587: classic owner turns get the owner tool cap, and never hear 
     const at = Date.now(); // the owner has answered the read-back of a1
     s.ownerPendingConfirmations = new Map([["owner_cancel_appointment|a1", { at: at - 3000, seq: 0 }]]);
     s.assistantTurnSeq = 1; s.lastAssistantTurnAt = at - 1000; s.lastAssistantSpeechAt = at - 1500; s.lastOwnerSpeechAt = at - 500;
-    const steps = Array.from({ length: OWNER_MAX_TOOL_CALLS - 1 }, listRound);
+    const steps = Array.from({ length: OWNER_MAX_TOOL_ROUNDS - 1 }, listRound);
     steps.push({ tools: [{ name: "owner_cancel_appointment", arguments: '{"appointment_id":"a1","confirmed":true}' }] });
     const executeToolCall = async (name) => (name === "owner_cancel_appointment" ? CANCELLED : { success: true, message: "No messages waiting.", data: { callbacks: [], calls: [] } });
     const c = makeClassic({ runOwnerToolCall, executeToolCall, steps });
     await c.handleUserSpeech(s, twilio, "yes");
     assert.deepEqual(c.steps, []);
-    assert.equal(c.calls.filter((x) => x[0] === "llm").length, OWNER_MAX_TOOL_CALLS, "the loop stops at the owner cap");
+    assert.equal(c.calls.filter((x) => x[0] === "llm").length, OWNER_MAX_TOOL_ROUNDS, "the loop stops at the owner cap");
     assert.equal(spokenBy(c).at(-1), CANCELLED.message, "the owner hears the change, not a request to repeat it");
     assert.ok(!spokenBy(c).includes("ERR:repeatRequest"));
     assert.equal(errors.filter((l) => l.includes("right after a successful owner_cancel_appointment")).length, 1, errors.join("\n"));
-    assert.ok(c.lines.some((l) => l.includes(`Tool call loop exhausted after ${OWNER_MAX_TOOL_CALLS} iterations`)));
+    assert.ok(c.lines.some((l) => l.includes(`Tool call loop exhausted after ${OWNER_MAX_TOOL_ROUNDS} iterations`)));
   });
   it("a last result written for the model (PR B's read-back request) is never read out: the owner hears a plain line", async (t) => {
     t.mock.method(console, "warn", () => {});
     const s = makeSession({ owner: true });
-    const steps = Array.from({ length: OWNER_MAX_TOOL_CALLS }, () => ({ tools: [{ name: "owner_cancel_appointment", arguments: '{"appointment_id":"a1"}' }] }));
+    const steps = Array.from({ length: OWNER_MAX_TOOL_ROUNDS }, () => ({ tools: [{ name: "owner_cancel_appointment", arguments: '{"appointment_id":"a1"}' }] }));
     const c = makeClassic({ runOwnerToolCall, executeToolCall: async () => NEEDS_CONFIRMATION, steps });
     await c.handleUserSpeech(s, twilio, "cancel Bob's job");
     assert.equal(spokenBy(c).at(-1), LOOP_EXHAUSTED_MESSAGE);

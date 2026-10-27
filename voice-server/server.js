@@ -168,7 +168,7 @@ const { mintStreamToken, verifyStreamToken, withoutOwnerAccess } = require("./li
 // bypasses the customer guards, and the turn clock its confirmation gate reads.
 const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require("./lib/owner-prompt");
 const { buildOwnerTools, OWNER_CHANGE_TOOL_NAMES } = require("./lib/owner-tools");
-const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, ownerResultSucceeded, OWNER_MAX_TOOL_CALLS } = require("./lib/owner-tool-runner");
+const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, ownerResultSucceeded, OWNER_MAX_TOOL_ROUNDS } = require("./lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("./lib/owner-turn-stamps");
 const { OWNER_WEB_MAX_SESSION_MS, OWNER_WEB_RECORD_METADATA, OWNER_WEB_PROBLEM_MESSAGE, isOwnerWebToken, ownerWebCallSid, buildOwnerWebPrompt, createOwnerTokenLedger, createOwnerWebSessions, finishOwnerWebSession } = require("./lib/owner-web-session"); // SCRUM-596: the owner assistant in the dashboard
 const { createOwnerTranscriber } = require("./lib/owner-transcript"); // SCRUM-597: the owner's lines in a browser session, from Deepgram
@@ -4507,7 +4507,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
     // SCRUM-587 (SF5): an owner's normal list → availability → reschedule is
     // three tool rounds on its own, so owner turns get the owner tool cap. The
     // turn's last owner tool call is what the owner hears if even that runs out.
-    const maxToolIterations = session.ownerMode ? OWNER_MAX_TOOL_CALLS : MAX_TOOL_ITERATIONS;
+    const maxToolIterations = session.ownerMode ? OWNER_MAX_TOOL_ROUNDS : MAX_TOOL_ITERATIONS;
     /** @type {{ name: string, ret: { message: string, data?: unknown } } | null} */
     let lastOwnerTool = null;
 
@@ -8065,7 +8065,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
 
     // SCRUM-596: an owner gets the phone line's tool budget (a move is a list, a
     // check, the move, then the read-back), as in the phone line's classic loop.
-    const maxIterations = session.ownerMode ? OWNER_MAX_TOOL_CALLS : MAX_TOOL_ITERATIONS;
+    const maxIterations = session.ownerMode ? OWNER_MAX_TOOL_ROUNDS : MAX_TOOL_ITERATIONS;
     for (let i = 0; i < maxIterations; i++) {
       const t0 = Date.now();
       let sentenceCount = 0;

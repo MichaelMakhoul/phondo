@@ -299,7 +299,7 @@ describe("SCRUM-597 review: the page behind the bubble, and the copy", () => {
     expect(calendarSource).toMatch(/useEffect\(\(\) => onBookingsChanged\(refreshCurrentMonth\), \[refreshCurrentMonth\]\);/);
   });
   it("the bubble says what it's for; the idle line says Press (phones); the ended state mentions the recap email", () => {
-    expect(bubbleCode).toContain("Ask about your bookings and messages, or move or cancel a job.");
+    expect(bubbleCode).toContain("Ask about your bookings and messages, book, move or cancel a job, block out time, or mark a callback done.");
     expect(sessionUiCode).toContain("Press Start talking and allow the microphone when your browser asks.");
     expect(sessionUiCode).not.toContain("Click below");
     expect(sessionUiCode).toContain("we&apos;ll email you a list of exactly what changed.");

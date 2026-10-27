@@ -164,7 +164,7 @@ function makeLoop({ turns, ownerResults = [], ttsBytes = 8000 }) {
     buildLLMOptions: () => ({ tools: ["customer tools"] }),
     buildOwnerTools: () => ["owner tools"],
     MAX_TOOL_ITERATIONS: 3,
-    OWNER_MAX_TOOL_CALLS: 4,
+    OWNER_MAX_TOOL_ROUNDS: 4,
     LLM_API_KEY: "k",
     DEEPGRAM_API_KEY: "k",
     streamChatResponse: async (key, messages, opts) => {

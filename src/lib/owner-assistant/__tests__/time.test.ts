@@ -7,6 +7,7 @@ import {
   ownerRangeBounds,
   parseOwnerLocalDatetime,
   formatWhen,
+  formatSpan,
   type OwnerRange,
 } from "../time";
 
@@ -251,5 +252,30 @@ describe("formatWhen", () => {
     // Node 20 / some ICU builds emit U+202F here; the owner-facing string must be plain ASCII spacing.
     vi.spyOn(Date.prototype, "toLocaleTimeString").mockReturnValue("2:00\u202fPM");
     expect(formatWhen(new Date("2026-10-15T03:00:00Z"), TZ)).toBe("Thursday, October 15 at 2:00 PM");
+  });
+});
+
+describe("formatSpan (SCRUM-599)", () => {
+  const span = (a: string, b: string, tz = TZ) => formatSpan(new Date(a), new Date(b), tz);
+  it("one day at set times", () => {
+    expect(span("2026-10-30T02:00:00Z", "2026-10-30T06:00:00Z")).toBe("Friday, October 30 from 1:00 PM to 5:00 PM");
+  });
+  it("a whole day, and whole days, read as all day (the last day is the one before the end's midnight)", () => {
+    expect(span("2026-10-29T13:00:00Z", "2026-10-30T13:00:00Z")).toBe("Friday, October 30 (all day)");
+    expect(span("2026-10-29T13:00:00Z", "2026-11-01T13:00:00Z")).toBe("Friday, October 30 to Sunday, November 1 (all day)");
+  });
+  it("the rest of a day runs to midnight; from midnight to a set time is not all day", () => {
+    expect(span("2026-10-30T02:00:00Z", "2026-10-30T13:00:00Z")).toBe("Friday, October 30 from 1:00 PM to midnight");
+    expect(span("2026-10-29T13:00:00Z", "2026-10-30T01:00:00Z")).toBe("Friday, October 30 from 12:00 AM to 12:00 PM");
+  });
+  it("across days at set times names both ends in full", () => {
+    expect(span("2026-10-30T02:00:00Z", "2026-11-01T22:00:00Z")).toBe("Friday, October 30 at 1:00 PM to Monday, November 2 at 9:00 AM");
+    // Past the closing midnight is a second day, never "to midnight".
+    expect(span("2026-10-30T02:00:00Z", "2026-10-31T13:00:00Z")).toBe("Friday, October 30 at 1:00 PM to Sunday, November 1 at 12:00 AM");
+  });
+  it("in the org's zone, across the spring-forward night (a 23-hour day is still all day)", () => {
+    expect(span("2026-10-03T14:00:00Z", "2026-10-04T13:00:00Z")).toBe("Sunday, October 4 (all day)");
+    // The same instants are two days in New York.
+    expect(span("2026-10-30T02:00:00Z", "2026-10-30T06:00:00Z", "America/New_York")).toBe("Thursday, October 29 at 10:00 PM to Friday, October 30 at 2:00 AM");
   });
 });
