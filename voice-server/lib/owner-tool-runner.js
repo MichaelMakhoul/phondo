@@ -415,7 +415,8 @@ function readBackVerdict(session, entry) {
  * synchronous step as the passing check — before the executor is awaited —
  * so confirmations Gemini runs in parallel (waiting or not) can't share
  * either. Otherwise it goes on as confirmed:false and PR B answers with the
- * read-back; a key refused again after that re-arm pages.
+ * read-back; a key refused again after that re-arm pages (once per call —
+ * later ones in that call warn).
  * @param {any} session
  * @param {string} name
  * @param {Record<string, any>} args

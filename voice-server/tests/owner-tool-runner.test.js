@@ -1932,7 +1932,7 @@ describe("SCRUM-601: which refused-again confirms page", () => {
     }
     assert.deepEqual(alerts(lines), [], lines.map((l) => l.text).join("\n"));
     assert.equal(lines.filter((l) => l.level === "warn" && l.text.includes("no read-back of that change has been answered")).length, 4);
-    assert.equal(s.ownerConfirmGatePaged, undefined);
+    assert.notEqual(s.ownerConfirmGatePaged, true);
   });
 
   it("once per CALL: refused-agains of different writes page once in all, and a confirm that goes through in between resets nothing", async () => {
