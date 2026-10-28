@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { runAfterResponse } from "@/lib/utils/after-response";
+import { checkPlanUsageAlert } from "@/lib/billing/plan-usage-alert";
 import crypto from "crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { analyzeCall, type CallMetadata } from "@/lib/spam/spam-detector";
@@ -548,6 +549,9 @@ export async function POST(request: Request) {
           // Fail CLOSED (skip) — a dropped count on a rare DB blip is
           // recoverable; a double-bill is not.
           console.error("[Internal] claim_and_increment_call_usage failed (skipping to avoid double-bill):", { callId, organizationId, error: rpcError });
+        } else if (counted === true) {
+          // SCRUM-608: this call counted — a heads-up past 125% / 150% of the plan's calls.
+          runAfterResponse(() => checkPlanUsageAlert(organizationId));
         } else if (counted === false) {
           // FALSE covers three states: already counted (benign retry), no
           // matching call row, or a callId/org mismatch — the RPC can't
