@@ -1263,8 +1263,11 @@ const LINE_BREAKS = /[\r\n\u2028\u2029]+/g;
  */
 export function parseBookingDetails(raw: unknown): Array<{ key: string; value: string }> | "too_long" | "unreadable" {
   if (raw === undefined || raw === null) return [];
-  if (String(raw).length > DETAILS_MAX) return "too_long";
-  const text = sanitizeCustomerText(String(raw).replace(LINE_BREAKS, ";"), DETAILS_MAX);
+  const joined = String(raw).replace(LINE_BREAKS, ";");
+  // Measured after normalisation: a compat character that widens (ﬃ → ffi) must not slip
+  // past the cap and be cut with "…" by the sanitiser — nothing here is ever cut.
+  if (joined.normalize("NFKC").length > DETAILS_MAX) return "too_long";
+  const text = sanitizeCustomerText(joined, DETAILS_MAX);
   if (!text) return [];
   const pairs: Array<{ key: string; value: string }> = [];
   for (const part of text.split(";")) {

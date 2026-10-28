@@ -1073,6 +1073,11 @@ describe("SCRUM-602: owner bookings follow each business's own required details"
     db.queues.organizations = [AU_ORG];
     const long = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: `service address=${"x".repeat(700)}` }), ctx);
     expect(long.message).toBe("That's too much detail for one booking — keep each detail short (about 100 words in all).");
+    // Measured after normalisation (security lens): 230 ligatures are 230 characters typed but 690 once ﬃ → ffi — refused, never cut.
+    configured(TRADIE);
+    db.queues.organizations = [AU_ORG];
+    const wide = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: `service address=${"\uFB03".repeat(230)}` }), ctx);
+    expect(wide.message).toBe("That's too much detail for one booking — keep each detail short (about 100 words in all).");
     // The job's note is the owner's note plus the details: over the diary's 500 characters it is refused, not trimmed.
     configured(TRADIE);
     db.queues.organizations = [AU_ORG];
