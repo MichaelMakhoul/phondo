@@ -1735,12 +1735,35 @@ describe("SCRUM-599: booking, blocking and marking done go through the same gate
       await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, details: "service address=12 Smith St;\nurgency\tlevel=today\r\n", confirmed: true, notify_customer: "none" } }, d.deps)));
       assert.equal(d.calls.at(-1).args.confirmed, true, "the same details across line breaks confirm");
     }
-    // A non-string email or details is not "none" (security lens): it can't share the key of a booking read back without one.
-    for (const odd of [{ details: ["service address=99 Other Rd"] }, { customer_email: ["x@example.com"] }]) {
+    // A non-string optional field is ABSENT, as the website reads it (the route's str() hands the
+    // handler undefined): a booking read back without it confirms — the website books exactly that —
+    // and one read back WITH it is refused. Nulling it instead armed nothing and looped (code lens).
+    for (const odd of [{ details: ["service address=99 Other Rd"] }, { customer_email: ["x@example.com"] }, { notes: { text: "x" } }, { service_type_id: 5 }]) {
+      const plain = { customer_name: "Jane Smith", customer_phone: "0412 345 678", start: "2026-10-29T14:00" };
       const s = makeSession();
       const d = makeDeps(prB);
-      await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, ...odd } }, d.deps));
-      assert.equal(s.ownerPendingConfirmations?.size ?? 0, 0, JSON.stringify(odd));
+      await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: plain }, d.deps));
+      assistantTurn(s);
+      ownerSpeaks(s);
+      await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...plain, ...odd, confirmed: true, notify_customer: "none" } }, d.deps)));
+      assert.equal(d.calls.at(-1).args.confirmed, true, `${JSON.stringify(odd)}: as absent, it confirms the plain booking`);
+      const s2 = makeSession();
+      const d2 = makeDeps(prB);
+      await captureConsole(() => runOwnerToolCall(s2, { name: "owner_book_appointment", args: { ...plain, details: "service address=12 Smith St", customer_email: "jane@example.com", notes: "tap", service_type_id: "svc-1" } }, d2.deps));
+      assistantTurn(s2);
+      ownerSpeaks(s2);
+      await settled(() => captureConsole(() => runOwnerToolCall(s2, { name: "owner_book_appointment", args: { ...plain, details: "service address=12 Smith St", customer_email: "jane@example.com", notes: "tap", service_type_id: "svc-1", ...odd, confirmed: true, notify_customer: "none" } }, d2.deps)));
+      assert.equal(d2.calls.at(-1).args.confirmed, false, `${JSON.stringify(odd)}: never a booking with the field the read-back had`);
+    }
+    // ";" or "field=" alone is no details, as an omitted one is — one key, no extra read-back.
+    {
+      const s = makeSession();
+      const d = makeDeps(prB);
+      await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: BOOK }, d.deps));
+      assistantTurn(s);
+      ownerSpeaks(s);
+      await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, details: " ; urgency level= ", confirmed: true, notify_customer: "none" } }, d.deps)));
+      assert.equal(d.calls.at(-1).args.confirmed, true);
     }
   });
 
@@ -1791,7 +1814,8 @@ describe("SCRUM-599: booking, blocking and marking done go through the same gate
   });
 
   it("a key with a missing or malformed field can never be confirmed", async () => {
-    for (const args of [{ ...BOOK, customer_name: "" }, { ...BOOK, customer_name: "   " }, { ...BOOK, customer_phone: "no digits" }, { ...BOOK, start: undefined }, { ...BOOK, start: "2026|10" }, { ...BOOK, notes: 7 }]) {
+    // (A non-string OPTIONAL field — notes: 7 — is absent, as the website reads it; see the "absent" cases below.)
+    for (const args of [{ ...BOOK, customer_name: "" }, { ...BOOK, customer_name: "   " }, { ...BOOK, customer_phone: "no digits" }, { ...BOOK, start: undefined }, { ...BOOK, start: "2026|10" }, { ...BOOK, customer_name: 7 }]) {
       const s = makeSession();
       const d = makeDeps(prB);
       await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args }, d.deps));

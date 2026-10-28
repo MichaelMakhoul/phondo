@@ -284,15 +284,20 @@ function ownerFacingMessage(name, r, successful) {
 function confirmationKey(name, args) {
   /** @param {unknown} v */
   const part = (v) => (typeof v === "string" && v !== "" && !v.includes("|") ? v : null);
+  // An OPTIONAL field that isn't a string is absent — exactly what the website reads
+  // (the internal route's str() hands the handler undefined for it), so the key matches
+  // the booking the website reads back; a null here would arm nothing and loop the
+  // read-back for ever (code lens, SCRUM-602).
+  const absent = (v) => v === undefined || v === null || typeof v !== "string" || v.trim() === "";
   /** @param {unknown} v an optional field: absent is "", a malformed one is null */
-  const optional = (v) => (v === undefined || v === null || v === "" ? "" : part(v));
+  const optional = (v) => (absent(v) ? "" : part(v));
   /** @param {unknown} v words the model may space or case differently between the two calls (any text: the fields are JSON-encoded) */
   const words = (v) => (typeof v === "string" ? v.trim().replace(/\s+/g, " ").toLowerCase() || null : null);
   /** @param {unknown} v optional words: absent or blank is "" (the website reads a blank one as none) */
-  const optionalWords = (v) => (v === undefined || v === null || (typeof v === "string" && v.trim() === "") ? "" : words(v));
+  const optionalWords = (v) => (absent(v) ? "" : words(v));
   /** @param {unknown} v a phone number, digits only, an AU +61 number written as 0… */
   /** An email however it's cased or spaced; "" when none. */
-  const optionalEmail = (v) => (v === undefined || v === null || (typeof v === "string" && v.trim() === "") ? "" : typeof v === "string" ? v.replace(/\s+/g, "").toLowerCase() : null);
+  const optionalEmail = (v) => (absent(v) ? "" : v.replace(/\s+/g, "").toLowerCase());
   /**
    * "field=value; field=value" → one JSON list of [field, words] pairs sorted by field
    * (a colon after the field works too, as PR B reads it). Unreadable → null (never
@@ -300,8 +305,7 @@ function confirmationKey(name, args) {
    * sorted the two could match a string PR B reads the other way round.
    */
   const detailsKey = (v) => {
-    if (v === undefined || v === null || (typeof v === "string" && v.trim() === "")) return "";
-    if (typeof v !== "string") return null; // not what PR B reads as "none" — never confirmable
+    if (absent(v)) return "";
     const pairs = [];
     const seen = new Set();
     // Read as PR B reads it (sanitizeCustomerText, after its line-break rule): a line
@@ -330,7 +334,7 @@ function confirmationKey(name, args) {
       if (value) pairs.push([field, value]);
     }
     pairs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-    return JSON.stringify(pairs);
+    return pairs.length ? JSON.stringify(pairs) : ""; // ";" or "field=" alone is no details, as omitted is
   };
   const phoneDigits = (v) => {
     if (typeof v !== "string") return null;

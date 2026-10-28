@@ -236,6 +236,17 @@ describe("SCRUM-599: the book, block and mark-done tools reach their handlers wi
       { customer_name: "Jane Smith", customer_phone: "0412 345 678", start: "2026-10-29T14:00", service_type_id: APPT, notes: "Leaking tap", customer_email: "jane@example.com", details: "service address=12 Smith St; urgency level=today", confirmed: true, notify_customer: "text" },
       { callId: CALL_ID }
     );
+    // A non-string optional field reaches the handler as undefined — absent — which is exactly how the
+    // voice gate keys it (SCRUM-602); the two must not drift.
+    vi.mocked(handleOwnerBookAppointment).mockClear();
+    await post({ ...base, ownerVerified: true, functionName: "owner_book_appointment", arguments: { customer_name: "Jane", customer_phone: "0412 345 678", start: "2026-10-29T14:00", details: ["service address=99 Other Rd"], customer_email: 5, notes: { text: "x" }, service_type_id: 7 } });
+    const got = vi.mocked(handleOwnerBookAppointment).mock.calls[0][1];
+    expect([got.details, got.customer_email, got.notes, got.service_type_id]).toEqual([undefined, undefined, undefined, undefined]);
+    vi.mocked(handleOwnerBookAppointment).mockClear();
+    await post({
+      ...base, ownerVerified: true, functionName: "owner_book_appointment",
+      arguments: { customer_name: "Jane Smith", customer_phone: "0412 345 678", start: "2026-10-29T14:00", service_type_id: APPT, notes: "Leaking tap", customer_email: "jane@example.com", details: "service address=12 Smith St; urgency level=today", confirmed: true, notify_customer: "text" },
+    });
     // Every key the voice server declares for the booking reaches the handler — a new parameter
     // added to the tool without a line here would be dropped on the way, silently.
     const voiceTools = createRequire(import.meta.url)(path.join(path.dirname(fileURLToPath(import.meta.url)), "../../../../../../voice-server/lib/owner-tools.js"));
