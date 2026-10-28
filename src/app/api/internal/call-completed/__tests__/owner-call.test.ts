@@ -185,3 +185,26 @@ describe("POST /api/internal/call-completed — the plan-usage heads-up (SCRUM-6
     }
   });
 });
+
+// SCRUM-608 review (independent mutation run): the heads-up must be scheduled through
+// runAfterResponse — after() keeps the invocation alive; a bare promise can be dropped when
+// Vercel freezes the function (SCRUM-410). The runAfterResponse mock above runs work inline,
+// so a bare `void checkPlanUsageAlert(...)` passes every test above.
+describe("POST /api/internal/call-completed — the plan-usage heads-up runs after the response (SCRUM-608 review)", () => {
+  it("is deferred through runAfterResponse, never started inside the request", async () => {
+    const { runAfterResponse } = await import("@/lib/utils/after-response");
+    const original = vi.mocked(runAfterResponse).getMockImplementation();
+    const deferred: Array<() => Promise<unknown>> = [];
+    vi.mocked(runAfterResponse).mockImplementation((work) => { deferred.push(work); });
+    try {
+      adminState.metadata = { ended_reason: "hangup" };
+      adminState.rpc.mockResolvedValueOnce({ data: true, error: null });
+      await POST(completedCall());
+      expect(checkPlanUsageAlert).not.toHaveBeenCalled();
+      await Promise.allSettled(deferred.map((work) => work()));
+      expect(checkPlanUsageAlert).toHaveBeenCalledWith("org-1");
+    } finally {
+      if (original) vi.mocked(runAfterResponse).mockImplementation(original);
+    }
+  });
+});

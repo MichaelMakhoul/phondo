@@ -235,3 +235,102 @@ describe("checkPlanUsageAlert (SCRUM-608)", () => {
     expect(Sentry.captureException).toHaveBeenCalled();
   });
 });
+
+// SCRUM-608 review (independent mutation run on 6c08e31f): paths the tests above leave open.
+// Each passes on the real code and fails on the mutant named in the comment above it.
+describe("checkPlanUsageAlert (SCRUM-608) — review killers", () => {
+  /** The fake above, with one ledger write failing (the calls count and the other writes untouched). */
+  const failingLedger = (op: "delete" | "update") => {
+    const admin = fakeAdmin();
+    return { from: (table: string) => ({ ...admin.from(table), [op]: () => ({ match: async () => ({ error: { code: "08006" } }) }) }) };
+  };
+
+  // kills: the billing-counter gate's < turned <= (a 150-call plan can't land on exactly 125%; a 400-call plan can)
+  it("exactly 125% alerts: 500 calls on a 400-call plan", async () => {
+    withCalls(500, { callsLimit: 400 });
+    expect(await checkPlanUsageAlert(ORG)).toBe(125);
+  });
+
+  // kills: the expired-trial skip applied to any status (a converted subscription keeps its past trial_end)
+  it("a paying account whose trial ended long ago (status active, trialEnd in the past) still gets the alert", async () => {
+    withCalls(188, { status: "active", trialEnd: new Date(Date.now() - 30 * 86_400_000) });
+    expect(await checkPlanUsageAlert(ORG)).toBe(125);
+  });
+
+  // kills: a send that threw at 150% releasing only the 150 slot (the 125 slot it spent would stay claimed, unconfirmed)
+  it("a send that threw at 150% releases both slots it claimed", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    withCalls(225);
+    vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(new TypeError("cannot read x of undefined"));
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
+    expect(ops.filter((o) => o.op === "delete").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20", "125:2026-10-20"]);
+  });
+
+  // kills: any permanent failure kept like org-config — the credential-absence contract says RELEASE
+  it("a send that failed on ABSENT provider credentials releases its claims — once the env is fixed the next counted call delivers", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    withCalls(225);
+    vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(new NotificationDeliveryError("EMAIL_API_KEY absent", { deliveredCount: 0, wantedCount: 2, permanent: true, permanentCause: "credential-absence" }));
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
+    expect(ops.filter((o) => o.op === "delete").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20", "125:2026-10-20"]);
+    expect(await checkPlanUsageAlert(ORG)).toBe(150); // retried
+  });
+
+  // kills: the org-config keep also writing delivered_at
+  it("no address to send to: the claim is kept but never confirmed — nothing was delivered", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    withCalls(188);
+    vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(new NotificationDeliveryError("0 channels", { deliveredCount: 0, wantedCount: 1, permanent: true, permanentCause: "org-config" }));
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
+    expect(ops.map((o) => o.op)).toEqual(["insert"]);
+  });
+
+  // kills: "skipped" handled like "sent" (delivered_at written, the level reported as emailed)
+  it("a 'skipped' send keeps its claim unconfirmed and reports nothing sent — nothing reached an inbox", async () => {
+    withCalls(188);
+    vi.mocked(sendPlanUsageAlertNotification).mockResolvedValueOnce("skipped");
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
+    expect(ops.map((o) => o.op)).toEqual(["insert"]);
+  });
+
+  // kills: a release that also frees the 125 slot an earlier, delivered send holds
+  it("a 150 send that delivered nothing frees only the slots it claimed — the delivered 125 alert keeps its ledger row", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    withCalls(188);
+    expect(await checkPlanUsageAlert(ORG)).toBe(125);
+    ops = [];
+    withCalls(225);
+    vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(new NotificationDeliveryError("0 delivered", { deliveredCount: 0, wantedCount: 2, permanent: false }));
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
+    expect(ops.filter((o) => o.op === "delete").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20"]);
+    expect(ledger.has(`${PLAN_USAGE_ALERT_JOB}|125:2026-10-20|${ORG}`)).toBe(true);
+  });
+
+  // kills: the Sentry page dropped from a failed release
+  it("a release that fails is paged to Sentry at error level — the alert is lost for the period", async () => {
+    const Sentry = await import("@sentry/nextjs");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(createAdminClient).mockReturnValue(failingLedger("delete") as any);
+    withCalls(188);
+    vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(new NotificationDeliveryError("0 delivered", { deliveredCount: 0, wantedCount: 1, permanent: false }));
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.stringContaining(ORG), "error");
+  });
+
+  // kills: the Sentry warning dropped from a failed confirmation
+  it("a confirmation that fails is reported to Sentry as a warning — reconciliation would flag a delivered send as crashed", async () => {
+    const Sentry = await import("@sentry/nextjs");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(createAdminClient).mockReturnValue(failingLedger("update") as any);
+    withCalls(188);
+    expect(await checkPlanUsageAlert(ORG)).toBe(125);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.stringContaining(ORG), "warning");
+  });
+
+  // kills: a renamed ledger job (the tests above compare against the constant itself)
+  it("the ledger job name is persisted state — it stays 'plan-usage-alert' (a rename re-sends this period's alerts)", async () => {
+    withCalls(188);
+    await checkPlanUsageAlert(ORG);
+    expect(ops[0].row?.job_name).toBe("plan-usage-alert");
+  });
+});

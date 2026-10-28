@@ -71,14 +71,16 @@ describe("sendPlanUsageAlertNotification (SCRUM-608)", () => {
 
   it("at 150%: the owner hears the team knows, and the team gets its own email with the org id", async () => {
     expect(await sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 })).toBe("sent");
-    const [owner, team] = sent();
+    const owner = sent().find((m) => m.to === "owner@example.com")!;
+    const team = sent().find((m) => m.to === "team@phondo.ai")!;
+    expect(sent().map((m) => m.to)).toEqual(["team@phondo.ai", "owner@example.com"]); // the team first, so the owner's line is true
     expect(owner.to).toBe("owner@example.com");
     expect(owner.subject).toBe("You've used 153% of your plan's calls this month");
     expect(words(owner.html)).toContain("We've let the Phondo team know too — reply to this email if you'd like a hand choosing.");
     expect(team.to).toBe("team@phondo.ai");
     expect(team.subject).toBe("[Phondo] An org is at 153% of its Starter plan");
     expect(words(team.html)).toContain(`Org ${ORG} has used 230 of 150 calls this period on the Starter plan (customer calls plus owner-assistant chats).`);
-    expect(words(team.html)).toContain("Nothing is cut off. The owner has been emailed with an upgrade link.");
+    expect(words(team.html)).toContain("Nothing is cut off. The owner is being emailed with an upgrade link.");
   });
 
   it("at 150% with no team address configured: the owner is still told — the missing channel is reported, not hidden", async () => {
@@ -99,6 +101,27 @@ describe("sendPlanUsageAlertNotification (SCRUM-608)", () => {
     expect(sent()[0].html).not.toContain("<b>Starter</b>");
   });
 
+  // Mutation lens gap: the owner was told "we've let the Phondo team know" even when nobody had been.
+  it("the owner hears the team knows ONLY when the team email went: no team address, or a failed team send, and the line is left out", async () => {
+    delete process.env.ADMIN_ALERT_EMAIL;
+    await sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 });
+    expect(words(sent()[0].html)).not.toContain("Phondo team know");
+    resendSend.mockClear();
+    process.env.ADMIN_ALERT_EMAIL = "team@phondo.ai";
+    resendSend.mockImplementationOnce(async () => ({ data: null, error: { message: "team inbox bounced" } }));
+    await expect(sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 })).rejects.toBeInstanceOf(NotificationDeliveryError);
+    const owner = sent().find((m) => m.to === "owner@example.com");
+    expect(owner).toBeDefined();
+    expect(words(owner!.html)).not.toContain("Phondo team know");
+  });
+
+  it("the team hears when the owner has no email on file — they can't have been told", async () => {
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin({ org_members: { data: null, error: null } }) as any);
+    await sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 });
+    expect(sent().map((m) => m.to)).toEqual(["team@phondo.ai"]);
+    expect(words(sent()[0].html)).toContain("The owner has no email address on file, so they haven't been told.");
+  });
+
   it("on a trial, it says when the trial ends — not that the count starts again", async () => {
     await sendPlanUsageAlertNotification({ ...base, level: 125, callsUsed: 188, trial: true });
     const text = words(sent()[0].html);
@@ -109,5 +132,41 @@ describe("sendPlanUsageAlertNotification (SCRUM-608)", () => {
   it("the demo org is skipped (no members to tell)", async () => {
     expect(await sendPlanUsageAlertNotification({ ...base, organizationId: DEMO_ORG_ID, level: 150, callsUsed: 230 })).toBe("skipped");
     expect(resendSend).not.toHaveBeenCalled();
+  });
+});
+
+// SCRUM-608 review (independent mutation run): channel and copy behaviour the tests above
+// leave open. Each passes on the real code and fails on the mutant named above it.
+describe("sendPlanUsageAlertNotification (SCRUM-608) — review killers", () => {
+  // kills: the missing team address not pushed to droppedChannels (the test above only checks "sent")
+  it("at 150% with no team address, the dropped team channel is actually reported (logged), not hidden", async () => {
+    delete process.env.ADMIN_ALERT_EMAIL;
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 })).toBe("sent");
+    expect(logged.mock.calls.some((c) => String(c[0]).includes("team-email"))).toBe(true);
+  });
+
+  // kills: the team email gated on the owner having an address
+  it("at 150% with no owner email, the Phondo team is still told — only no owner AND no team throws", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin({ org_members: { data: null, error: null } }) as any);
+    expect(await sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 })).toBe("sent");
+    expect(sent().map((s) => s.to)).toEqual(["team@phondo.ai"]);
+  });
+
+  // kills: Math.round -> Math.floor (188 and 230 both round down, so the tests above can't tell)
+  it("the percentage is rounded, not floored: 226 of 150 is 151%", async () => {
+    await sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 226 });
+    expect(sent().map((s) => s.subject).sort()).toEqual(["You've used 151% of your plan's calls this month", "[Phondo] An org is at 151% of its Starter plan"].sort());
+  });
+
+  // kills: the trailing-slash strip dropped (//billing), and the https://phondo.ai fallback dropped (a relative link)
+  it("the plans link is absolute and single-slashed — a trailing-slash app URL, or none at all", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.phondo.ai/";
+    await sendPlanUsageAlertNotification({ ...base, level: 125, callsUsed: 188 });
+    delete process.env.NEXT_PUBLIC_APP_URL;
+    await sendPlanUsageAlertNotification({ ...base, level: 125, callsUsed: 188 });
+    expect(sent().map((s) => s.html.match(/<a href="([^"]+)">see plans<\/a>/)?.[1])).toEqual(["https://app.phondo.ai/billing", "https://phondo.ai/billing"]);
   });
 });
