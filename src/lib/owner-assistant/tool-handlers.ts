@@ -31,7 +31,20 @@ import { isServiceTypeQuestion } from "@/lib/calendar/service-type-question";
 import { diffAppointmentFields, recordAppointmentEvent } from "@/lib/appointments/events";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { isValidEmail, isValidPhoneNumber, isValidUUID } from "@/lib/security/validation";
-import { bookingFieldsQuery } from "@/lib/calendar/booking-fields";
+import {
+  bookingFieldsQuery,
+  type BookingField,
+  BOOKING_OWN_FIELD_IDS,
+  DETAIL_VALUE_MAX,
+  DETAILS_MAX,
+  fieldKey,
+  listWords,
+  normalizeBookingFields,
+  parseBookingDetails,
+} from "@/lib/calendar/booking-fields";
+
+// Exported for the voice-server parity test (it moved to booking-fields with SCRUM-617).
+export { parseBookingDetails };
 import { hasNonLatinLetters } from "@/lib/calendar/latin-name";
 import { runAfterResponse } from "@/lib/utils/after-response";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
@@ -1209,38 +1222,14 @@ function bookingReadBackRule(shownPhone: string, notes: string | null, verificat
   return ` Say the phone number back digit by digit, in its groups: "${digitsAloud(shownPhone)}". ${note}${extra} Spell back letter by letter any name that isn't a common one, or that the owner corrected — once, not again on a repeated read-back unless it changed.`;
 }
 
-/**
- * SCRUM-602: a field this business collects from callers (Assistants → Caller Data
- * Collection, `assistants.prompt_config.fields`). Each business sets its own: some need
- * a last name, some an email, a tradie an address and how urgent it is.
- */
-type BookingField = { id: string; label: string; required: boolean; verification: string; hint?: string };
-
-/** The fields the booking's own parameters carry — never asked for again through `details`. */
-const BOOKING_OWN_FIELD_IDS = new Set(["first_name", "full_name", "last_name", "phone_number", "email_address"]);
-/** One detail's value: a few lines of the owner's words at most; longer is refused, never cut. */
-const DETAIL_VALUE_MAX = 300;
 /** Spoken English runs about six characters a word — "about N words over" means something by voice; "37 characters" doesn't. */
 const wordsOver = (chars: number) => Math.max(1, Math.round(chars / 6));
 const aboutWordsOver = (chars: number) => {
   const n = wordsOver(chars);
   return `about ${n} word${n === 1 ? "" : "s"} over`;
 };
-/** The whole `details` string; longer is refused, never cut. */
-const DETAILS_MAX = 600;
 /** The booking path's own cap on a job's note (`sanitizeString(notes, 500)`) — anything longer would be cut there without a word. */
 const DIARY_NOTES_MAX = 500;
-
-/** "service_address", "Service Address" and "service address" are one field. */
-function fieldKey(value: string): string {
-  return value.normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-/** "a", "a and b", "a, b and c". */
-function listWords(items: string[]): string {
-  if (items.length <= 1) return items.join("");
-  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
-}
 
 /**
  * The business's caller fields — the row the receptionist's booking path reads
@@ -1253,49 +1242,7 @@ async function bookingFields(supabase: any, organizationId: string): Promise<Boo
     console.error("[owner-assistant] booking fields read failed:", { organizationId, code: error.code });
     return "error";
   }
-  const raw = (data?.prompt_config as { fields?: unknown } | null | undefined)?.fields;
-  if (!Array.isArray(raw)) return [];
-  const fields: BookingField[] = [];
-  for (const f of raw) {
-    const id = typeof f?.id === "string" ? f.id.trim() : "";
-    if (!id || fields.some((k) => k.id === id)) continue;
-    const hint = sanitizeCustomerText(f?.description, 80);
-    fields.push({
-      id,
-      label: sanitizeCustomerText(f?.label, 60) ?? id.replace(/_/g, " "),
-      required: Boolean(f?.required), // truthy, as the booking path's own check reads it
-      verification: typeof f?.verification === "string" ? f.verification : "none",
-      ...(hint ? { hint } : {}),
-    });
-  }
-  return fields;
-}
-
-/** A line break between details is a separator — on both sides (the gate's key reads it the same way). */
-const LINE_BREAKS = /[\r\n\u2028\u2029]+/g;
-
-/**
- * The extra details as the model passes them: `field=value; field=value` (a colon after
- * the field works too; a line break separates like a semicolon). The field can be the id
- * or the label. Exported for the voice-server parity test: what this accepts, the gate's
- * key must be able to confirm, and what this refuses the gate must never arm.
- */
-export function parseBookingDetails(raw: unknown): Array<{ key: string; value: string }> | "too_long" | "unreadable" {
-  if (raw === undefined || raw === null) return [];
-  const joined = String(raw).replace(LINE_BREAKS, ";");
-  // Measured after normalisation: a compat character that widens (ﬃ → ffi) must not slip
-  // past the cap and be cut with "…" by the sanitiser — nothing here is ever cut.
-  if (joined.normalize("NFKC").length > DETAILS_MAX) return "too_long";
-  const text = sanitizeCustomerText(joined, DETAILS_MAX);
-  if (!text) return [];
-  const pairs: Array<{ key: string; value: string }> = [];
-  for (const part of text.split(";")) {
-    if (!part.trim()) continue;
-    const m = /^\s*([^=:]+?)\s*[=:]\s*(.*)$/.exec(part);
-    if (!m) return "unreadable";
-    pairs.push({ key: m[1], value: m[2].trim() });
-  }
-  return pairs;
+  return normalizeBookingFields((data?.prompt_config as { fields?: unknown } | null | undefined)?.fields);
 }
 
 /** How a detail is read back, by the field's own verification setting (the receptionist's rule for callers). */

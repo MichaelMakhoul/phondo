@@ -427,3 +427,27 @@ describe("buildSchedulingSection availability examples", () => {
     expect(section).toContain("The earliest time is today's first free time while today still has one; only when it has none is it the next open day.");
   });
 });
+
+// SCRUM-617: the same booking rule as voice-server/lib/prompt-builder.js (tests/booking-fields-tool.test.js).
+describe("DATA COLLECTION says what a booking needs (SCRUM-617)", () => {
+  const RULE = "Before you book, have every required item above — use what the caller already told you (like why they're calling) instead of asking again. book_appointment takes the name in first_name and last_name and every other item in details.";
+  const PHONE = "Phone Number: the number they're calling from counts — read it back and ask if it's the best one to reach them; take a different one if they give it.";
+  const build = (fields: CollectionField[]) => buildPromptFromConfig({ ...getDefaultConfig("home_services"), fields }, { businessName: "Copperline Plumbing", industry: "home_services" } as never);
+
+  it("the rule follows the fields, and a required phone number gets its caller-ID line — word for word as the voice server's", () => {
+    const p = build([
+      { id: "first_name", label: "First Name", type: "text", required: true, verification: "repeat-confirm" } as CollectionField,
+      { id: "phone_number", label: "Phone Number", type: "phone", required: true, verification: "read-back-digits" } as CollectionField,
+      { id: "address", label: "Address", type: "address", required: true, verification: "repeat-confirm" } as CollectionField,
+    ]);
+    expect(p).toContain(RULE);
+    expect(p).toContain(PHONE);
+  });
+
+  it("an optional phone number gets no read-back line", () => {
+    const p = build([{ id: "phone_number", label: "Phone Number", type: "phone", required: false, verification: "read-back-digits" } as CollectionField]);
+    expect(p).toContain(RULE);
+    expect(p).not.toContain("the number they're calling from counts");
+  });
+});
+

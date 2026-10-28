@@ -302,7 +302,22 @@ function buildFieldCollectionSection(fields: CollectionField[]): string {
     }
   }
 
+  section += bookingCollectionRules(fields);
   return section;
+}
+
+/**
+ * SCRUM-617: what a BOOKING needs from DATA COLLECTION, and how a required phone number is
+ * confirmed — the caller's own number counts (caller ID), read back rather than asked for.
+ * The same text as voice-server/lib/prompt-builder.js.
+ */
+function bookingCollectionRules(fields: CollectionField[]): string {
+  const phone = fields.find((f) => f.id === "phone_number" && f.required);
+  let rules = "\nBefore you book, have every required item above — use what the caller already told you (like why they're calling) instead of asking again. book_appointment takes the name in first_name and last_name and every other item in details.\n";
+  if (phone) {
+    rules += `${phone.label}: the number they're calling from counts — read it back and ask if it's the best one to reach them; take a different one if they give it.\n`;
+  }
+  return rules;
 }
 
 function buildBehaviorsSection(

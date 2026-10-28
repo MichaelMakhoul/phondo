@@ -1,4 +1,4 @@
-import { bookingFieldsQuery } from "@/lib/calendar/booking-fields";
+import { bookingFieldsQuery, callerBookingDetails, listWords, normalizeBookingFields } from "@/lib/calendar/booking-fields";
 import crypto from "crypto";
 import * as Sentry from "@sentry/nextjs";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -992,6 +992,8 @@ export async function handleBookAppointment(
     phone?: string;
     email?: string;
     notes?: string;
+    // SCRUM-617: every other field this business requires, "Label: value; Label: value".
+    details?: string;
     service_type_id?: string;
     practitioner_id?: string;
   },
@@ -1023,7 +1025,8 @@ export async function handleBookAppointment(
     ownerBooking?: boolean;
   }
 ): Promise<ToolResult> {
-  const { datetime, phone, email, notes, service_type_id } = args;
+  const { datetime, phone, notes, service_type_id } = args;
+  let email = args.email;
 
   // Build the name from first/last or legacy full name
   const firstName = args.first_name?.trim() || "";
@@ -1092,6 +1095,44 @@ export async function handleBookAppointment(
     };
   }
 
+  // SCRUM-617: everything ELSE this business requires (an address, the reason for the call,
+  // an email…), checked here — never left to the model. The booking tool told the model
+  // "first name, last name and the time" for every business, and a caller was booked without
+  // the address and reason the owner had turned on (28 Oct). The owner's assistant checks
+  // its own before its read-back (SCRUM-602), and moving an existing booking (a reschedule
+  // leg) carries what the original collected — neither is held to it here.
+  let detailLines: string[] = [];
+  if (!internal?.ownerBooking && !internal?.rescheduleLeg && !fieldsError) {
+    const check = callerBookingDetails(normalizeBookingFields(fields), { email, details: args.details });
+    if ("problem" in check) {
+      return {
+        success: false,
+        message:
+          check.problem === "too_long"
+            ? "That's too much detail for one booking. Keep each detail to a few words, then call book_appointment again."
+            : 'I couldn\'t read the details. Pass them as "Label: value; Label: value", using the labels in DATA COLLECTION, then call book_appointment again.',
+      };
+    }
+    if (check.missing.length > 0) {
+      const named = check.missing.map((f) => (f.id === "email_address" ? "the caller's email address" : `the ${f.label.toLowerCase()}`));
+      const others = check.missing.filter((f) => f.id !== "email_address");
+      const where = [
+        ...(others.length < check.missing.length ? ["the email in email"] : []),
+        ...(others.length ? [`${others.length < check.missing.length ? "the rest" : "them"} in details ("${others.map((f) => `${f.label}: …`).join("; ")}")`] : []),
+      ];
+      return {
+        success: false,
+        message:
+          `Not booked yet: this business's bookings also need ${listWords(named)}. ` +
+          `Ask the caller for ${check.missing.length === 1 ? "it" : "them"} in one question — use anything they've already told you (like why they're calling) instead of asking again — ` +
+          `then call book_appointment again with ${listWords(where)}.`,
+        data: { missing_fields: check.missing.map((f) => ({ id: f.id, label: f.label })) },
+      };
+    }
+    detailLines = check.lines;
+    email = check.email ?? undefined;
+  }
+
   if (!phone) {
     return {
       success: false,
@@ -1117,7 +1158,17 @@ export async function handleBookAppointment(
   }
 
   const sanitizedName = sanitizeString(name, 100);
-  const sanitizedNotes = notes ? sanitizeString(notes, 500) : undefined;
+  // The caller's note, then each detail on its own line (the dashboard shows the note). The
+  // diary keeps 500 characters — a detail the business requires is never cut off the end.
+  const callerNote = notes ? sanitizeString(notes, 500) : "";
+  const combinedNotes = [callerNote, ...detailLines].filter(Boolean).join("\n");
+  if (detailLines.length > 0 && combinedNotes.length > 500) {
+    return {
+      success: false,
+      message: "That's too much detail for one booking's note. Keep the note and each detail to a few words, then call book_appointment again.",
+    };
+  }
+  const sanitizedNotes = combinedNotes || undefined;
 
   // ── Validate service_type_id format before DB query ────────────────────
   if (service_type_id && !isValidUUID(service_type_id)) {

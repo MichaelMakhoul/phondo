@@ -351,6 +351,7 @@ export async function POST(request: Request) {
             phone: parsedArgs.phone,
             email: parsedArgs.email,
             notes: parsedArgs.notes,
+            details: parsedArgs.details, // SCRUM-617: the business's other required fields
             service_type_id: parsedArgs.service_type_id,
             practitioner_id: parsedArgs.practitioner_id,
           },
