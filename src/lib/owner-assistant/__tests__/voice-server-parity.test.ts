@@ -7,7 +7,7 @@ import { CALL_OUTCOMES, CALL_PURPOSES, TIMES_OF_DAY, VOICE_CALL_BLOCK_REASONS, c
 import { CUSTOMER_NOTIFY_CALL_TYPE } from "../owner-call";
 import { MACHINE_ANSWERS, buildCallOutcome, callResultOf } from "../call-outcome";
 import { REQUESTED_BY_PATH } from "../recap";
-import { OWNER_TOOL_NAMES, spokenPhone } from "../tool-handlers";
+import { OWNER_TOOL_NAMES, spokenPhone, parseBookingDetails } from "../tool-handlers";
 import { parsePhoneToE164 } from "@/lib/phone/normalize";
 
 // SCRUM-597 (types lens F6): the "let them know?" contract lives on both sides — the
@@ -255,7 +255,7 @@ describe("website ↔ voice server: what a customer call's row says", () => {
 // cuts every customer sentence the booking handler writes.
 describe("website ↔ voice server: book, block and mark done", () => {
   it("each declares exactly the arguments the route reads", () => {
-    expect(Object.keys(writeTool("owner_book_appointment").parameters.properties).sort()).toEqual(["confirmed", "customer_name", "customer_phone", "notes", "notify_customer", "service_type_id", "start"]);
+    expect(Object.keys(writeTool("owner_book_appointment").parameters.properties).sort()).toEqual(["confirmed", "customer_email", "customer_name", "customer_phone", "details", "notes", "notify_customer", "service_type_id", "start"]);
     expect(Object.keys(writeTool("owner_block_time").parameters.properties).sort()).toEqual(["confirmed", "end", "reason", "start"]);
     expect(Object.keys(writeTool("owner_mark_callback_done").parameters.properties).sort()).toEqual(["callback_id", "confirmed", "note"]);
   });
@@ -338,4 +338,88 @@ describe("SCRUM-601: the number the read-back gives confirms the number the owne
     expect(await confirmedWith("+64 9 555 1234", "+64 9 555 1234")).toBe(true);
     expect(await confirmedWith("+64 9 555 1234", "+1 649 555 1234")).toBe(false);
   });
+});
+
+// SCRUM-602: the website's `details` parser and the voice gate's key are two readings of
+// one string. What the website ACCEPTS the gate must arm (else the read-back could never
+// be confirmed); what the website REFUSES the gate must never arm. The same strings go
+// through both here — hand-copied formats on either side would drift.
+describe("SCRUM-602: a booking's details are read the same way by the website and the voice gate", () => {
+  const BOOK = { customer_name: "Jane Smith", customer_phone: "0412 345 678", start: "2026-10-29T14:00" };
+  let clock = 0;
+  const stamp = () => (clock = Math.max(Date.now() + 1, clock + 1));
+  /** The pairs in the gate's armed key for this booking (the last element of its JSON), or null when nothing is armed. */
+  function armedPairs(session: Record<string, any>): number | null {
+    const key: string | undefined = [...(session.ownerPendingConfirmations?.keys() ?? [])][0];
+    if (!key) return null;
+    const last = JSON.parse(key.slice("owner_book_appointment|".length)).at(-1);
+    return last === "" ? 0 : JSON.parse(last).length;
+  }
+  /** Arm a booking with `details`; then confirm it with `confirmedAs` after the read-back: [armed, confirmed, pairs in the key]. */
+  async function armed(details: string, confirmedAs = details): Promise<[boolean, boolean, number | null]> {
+    const forwarded: Array<Record<string, unknown>> = [];
+    const deps = {
+      executeToolCall: async (_n: string, args: Record<string, unknown>) => {
+        forwarded.push(args);
+        return args.confirmed === true ? { success: true, message: "Booked.", data: { outcome: "booked" } } : { success: false, message: "Read this back…", data: { outcome: "needs_confirmation" } };
+      },
+      scheduleCache: { invalidate: () => {} },
+      now: () => stamp(),
+    };
+    const session: Record<string, any> = {
+      callSid: "CA1", organizationId: "org-1", assistantId: "asst-1", callRecordId: "call-1", ownerMode: true,
+      organization: { timezone: "Australia/Sydney" }, callerPhone: "+61400000001", orgPhoneNumber: "+61255550000",
+      telephonyProvider: "twilio", toolCallAudit: [], ownerToolCalls: 0,
+      assistantTurnSeq: 0, lastAssistantTurnAt: 0, lastAssistantSpeechAt: 0, lastOwnerSpeechAt: 0,
+    };
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await runner.runOwnerToolCall(session, { name: "owner_book_appointment", args: { ...BOOK, details } }, deps);
+    const isArmed = (session.ownerPendingConfirmations?.size ?? 0) > 0;
+    const pairs = armedPairs(session);
+    session.lastAssistantSpeechAt = stamp(); session.assistantTurnSeq += 1; session.lastAssistantTurnAt = stamp();
+    session.lastOwnerSpeechAt = stamp();
+    await runner.runOwnerToolCall(session, { name: "owner_book_appointment", args: { ...BOOK, details: confirmedAs, confirmed: true, notify_customer: "none" } }, deps);
+    return [isArmed, forwarded.at(-1)?.confirmed === true, pairs];
+  }
+
+  const ACCEPTED = [
+    "service address=12 Smith St; urgency level=today",
+    "service address: 12 Smith St;urgency level : today",
+    "service address=12 Smith St\nurgency level=today",
+    "service address=12 Smith St;\r\n  urgency\tlevel=today\n",
+    "service address=12 Smith St\u2028urgency level=today",
+    "service address＝12 Smith St； urgency level＝today", // fullwidth, NFKC on both sides
+    "service address=12 Smith St; urgency level=to\u200bday", // an invisible mark in a value
+    "preferred time=9:30; service address=12 Smith St",
+  ];
+  const REFUSED = [
+    "just some words",
+    "service address=12 Smith St; Wyong; urgency level=today",
+    "service address=12 Smith St; problem description=tap leaking\nunder the sink",
+    "service address=12 Smith St; service address=14 Smith St",
+    "surname=Smith; last name=Jones",
+    "email=a@example.com; email address=b@example.com",
+  ];
+
+  for (const s of ACCEPTED) {
+    it(`accepted by the website, armed and confirmable by the gate — and read as the same number of details: ${JSON.stringify(s)}`, async () => {
+      const parsed = parseBookingDetails(s);
+      expect(Array.isArray(parsed), "the website reads it").toBe(true);
+      const count = (parsed as Array<unknown>).length;
+      expect(count).toBe(2);
+      expect(await armed(s)).toEqual([true, true, count]);
+    });
+  }
+  it("the same details across spacing, order and line breaks confirm each other", async () => {
+    expect(await armed("service address=12 Smith St; urgency level=today", "Urgency Level: today\nservice_address = 12  Smith St")).toEqual([true, true, 2]);
+  });
+  for (const s of REFUSED) {
+    it(`refused by the website — unreadable or a field twice — and never armed by the gate: ${JSON.stringify(s)}`, async () => {
+      const parsed = parseBookingDetails(s);
+      const websiteRefuses = parsed === "unreadable" || (Array.isArray(parsed) && new Set(parsed.map((p) => p.key.toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^surname$/, "lastname").replace(/^emailaddress$/, "email"))).size < parsed.length);
+      expect(websiteRefuses, "the website refuses it").toBe(true);
+      expect(await armed(s)).toEqual([false, false, null]);
+    });
+  }
 });

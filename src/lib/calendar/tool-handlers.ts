@@ -1,3 +1,4 @@
+import { bookingFieldsQuery } from "@/lib/calendar/booking-fields";
 import crypto from "crypto";
 import * as Sentry from "@sentry/nextjs";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -1063,24 +1064,22 @@ export async function handleBookAppointment(
     };
   }
 
-  // Check if business requires both first and last name
+  // Check if business requires both first and last name — the same row, in the same
+  // order, as the owner assistant's pre-read-back check (SCRUM-602, bookingFieldsQuery).
   const supabaseForFields = createAdminClient();
-  const { data: assistant } = await (supabaseForFields as any)
-    .from("assistants")
-    .select("prompt_config")
-    .eq("organization_id", organizationId)
-    .limit(1)
-    .single();
+  const { data: assistant, error: fieldsError } = await bookingFieldsQuery(supabaseForFields, organizationId);
+  // A read fault leaves the name rules off for this booking (as before) — but said, not swallowed.
+  if (fieldsError) console.error("[booking] caller fields read failed — name rules not applied:", { organizationId, code: fieldsError.code });
 
-  const fields = assistant?.prompt_config?.fields || [];
+  const fields = ((assistant as any)?.prompt_config?.fields || []) as any[];
   const firstNameField = fields.find((f: any) => f.id === "first_name");
   const lastNameField = fields.find((f: any) => f.id === "last_name");
   // Also check legacy full_name for backwards compat
   const fullNameField = fields.find((f: any) => f.id === "full_name");
 
-  // SCRUM-601: the owner books for a customer they know, and a first name alone is
-  // theirs to give — the business's last-name rule is for callers the receptionist doesn't.
-  if (lastNameField?.required && !lastName && !internal?.ownerBooking) {
+  // SCRUM-602: the business's own rule, for the receptionist's callers AND the owner's
+  // bookings (the owner handler asks before its read-back; this is the backstop).
+  if (lastNameField?.required && !lastName) {
     return {
       success: false,
       message: "I also need your last name to complete the booking. What is your last name?",

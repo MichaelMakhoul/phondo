@@ -61,7 +61,7 @@ function fakeAdmin() {
             : table === "assistants"
               ? { data: assistantRow, error: null }
               : { data: null, error: null };
-      b.maybeSingle = async () => ({ data: null, error: null });
+      b.maybeSingle = async () => (table === "assistants" ? { data: assistantRow, error: null } : { data: null, error: null });
       b.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
         Promise.resolve(faults[table] ? { data: null, error: faults[table] } : { data: lists[table] ?? [], error: null }).then(resolve, reject);
       return b;
@@ -104,18 +104,19 @@ describe("handleBookAppointment for the owner's assistant", () => {
     expect(sendAppointmentConfirmationSMS).toHaveBeenCalledTimes(1);
   });
 
-  // SCRUM-601: every org's default prompt_config requires a last name — the receptionist's
-  // rule for callers. The owner books for a customer they know, by first name if that's all.
-  it("a first name alone books for the owner even when the business requires a last name; the receptionist still asks", async () => {
+  // SCRUM-602: each business decides what its bookings need (Caller Data Collection). The
+  // rule applies to the owner's bookings as to the receptionist's — the owner handler asks
+  // for the surname before its read-back; this is the backstop behind it.
+  it("the business's required last name applies to owner bookings too; a business that doesn't require one books a first name alone", async () => {
     assistantRow = { prompt_config: { fields: [{ id: "first_name", required: true }, { id: "last_name", required: true }] } };
     const { last_name: _none, ...firstOnly } = ARGS;
-    const owner = await handleBookAppointment(ORG, firstOnly, { callId: OWNER_CALL, ownerBooking: true });
-    expect(owner.success).toBe(true);
-    expect(inserts).toHaveLength(1);
+    const refused = await handleBookAppointment(ORG, firstOnly, { callId: OWNER_CALL, ownerBooking: true });
+    expect(refused).toMatchObject({ success: false, message: "I also need your last name to complete the booking. What is your last name?" });
+    expect(inserts).toEqual([]);
+    assistantRow = { prompt_config: { fields: [{ id: "first_name", required: true }, { id: "last_name", required: false }] } };
+    const booked = await handleBookAppointment(ORG, firstOnly, { callId: OWNER_CALL, ownerBooking: true });
+    expect(booked.success).toBe(true);
     expect(inserts[0]).toMatchObject({ attendee_name: "Jane", metadata: { source: "owner_voice" } });
-    const receptionist = await handleBookAppointment(ORG, firstOnly, { callId: OWNER_CALL });
-    expect(receptionist).toMatchObject({ success: false, message: "I also need your last name to complete the booking. What is your last name?" });
-    expect(inserts).toHaveLength(1);
   });
 
   it("an org on Cliniko is refused — never booked there, nothing written", async () => {
@@ -164,5 +165,31 @@ describe("ownerDiaryProvider routes as handleBookAppointment does — and a look
       expect(await ownerDiaryProvider(ORG), table).toBe("error");
     }
     expect(errors).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ─── SCRUM-602 test lens, round 2b (independent mutants at 33e5f2e2): killer for what the suite let through ───
+// APPEND TO: src/lib/calendar/__tests__/owner-booking.test.ts (at the end of the file —
+// `cat killers-r2b-calendar.txt >> …`). Uses the file's top-level fixtures (fakeAdmin, createAdminClient,
+// handleBookAppointment, ARGS, ORG, OWNER_CALL, inserts). Passes on the real code.
+describe("SCRUM-602 test lens round 2b: a caller-fields read fault on the booking path is said, not swallowed", () => {
+  it("Z02: the booking still goes through without the name rules (fail-open, as before) AND console.error names the fault", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const real = fakeAdmin();
+    vi.mocked(createAdminClient).mockReturnValue({
+      from: (table: string) => {
+        const b = real.from(table);
+        if (table === "assistants") b.maybeSingle = async () => ({ data: null, error: { code: "57014" } });
+        return b;
+      },
+    } as never);
+    const firstOnly = { datetime: ARGS.datetime, first_name: ARGS.first_name, phone: ARGS.phone };
+    const r = await handleBookAppointment(ORG, firstOnly, { callId: OWNER_CALL, ownerBooking: true });
+    expect(r.success).toBe(true);
+    expect(inserts).toHaveLength(1);
+    const said = errors.mock.calls.filter((c) => String(c[0]).includes("caller fields read failed"));
+    expect(said).toHaveLength(1);
+    expect(said[0][1]).toEqual({ organizationId: ORG, code: "57014" });
+    errors.mockRestore();
   });
 });

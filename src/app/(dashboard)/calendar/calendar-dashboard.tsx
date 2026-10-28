@@ -651,7 +651,7 @@ export function CalendarDashboard({
                         {appt.notes && (
                           <div className="flex items-start gap-2">
                             <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
-                            <span className="text-sm text-muted-foreground line-clamp-2">
+                            <span className="text-sm text-muted-foreground line-clamp-2 whitespace-pre-line">
                               {appt.notes}
                             </span>
                           </div>
