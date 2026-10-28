@@ -46,6 +46,7 @@ vi.mock("@/lib/sms/caller-sms", () => ({ sendMissedCallTextBack: vi.fn() }));
 vi.mock("@/lib/owner-assistant/recap", () => ({ buildOwnerRecap: vi.fn(async () => []) }));
 vi.mock("@/lib/integrations/webhook-delivery", () => ({ deliverWebhooks: vi.fn() }));
 vi.mock("@/lib/security/rate-limiter", () => ({ withRateLimit: vi.fn(() => ({ allowed: true, headers: {} })), rateLimitDistributed: vi.fn() }));
+vi.mock("@/lib/billing/plan-usage-alert", () => ({ checkPlanUsageAlert: vi.fn(async () => null) }));
 
 import { analyzeCall } from "@/lib/spam/spam-detector";
 import {
@@ -56,6 +57,7 @@ import {
 import { sendMissedCallTextBack } from "@/lib/sms/caller-sms";
 import { deliverWebhooks } from "@/lib/integrations/webhook-delivery";
 import { POST } from "@/app/api/internal/call-completed/route";
+import { checkPlanUsageAlert } from "@/lib/billing/plan-usage-alert";
 
 const SECRET = "owner-call-test-secret";
 const CALL_ID = "0f1e2d3c-4b5a-4c6d-8e9f-0a1b2c3d4e5f";
@@ -157,5 +159,52 @@ describe("POST /api/internal/call-completed — owner calls (SCRUM-586)", () => 
     adminState.metadata = { call_type: "owner" };
     await POST(completedCall({ summary: "post-call analysis summary", callerName: "Someone else" }));
     expect(adminState.updates.filter((u) => u.table === "calls")).toEqual([]);
+  });
+});
+
+// SCRUM-608: the plan-usage heads-up runs after a call's usage is counted — an owner's own chat
+// counts like a customer's call — and only when THIS call won the count.
+describe("POST /api/internal/call-completed — the plan-usage heads-up (SCRUM-608)", () => {
+  it("runs for the org once this call's usage is counted — an owner chat and a customer call alike", async () => {
+    for (const metadata of [{ call_type: "owner", ended_reason: "hangup" }, { ended_reason: "hangup" }]) {
+      vi.mocked(checkPlanUsageAlert).mockClear();
+      adminState.metadata = metadata;
+      adminState.rpc.mockResolvedValueOnce({ data: true, error: null });
+      await POST(completedCall());
+      expect(checkPlanUsageAlert, JSON.stringify(metadata)).toHaveBeenCalledWith("org-1");
+    }
+  });
+  it("never when the count wasn't won (a retry, a missing row) or the claim failed", async () => {
+    adminState.metadata = { call_type: "owner", ended_reason: "hangup" };
+    for (const outcome of [{ data: false, error: null }, { data: null, error: { code: "57014" } }]) {
+      vi.mocked(checkPlanUsageAlert).mockClear();
+      adminState.rpc.mockResolvedValueOnce(outcome);
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      await POST(completedCall());
+      expect(checkPlanUsageAlert, JSON.stringify(outcome)).not.toHaveBeenCalled();
+    }
+  });
+});
+
+// SCRUM-608 review (independent mutation run): the heads-up must be scheduled through
+// runAfterResponse — after() keeps the invocation alive; a bare promise can be dropped when
+// Vercel freezes the function (SCRUM-410). The runAfterResponse mock above runs work inline,
+// so a bare `void checkPlanUsageAlert(...)` passes every test above.
+describe("POST /api/internal/call-completed — the plan-usage heads-up runs after the response (SCRUM-608 review)", () => {
+  it("is deferred through runAfterResponse, never started inside the request", async () => {
+    const { runAfterResponse } = await import("@/lib/utils/after-response");
+    const original = vi.mocked(runAfterResponse).getMockImplementation();
+    const deferred: Array<() => Promise<unknown>> = [];
+    vi.mocked(runAfterResponse).mockImplementation((work) => { deferred.push(work); });
+    try {
+      adminState.metadata = { ended_reason: "hangup" };
+      adminState.rpc.mockResolvedValueOnce({ data: true, error: null });
+      await POST(completedCall());
+      expect(checkPlanUsageAlert).not.toHaveBeenCalled();
+      await Promise.allSettled(deferred.map((work) => work()));
+      expect(checkPlanUsageAlert).toHaveBeenCalledWith("org-1");
+    } finally {
+      if (original) vi.mocked(runAfterResponse).mockImplementation(original);
+    }
   });
 });

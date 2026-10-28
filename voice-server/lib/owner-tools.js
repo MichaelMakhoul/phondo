@@ -85,7 +85,7 @@ const ownerToolDefinitions = [
     function: {
       name: "owner_list_appointments",
       description:
-        "List the business's booked jobs. Call this BEFORE any change to get the job's appointment_id. Returns up to 20 active jobs (each with its appointment_id, the customer's name and phone, start and end time, service and practitioner) plus the count of all jobs in the period.",
+        "List the business's jobs SCHEDULED in a period that are still on. Call this BEFORE any change to get the job's appointment_id. Returns up to 20 active jobs (each with its appointment_id, the customer's name and phone, start and end time, service and practitioner) plus the count of all jobs in the period. It does not show cancelled jobs (a moved job shows at its new time only), calls, or when bookings were made — say so if the owner asked about those.",
       parameters: {
         type: "object",
         properties: {
@@ -104,7 +104,7 @@ const ownerToolDefinitions = [
     type: "function",
     function: {
       name: "owner_list_messages",
-      description: "Pending callback requests (newest first, up to 10) and today's customer calls with a one-line summary each (up to 10).",
+      description: "Pending callback requests (newest first, up to 10) and TODAY's customer calls with a one-line summary each (up to 10). Only today's calls — not yesterday's or this week's; say so when the owner asks about another day.",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
