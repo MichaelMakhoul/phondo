@@ -348,8 +348,15 @@ describe("SCRUM-602: a booking's details are read the same way by the website an
   const BOOK = { customer_name: "Jane Smith", customer_phone: "0412 345 678", start: "2026-10-29T14:00" };
   let clock = 0;
   const stamp = () => (clock = Math.max(Date.now() + 1, clock + 1));
-  /** Arm a booking with `details`; then confirm it with `confirmedAs` after the read-back: [armed, confirmed]. */
-  async function armed(details: string, confirmedAs = details): Promise<[boolean, boolean]> {
+  /** The pairs in the gate's armed key for this booking (the last element of its JSON), or null when nothing is armed. */
+  function armedPairs(session: Record<string, any>): number | null {
+    const key: string | undefined = [...(session.ownerPendingConfirmations?.keys() ?? [])][0];
+    if (!key) return null;
+    const last = JSON.parse(key.slice("owner_book_appointment|".length)).at(-1);
+    return last === "" ? 0 : JSON.parse(last).length;
+  }
+  /** Arm a booking with `details`; then confirm it with `confirmedAs` after the read-back: [armed, confirmed, pairs in the key]. */
+  async function armed(details: string, confirmedAs = details): Promise<[boolean, boolean, number | null]> {
     const forwarded: Array<Record<string, unknown>> = [];
     const deps = {
       executeToolCall: async (_n: string, args: Record<string, unknown>) => {
@@ -369,10 +376,11 @@ describe("SCRUM-602: a booking's details are read the same way by the website an
     vi.spyOn(console, "warn").mockImplementation(() => {});
     await runner.runOwnerToolCall(session, { name: "owner_book_appointment", args: { ...BOOK, details } }, deps);
     const isArmed = (session.ownerPendingConfirmations?.size ?? 0) > 0;
+    const pairs = armedPairs(session);
     session.lastAssistantSpeechAt = stamp(); session.assistantTurnSeq += 1; session.lastAssistantTurnAt = stamp();
     session.lastOwnerSpeechAt = stamp();
     await runner.runOwnerToolCall(session, { name: "owner_book_appointment", args: { ...BOOK, details: confirmedAs, confirmed: true, notify_customer: "none" } }, deps);
-    return [isArmed, forwarded.at(-1)?.confirmed === true];
+    return [isArmed, forwarded.at(-1)?.confirmed === true, pairs];
   }
 
   const ACCEPTED = [
@@ -395,20 +403,23 @@ describe("SCRUM-602: a booking's details are read the same way by the website an
   ];
 
   for (const s of ACCEPTED) {
-    it(`accepted by the website, armed and confirmable by the gate: ${JSON.stringify(s)}`, async () => {
-      expect(Array.isArray(parseBookingDetails(s)), "the website reads it").toBe(true);
-      expect(await armed(s)).toEqual([true, true]);
+    it(`accepted by the website, armed and confirmable by the gate — and read as the same number of details: ${JSON.stringify(s)}`, async () => {
+      const parsed = parseBookingDetails(s);
+      expect(Array.isArray(parsed), "the website reads it").toBe(true);
+      const count = (parsed as Array<unknown>).length;
+      expect(count).toBe(2);
+      expect(await armed(s)).toEqual([true, true, count]);
     });
   }
   it("the same details across spacing, order and line breaks confirm each other", async () => {
-    expect(await armed("service address=12 Smith St; urgency level=today", "Urgency Level: today\nservice_address = 12  Smith St")).toEqual([true, true]);
+    expect(await armed("service address=12 Smith St; urgency level=today", "Urgency Level: today\nservice_address = 12  Smith St")).toEqual([true, true, 2]);
   });
   for (const s of REFUSED) {
     it(`refused by the website — unreadable or a field twice — and never armed by the gate: ${JSON.stringify(s)}`, async () => {
       const parsed = parseBookingDetails(s);
       const websiteRefuses = parsed === "unreadable" || (Array.isArray(parsed) && new Set(parsed.map((p) => p.key.toLowerCase().replace(/[^a-z0-9]/g, "").replace(/^surname$/, "lastname").replace(/^emailaddress$/, "email"))).size < parsed.length);
       expect(websiteRefuses, "the website refuses it").toBe(true);
-      expect(await armed(s)).toEqual([false, false]);
+      expect(await armed(s)).toEqual([false, false, null]);
     });
   }
 });

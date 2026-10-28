@@ -1310,3 +1310,66 @@ describe("SCRUM-602 test lens: killers for the surviving mutants", () => {
     expect((r.data as Record<string, unknown>).details).toHaveLength(3);
   });
 });
+
+// ─── SCRUM-602 test lens, round 2 (independent mutants at bdfe8c1c): killers for what the suite let through ───
+// APPEND TO: src/lib/owner-assistant/__tests__/tool-handlers.more-control.test.ts (at the end of the
+// file — `cat killers-r2-website.txt >> …`). Uses the file's top-level fixtures (db, BOOK, ORG, ctx,
+// AU_ORG, handleOwnerBookAppointment, handleBookAppointment); the SCRUM-602 block's small helpers are
+// local to that describe, so they are redefined here with the same shapes. All pass on the real code.
+describe("SCRUM-602 test lens round 2: killers for the surviving mutants", () => {
+  const F = (id: string, label: string, required: boolean, verification = "repeat-confirm") => ({ id, label, required, verification, type: "text", category: "universal" });
+  const NAME_FIELDS = (lastRequired: boolean) => [F("first_name", "First Name", true), F("last_name", "Last Name", lastRequired), F("phone_number", "Phone Number", true, "read-back-digits"), F("email_address", "Email Address", false, "spell-out")];
+  const TRADIE = [...NAME_FIELDS(false), F("service_address", "Service Address", true), F("problem_description", "Problem Description", true), F("urgency_level", "Urgency Level", true)];
+  const configured = (fields: unknown[]) => { db.queues.assistants = [{ data: { prompt_config: { fields } }, error: null }]; };
+  const bookArgs = (customer_name: string, extra: Record<string, unknown> = {}) => ({ ...BOOK, customer_name, notes: "Hot water unit leaking", ...extra });
+  const valuesOf = (r: { data?: unknown }) => ((r.data as Record<string, unknown>).details as Array<{ value: string }>).map((d) => d.value);
+
+  it("R06: a blank customer_email (the route forwards \"\" as given) is no email — an 'email=' detail is then THE email, never 'given twice'", async () => {
+    for (const blank of ["", "   "]) {
+      configured(NAME_FIELDS(false));
+      db.queues.organizations = [AU_ORG];
+      const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { customer_email: blank, details: "email=jane@example.com" }), ctx);
+      expect(r.data, JSON.stringify(blank)).toMatchObject({ outcome: "needs_confirmation", customer_email: "jane@example.com" });
+      expect(r.message, JSON.stringify(blank)).toContain("details: email jane@example.com.");
+    }
+  });
+
+  it("R10: a surname given in details is checked for English letters too — asked about BEFORE the read-back, never refused by the diary after the yes", async () => {
+    for (const confirmed of [undefined, true]) {
+      configured(NAME_FIELDS(true));
+      db.queues.organizations = [AU_ORG];
+      const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: "last name=Смит", ...(confirmed ? { confirmed, notify_customer: "none" } : {}) }), ctx);
+      expect(r.data, String(confirmed)).toMatchObject({ outcome: "invalid_details" });
+      expect(r.message, String(confirmed)).toBe("The diary keeps names in English letters. Ask the owner how Jane Смит is spelled in English letters, then call again.");
+    }
+    expect(handleBookAppointment).not.toHaveBeenCalled();
+  });
+
+  it("R13: a detail of exactly its 300-character cap is kept; one character over is refused by name — 'about 1 word over'", async () => {
+    configured(TRADIE);
+    const at = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: `service address=${"a".repeat(300)}; problem description=leaking tap; urgency level=today` }), ctx);
+    expect(at.data).toMatchObject({ outcome: "needs_confirmation" });
+    expect(valuesOf(at)[0]).toHaveLength(300);
+    configured(TRADIE);
+    db.queues.organizations = [AU_ORG];
+    const over = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: `service address=${"a".repeat(301)}; problem description=leaking tap; urgency level=today` }), ctx);
+    expect(over.data).toMatchObject({ outcome: "invalid_details" });
+    expect(over.message).toBe("The service address is too long for a booking detail — about 1 word over. Ask the owner for a shorter version, then call again.");
+    expect(handleBookAppointment).not.toHaveBeenCalled();
+  });
+
+  it("R15: when the job's note is over the diary's cap, the LONGEST part is the one named — a detail when a detail is longest, not always the note", async () => {
+    // 22 (the note) + "\n" + "Service Address: " (17) + 200 + "\n" + "Problem Description: " (21) + 180 + "\n" + "Urgency Level: " (15) + 100 = 558 → 58 over ≈ 10 words
+    configured(TRADIE);
+    const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: `service address=${"a".repeat(200)}; problem description=${"b".repeat(180)}; urgency level=${"c".repeat(100)}` }), ctx);
+    expect(r.data).toMatchObject({ outcome: "invalid_details" });
+    expect(r.message).toBe("That's too much for the job's note — about 10 words over; the service address is the longest part. Ask the owner to shorten it, then call again.");
+  });
+
+  it("R24: a U+2028 / U+2029 line separator between details separates like a semicolon on the website too (the gate already reads it so) — never one garbled detail", async () => {
+    configured(TRADIE);
+    const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: "service address=12 Smith St problem description=leaking tap urgency level=today" }), ctx);
+    expect(r.data).toMatchObject({ outcome: "needs_confirmation" });
+    expect(valuesOf(r)).toEqual(["12 Smith St", "leaking tap", "today"]);
+  });
+});

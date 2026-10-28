@@ -1755,6 +1755,23 @@ describe("SCRUM-599: booking, blocking and marking done go through the same gate
       await settled(() => captureConsole(() => runOwnerToolCall(s2, { name: "owner_book_appointment", args: { ...plain, details: "service address=12 Smith St", customer_email: "jane@example.com", notes: "tap", service_type_id: "svc-1", ...odd, confirmed: true, notify_customer: "none" } }, d2.deps)));
       assert.equal(d2.calls.at(-1).args.confirmed, false, `${JSON.stringify(odd)}: never a booking with the field the read-back had`);
     }
+    // The gate's own normalisation, pinned here too (a voice-only run must catch a broken gate, not only the
+    // website's parity test): a bare line break separates like ";", fullwidth punctuation folds (NFKC), and a
+    // tab inside a value is a space.
+    for (const [readBack, confirmedAs] of [
+      ["service address=12 Smith St; urgency level=today", "service address=12 Smith St\nurgency level=today"],
+      ["service address=12 Smith St; urgency level=today", "service address＝12 Smith St； urgency level＝today"],
+      ["service address=12 Smith St; urgency level=to day", "service address=12 Smith St; urgency level=to\tday"],
+      ["service address=12 Smith St; urgency level=today", "service address=12 Smith St\u2028urgency level=today"],
+    ]) {
+      const s = makeSession();
+      const d = makeDeps(prB);
+      await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, details: readBack } }, d.deps));
+      assistantTurn(s);
+      ownerSpeaks(s);
+      await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, details: confirmedAs, confirmed: true, notify_customer: "none" } }, d.deps)));
+      assert.equal(d.calls.at(-1).args.confirmed, true, `${JSON.stringify(confirmedAs)} confirms ${JSON.stringify(readBack)}`);
+    }
     // ";" or "field=" alone is no details, as an omitted one is — one key, no extra read-back.
     {
       const s = makeSession();
@@ -2119,5 +2136,34 @@ describe("SCRUM-602 test lens: the booking key over an email the model spaced, a
   it("V06: a blank detail value is no detail (PR B drops it): 'urgency level=' on the first call and nothing on the confirm are one booking; a value given only on the confirm is not", async () => {
     assert.equal(await confirmedWith({ details: "service address=12 Smith St; urgency level=" }, { details: "service address=12 Smith St" }), true);
     assert.equal(await confirmedWith({ details: "service address=12 Smith St; urgency level= " }, { details: "urgency level=today; service address=12 Smith St" }), false);
+  });
+});
+
+// ─── SCRUM-602 test lens, round 2 (independent mutants at bdfe8c1c): killer for what the suite let through ───
+// APPEND TO: voice-server/tests/owner-tool-runner.test.js (at the end of the file —
+// `cat killers-r2-voice.txt >> …`). Uses the file's top-level harness (makeSession, makeDeps,
+// captureConsole, settled, assistantTurn, ownerSpeaks, runOwnerToolCall); prB and BOOK are
+// redefined here with the SCRUM-599 block's shapes. Passes on the real code.
+describe("SCRUM-602 test lens round 2: the gate reads a U+2028 / U+2029 separator as the website does", () => {
+  const prB = (name, args) =>
+    args.confirmed === true
+      ? { success: true, message: "Done.", data: { outcome: "booked" } }
+      : { success: false, message: "Read this back…", data: { outcome: "needs_confirmation" } };
+  const BOOK = { customer_name: "Jane Smith", customer_phone: "0412 345 678", start: "2026-10-29T14:00", notes: "Hot water unit leaking" };
+  /** Arm with `first`, hear the read-back, confirm with `second`: what the gate forwarded as confirmed. */
+  async function confirmedWith(first, second) {
+    const s = makeSession();
+    const d = makeDeps(prB);
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, ...first } }, d.deps));
+    assistantTurn(s);
+    ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, ...second, confirmed: true, notify_customer: "none" } }, d.deps)));
+    return d.calls.at(-1).args.confirmed;
+  }
+
+  it("S09: details separated by U+2028 (or U+2029) on the first call and by ';' or a newline on the confirm are ONE booking — the website reads all of them as two details", async () => {
+    assert.equal(await confirmedWith({ details: "service address=12 Smith St urgency level=today" }, { details: "service address=12 Smith St; urgency level=today" }), true);
+    assert.equal(await confirmedWith({ details: "service address=12 Smith St urgency level=today" }, { details: "urgency level=today\nservice address=12 Smith St" }), true);
+    assert.equal(await confirmedWith({ details: "service address=12 Smith St urgency level=today" }, { details: "service address=12 Smith St; urgency level=this week" }), false, "another value is still another booking");
   });
 });
