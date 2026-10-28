@@ -1067,7 +1067,9 @@ export async function handleBookAppointment(
   // Check if business requires both first and last name — the same row, in the same
   // order, as the owner assistant's pre-read-back check (SCRUM-602, bookingFieldsQuery).
   const supabaseForFields = createAdminClient();
-  const { data: assistant } = await bookingFieldsQuery(supabaseForFields, organizationId);
+  const { data: assistant, error: fieldsError } = await bookingFieldsQuery(supabaseForFields, organizationId);
+  // A read fault leaves the name rules off for this booking (as before) — but said, not swallowed.
+  if (fieldsError) console.error("[booking] caller fields read failed — name rules not applied:", { organizationId, code: fieldsError.code });
 
   const fields = ((assistant as any)?.prompt_config?.fields || []) as any[];
   const firstNameField = fields.find((f: any) => f.id === "first_name");

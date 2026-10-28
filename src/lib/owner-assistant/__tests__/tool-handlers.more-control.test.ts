@@ -1137,7 +1137,7 @@ describe("SCRUM-602: owner bookings follow each business's own required details"
     await handleOwnerBookAppointment(ORG, bookArgs("Jane"), ctx);
     const read = opsOn("assistants")[0];
     expect(filters(read, "eq")).toEqual([["organization_id", ORG]]);
-    expect(filters(read, "order")).toEqual([["created_at", { ascending: true }]]);
+    expect(filters(read, "order")).toEqual([["created_at", { ascending: true }], ["id", { ascending: true }]]);
     expect(filters(read, "limit")).toEqual([[1]]);
   });
 

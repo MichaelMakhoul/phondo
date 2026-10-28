@@ -14,6 +14,7 @@ export function bookingFieldsQuery(supabase: any, organizationId: string): Promi
     .select("prompt_config")
     .eq("organization_id", organizationId)
     .order("created_at", { ascending: true })
+    .order("id", { ascending: true }) // assistants seeded in one statement share created_at
     .limit(1)
     .maybeSingle();
 }
