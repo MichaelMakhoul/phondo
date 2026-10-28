@@ -1612,6 +1612,21 @@ describe("SCRUM-598: owner_call_customer through the runner", () => {
     assert.equal(d.calls.at(-1).args.confirmed, true);
   });
 
+  // SCRUM-602 code lens: PR B reads a whitespace-only window field as a VALUE (it asks about it), so the
+  // gate must not key it like "no window" — else a yes to that question would place a call never read back.
+  it("a window field of only spaces is not 'no window': a confirm without the window is refused", async () => {
+    for (const field of ["earliest_date", "latest_date", "time_of_day"]) {
+      const s = makeSession();
+      const d = makeDeps(prB);
+      const read = { appointment_id: "a1", purpose: "find_new_time", [field]: "  " };
+      await captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: read }, d.deps));
+      assistantTurn(s);
+      ownerSpeaks(s);
+      await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_call_customer", args: { appointment_id: "a1", purpose: "find_new_time", confirmed: true } }, d.deps)));
+      assert.equal(d.calls.at(-1).args.confirmed, false, `${field}="  " never confirms a call with no window`);
+    }
+  });
+
   it("a confirm with no read-back is forwarded unconfirmed (PR B answers with the read-back)", async () => {
     const s = makeSession();
     const d = makeDeps(prB);

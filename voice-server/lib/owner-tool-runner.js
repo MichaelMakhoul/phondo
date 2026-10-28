@@ -289,8 +289,13 @@ function confirmationKey(name, args) {
   // the booking the website reads back; a null here would arm nothing and loop the
   // read-back for ever (code lens, SCRUM-602).
   const absent = (v) => v === undefined || v === null || typeof v !== "string" || v.trim() === "";
-  /** @param {unknown} v an optional field: absent is "", a malformed one is null */
-  const optional = (v) => (absent(v) ? "" : part(v));
+  /**
+   * @param {unknown} v an optional field: absent is "", a malformed one is null. Only a
+   * NON-string (or "") is absent here — a whitespace-only one is not: the call tool's
+   * window fields read "  " as a value (and ask about it), so it must never key like
+   * "no window" (code lens, SCRUM-602).
+   */
+  const optional = (v) => (v === undefined || v === null || typeof v !== "string" || v === "" ? "" : part(v));
   /** @param {unknown} v words the model may space or case differently between the two calls (any text: the fields are JSON-encoded) */
   const words = (v) => (typeof v === "string" ? v.trim().replace(/\s+/g, " ").toLowerCase() || null : null);
   /** @param {unknown} v optional words: absent or blank is "" (the website reads a blank one as none) */
