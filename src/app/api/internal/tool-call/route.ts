@@ -277,6 +277,9 @@ export async function POST(request: Request) {
                 start: str(raw.start),
                 service_type_id: str(raw.service_type_id),
                 notes: str(raw.notes),
+                // SCRUM-602: what this business collects from callers, when it needs more.
+                customer_email: str(raw.customer_email),
+                details: str(raw.details),
                 confirmed: raw.confirmed === true,
                 notify_customer: str(raw.notify_customer),
               },

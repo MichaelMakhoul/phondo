@@ -284,13 +284,63 @@ function ownerFacingMessage(name, r, successful) {
 function confirmationKey(name, args) {
   /** @param {unknown} v */
   const part = (v) => (typeof v === "string" && v !== "" && !v.includes("|") ? v : null);
-  /** @param {unknown} v an optional field: absent is "", a malformed one is null */
-  const optional = (v) => (v === undefined || v === null || v === "" ? "" : part(v));
+  // An OPTIONAL field that isn't a string is absent — exactly what the website reads
+  // (the internal route's str() hands the handler undefined for it), so the key matches
+  // the booking the website reads back; a null here would arm nothing and loop the
+  // read-back for ever (code lens, SCRUM-602).
+  const absent = (v) => v === undefined || v === null || typeof v !== "string" || v.trim() === "";
+  /**
+   * @param {unknown} v an optional field: absent is "", a malformed one is null. Only a
+   * NON-string (or "") is absent here — a whitespace-only one is not: the call tool's
+   * window fields read "  " as a value (and ask about it), so it must never key like
+   * "no window" (code lens, SCRUM-602).
+   */
+  const optional = (v) => (v === undefined || v === null || typeof v !== "string" || v === "" ? "" : part(v));
   /** @param {unknown} v words the model may space or case differently between the two calls (any text: the fields are JSON-encoded) */
   const words = (v) => (typeof v === "string" ? v.trim().replace(/\s+/g, " ").toLowerCase() || null : null);
   /** @param {unknown} v optional words: absent or blank is "" (the website reads a blank one as none) */
-  const optionalWords = (v) => (v === undefined || v === null || (typeof v === "string" && v.trim() === "") ? "" : words(v));
+  const optionalWords = (v) => (absent(v) ? "" : words(v));
   /** @param {unknown} v a phone number, digits only, an AU +61 number written as 0… */
+  /** An email however it's cased or spaced; "" when none. */
+  const optionalEmail = (v) => (absent(v) ? "" : v.replace(/\s+/g, "").toLowerCase());
+  /**
+   * "field=value; field=value" → one JSON list of [field, words] pairs sorted by field
+   * (a colon after the field works too, as PR B reads it). Unreadable → null (never
+   * confirmable), and so is a field named twice: PR B refuses that, and a key that
+   * sorted the two could match a string PR B reads the other way round.
+   */
+  const detailsKey = (v) => {
+    if (absent(v)) return "";
+    const pairs = [];
+    const seen = new Set();
+    // Read as PR B reads it (sanitizeCustomerText, after its line-break rule): a line
+    // break separates like ";", NFKC, tabs are spaces, controls and invisible marks go,
+    // spaces collapse — so a string PR B accepted is never left unconfirmable here, and a
+    // string PR B refuses is never armed.
+    const text = v
+      .replace(/[\r\n\u2028\u2029]+/g, ";")
+      .normalize("NFKC")
+      .replace(/\t/g, " ")
+      .replace(/\p{C}/gu, "")
+      .replace(/[\p{Default_Ignorable_Code_Point}\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    for (const part of text.split(";")) {
+      if (!part.trim()) continue;
+      const m = /^\s*([^=:]+?)\s*[=:]\s*(.*)$/.exec(part);
+      if (!m) return null;
+      let field = m[1].normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "");
+      // The booking's own fields under either spelling PR B accepts.
+      if (field === "surname") field = "lastname";
+      if (field === "emailaddress") field = "email";
+      if (seen.has(field)) return null;
+      seen.add(field);
+      const value = words(m[2]);
+      if (value) pairs.push([field, value]);
+    }
+    pairs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    return pairs.length ? JSON.stringify(pairs) : ""; // ";" or "field=" alone is no details, as omitted is
+  };
   const phoneDigits = (v) => {
     if (typeof v !== "string") return null;
     const d = v.replace(/\D/g, "");
@@ -313,7 +363,10 @@ function confirmationKey(name, args) {
   /** @param {Array<string|null>} fields */
   const keyOf = (fields) => (fields.includes(null) ? null : `${name}|${JSON.stringify(fields)}`);
   if (name === "owner_book_appointment") {
-    return keyOf([words(args.customer_name), phoneDigits(args.customer_phone), part(args.start), optional(args.service_type_id), optionalWords(args.notes)]);
+    // SCRUM-602: the email and the business's other details are read back too, so a yes
+    // to one set never books another. The details are keyed by field, in field order,
+    // however the model spaced or ordered them.
+    return keyOf([words(args.customer_name), phoneDigits(args.customer_phone), part(args.start), optional(args.service_type_id), optionalWords(args.notes), optionalEmail(args.customer_email), detailsKey(args.details)]);
   }
   if (name === "owner_block_time") return keyOf([part(args.start), part(args.end), optionalWords(args.reason)]);
   if (name === "owner_mark_callback_done") return keyOf([part(args.callback_id), optionalWords(args.note)]);

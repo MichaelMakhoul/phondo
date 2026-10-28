@@ -686,7 +686,7 @@ export function AppointmentDetailPanel({
                   {appt.notes && (
                     <div className="flex items-start gap-2">
                       <FileText className="h-4 w-4 text-muted-foreground mt-0.5" />
-                      <span className="text-sm text-muted-foreground">{appt.notes}</span>
+                      <span className="text-sm text-muted-foreground whitespace-pre-line">{appt.notes}</span>
                     </div>
                   )}
                 </div>
