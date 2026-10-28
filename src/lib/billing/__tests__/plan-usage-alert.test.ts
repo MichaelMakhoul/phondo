@@ -97,9 +97,9 @@ describe("checkPlanUsageAlert (SCRUM-608)", () => {
   it("at 125%: claims the period's 125 slot, emails the owner with the plan's numbers, confirms delivery", async () => {
     withCalls(188); // 125.3%
     expect(await checkPlanUsageAlert(ORG)).toBe(125);
-    expect(ops[0]).toEqual({ op: "insert", row: { job_name: PLAN_USAGE_ALERT_JOB, period_key: "125:2026-10-20", organization_id: ORG } });
+    expect(ops[0]).toEqual({ op: "insert", row: { job_name: PLAN_USAGE_ALERT_JOB, period_key: "125:2026-10-20T13:00:00.000Z", organization_id: ORG } });
     expect(sendPlanUsageAlertNotification).toHaveBeenCalledWith({ organizationId: ORG, level: 125, callsUsed: 188, callsLimit: 150, planName: "Starter", periodEnd: END, trial: false });
-    expect(ops.at(-1)).toMatchObject({ op: "update", match: { job_name: PLAN_USAGE_ALERT_JOB, period_key: "125:2026-10-20", organization_id: ORG } });
+    expect(ops.at(-1)).toMatchObject({ op: "update", match: { job_name: PLAN_USAGE_ALERT_JOB, period_key: "125:2026-10-20T13:00:00.000Z", organization_id: ORG } });
   });
 
   // Silent lens: Stripe moves the period up to an hour (days on a failed charge) before the payment
@@ -125,8 +125,8 @@ describe("checkPlanUsageAlert (SCRUM-608)", () => {
     withCalls(225); // exactly 150%
     expect(await checkPlanUsageAlert(ORG)).toBe(150);
     expect(vi.mocked(sendPlanUsageAlertNotification).mock.calls[0][0]).toMatchObject({ level: 150 });
-    expect(ops.filter((o) => o.op === "insert").map((o) => o.row?.period_key)).toEqual(["150:2026-10-20", "125:2026-10-20"]);
-    expect(ops.filter((o) => o.op === "update").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20", "125:2026-10-20"]);
+    expect(ops.filter((o) => o.op === "insert").map((o) => o.row?.period_key)).toEqual(["150:2026-10-20T13:00:00.000Z", "125:2026-10-20T13:00:00.000Z"]);
+    expect(ops.filter((o) => o.op === "update").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20T13:00:00.000Z", "125:2026-10-20T13:00:00.000Z"]);
     withCalls(226);
     expect(await checkPlanUsageAlert(ORG)).toBeNull();
     expect(sendPlanUsageAlertNotification).toHaveBeenCalledTimes(1);
@@ -139,7 +139,7 @@ describe("checkPlanUsageAlert (SCRUM-608)", () => {
     withCalls(225);
     expect(await checkPlanUsageAlert(ORG)).toBe(150);
     expect(vi.mocked(sendPlanUsageAlertNotification).mock.calls.map((c) => c[0].level)).toEqual([125, 150]);
-    expect(ops.filter((o) => o.op === "update").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20"]);
+    expect(ops.filter((o) => o.op === "update").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20T13:00:00.000Z"]);
   });
 
   it("a new billing period is a new slot: the alert can come again", async () => {
@@ -147,7 +147,7 @@ describe("checkPlanUsageAlert (SCRUM-608)", () => {
     await checkPlanUsageAlert(ORG);
     withCalls(188, { currentPeriodStart: new Date("2026-11-20T13:00:00.000Z") });
     expect(await checkPlanUsageAlert(ORG)).toBe(125);
-    expect(planUsagePeriodKey(125, new Date("2026-11-20T13:00:00.000Z"))).toBe("125:2026-11-20");
+    expect(planUsagePeriodKey(125, new Date("2026-11-20T13:00:00.000Z"))).toBe("125:2026-11-20T13:00:00.000Z");
   });
 
   it("a send that delivered NOTHING releases every claim it made, so the next counted call retries; one that reached an inbox keeps and confirms them", async () => {
@@ -155,14 +155,14 @@ describe("checkPlanUsageAlert (SCRUM-608)", () => {
     vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(new NotificationDeliveryError("0 delivered", { deliveredCount: 0, wantedCount: 2, permanent: false }));
     vi.spyOn(console, "error").mockImplementation(() => {});
     expect(await checkPlanUsageAlert(ORG)).toBeNull();
-    expect(ops.filter((o) => o.op === "delete").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20", "125:2026-10-20"]);
+    expect(ops.filter((o) => o.op === "delete").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20T13:00:00.000Z", "125:2026-10-20T13:00:00.000Z"]);
     expect(await checkPlanUsageAlert(ORG)).toBe(150); // retried
     ops = [];
     ledger = new Set();
     vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(new NotificationDeliveryError("1/2 failed", { deliveredCount: 1, wantedCount: 2, permanent: false }));
     expect(await checkPlanUsageAlert(ORG)).toBeNull();
     expect(ops.some((o) => o.op === "delete")).toBe(false);
-    expect(ops.filter((o) => o.op === "update").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20", "125:2026-10-20"]);
+    expect(ops.filter((o) => o.op === "update").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20T13:00:00.000Z", "125:2026-10-20T13:00:00.000Z"]);
   });
 
   it("no address to send to (no owner email): the claim is kept — not retried on every counted call", async () => {
@@ -184,7 +184,7 @@ describe("checkPlanUsageAlert (SCRUM-608)", () => {
     vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(new TypeError("cannot read x of undefined"));
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     expect(await checkPlanUsageAlert(ORG)).toBeNull();
-    expect(ops.at(-1)).toMatchObject({ op: "delete", match: { period_key: "125:2026-10-20" } });
+    expect(ops.at(-1)).toMatchObject({ op: "delete", match: { period_key: "125:2026-10-20T13:00:00.000Z" } });
     expect(JSON.stringify(logged.mock.calls)).toContain("cannot read x of undefined");
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
   });
@@ -263,7 +263,7 @@ describe("checkPlanUsageAlert (SCRUM-608) — review killers", () => {
     withCalls(225);
     vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(new TypeError("cannot read x of undefined"));
     expect(await checkPlanUsageAlert(ORG)).toBeNull();
-    expect(ops.filter((o) => o.op === "delete").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20", "125:2026-10-20"]);
+    expect(ops.filter((o) => o.op === "delete").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20T13:00:00.000Z", "125:2026-10-20T13:00:00.000Z"]);
   });
 
   // kills: any permanent failure kept like org-config — the credential-absence contract says RELEASE
@@ -272,7 +272,7 @@ describe("checkPlanUsageAlert (SCRUM-608) — review killers", () => {
     withCalls(225);
     vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(new NotificationDeliveryError("EMAIL_API_KEY absent", { deliveredCount: 0, wantedCount: 2, permanent: true, permanentCause: "credential-absence" }));
     expect(await checkPlanUsageAlert(ORG)).toBeNull();
-    expect(ops.filter((o) => o.op === "delete").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20", "125:2026-10-20"]);
+    expect(ops.filter((o) => o.op === "delete").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20T13:00:00.000Z", "125:2026-10-20T13:00:00.000Z"]);
     expect(await checkPlanUsageAlert(ORG)).toBe(150); // retried
   });
 
@@ -302,8 +302,8 @@ describe("checkPlanUsageAlert (SCRUM-608) — review killers", () => {
     withCalls(225);
     vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(new NotificationDeliveryError("0 delivered", { deliveredCount: 0, wantedCount: 2, permanent: false }));
     expect(await checkPlanUsageAlert(ORG)).toBeNull();
-    expect(ops.filter((o) => o.op === "delete").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20"]);
-    expect(ledger.has(`${PLAN_USAGE_ALERT_JOB}|125:2026-10-20|${ORG}`)).toBe(true);
+    expect(ops.filter((o) => o.op === "delete").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20T13:00:00.000Z"]);
+    expect(ledger.has(`${PLAN_USAGE_ALERT_JOB}|125:2026-10-20T13:00:00.000Z|${ORG}`)).toBe(true);
   });
 
   // kills: the Sentry page dropped from a failed release
@@ -332,5 +332,90 @@ describe("checkPlanUsageAlert (SCRUM-608) — review killers", () => {
     withCalls(188);
     await checkPlanUsageAlert(ORG);
     expect(ops[0].row?.job_name).toBe("plan-usage-alert");
+  });
+});
+
+// SCRUM-609: /review-and-fix on the merged #459 (silent-failure + code lenses).
+describe("checkPlanUsageAlert (SCRUM-609) — review-and-fix", () => {
+  const pages = async () => {
+    const Sentry = await import("@sentry/nextjs");
+    return vi.mocked(Sentry.captureMessage).mock.calls
+      .filter(([m]) => typeof m === "string" && m.startsWith("Plan usage alert: "))
+      .map(([m, ctx]) => ({ message: m as string, ctx: ctx as { level?: string; extra?: Record<string, unknown> } }));
+  };
+  const deliveryError = (facts: { deliveredCount: number; wantedCount: number; permanent: boolean; permanentCause?: "org-config" | "credential-absence" }) =>
+    new NotificationDeliveryError("send failed", facts);
+
+  it("the key is the period's exact start — two periods that start on the same day get their own slots", () => {
+    expect(planUsagePeriodKey(125, new Date("2026-10-20T13:00:00.000Z"))).toBe("125:2026-10-20T13:00:00.000Z");
+    expect(planUsagePeriodKey(125, new Date("2026-10-20T01:00:00.000Z"))).not.toBe(planUsagePeriodKey(125, new Date("2026-10-20T13:00:00.000Z")));
+  });
+
+  // Code lens: calls_used resets on invoice.payment_succeeded, an hour (or, on a declined card,
+  // days) after the period moves — the gap's calls are counted as rows, then wiped from the counter.
+  it("the email never shows more than the dashboard: a late reset's gap calls don't push the level or the number", async () => {
+    withCalls(240, { callsUsed: 190 }); // rows say 160%, the dashboard 127%
+    expect(await checkPlanUsageAlert(ORG)).toBe(125);
+    expect(sendPlanUsageAlertNotification).toHaveBeenCalledWith(expect.objectContaining({ level: 125, callsUsed: 190 }));
+    expect(ops[0].row?.period_key).toBe("125:2026-10-20T13:00:00.000Z");
+  });
+
+  it("and the other way: fewer calls this period than the counter (a stale counter) uses this period's count", async () => {
+    withCalls(230, { callsUsed: 260 });
+    expect(await checkPlanUsageAlert(ORG)).toBe(150);
+    expect(sendPlanUsageAlertNotification).toHaveBeenCalledWith(expect.objectContaining({ level: 150, callsUsed: 230 }));
+  });
+
+  // Silent lens: Sentry never sees console lines — each of these used to stop the alerts unseen.
+  it("a ledger claim fault is paged (warning, with the org and slot) — a lasting one would stop every alert", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    insertError = { code: "08006" };
+    withCalls(188);
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
+    expect(sendPlanUsageAlertNotification).not.toHaveBeenCalled();
+    expect(await pages()).toEqual([{ message: "Plan usage alert: ledger claim failed", ctx: expect.objectContaining({ level: "warning", extra: { organizationId: ORG, periodKey: "125:2026-10-20T13:00:00.000Z", code: "08006" } }) }]);
+  });
+
+  it("an unreadable count is paged (warning) and nothing is claimed", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    callsError = { code: "57014" };
+    withCalls(188);
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
+    expect(ops).toEqual([]);
+    expect(await pages()).toEqual([{ message: "Plan usage alert: counting the period's calls failed", ctx: expect.objectContaining({ level: "warning", extra: { organizationId: ORG, code: "57014" } }) }]);
+  });
+
+  it("a send that delivered nothing (not permanent) is released AND paged — a sender that keeps refusing fails every call", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    withCalls(188);
+    vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(deliveryError({ deliveredCount: 0, wantedCount: 1, permanent: false }));
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
+    expect(ops.map((o) => o.op)).toEqual(["insert", "delete"]);
+    expect((await pages()).map((p) => p.message)).toEqual(["Plan usage alert: nothing delivered — the next counted call retries"]);
+  });
+
+  it("a partial delivery is confirmed (never re-sent) AND paged — a recipient missed it", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    withCalls(230);
+    vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(deliveryError({ deliveredCount: 1, wantedCount: 2, permanent: false }));
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
+    expect(ops.filter((o) => o.op === "update").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20T13:00:00.000Z", "125:2026-10-20T13:00:00.000Z"]);
+    expect(ops.some((o) => o.op === "delete")).toBe(false);
+    const p = await pages();
+    expect(p.map((x) => x.message)).toEqual(["Plan usage alert: partly delivered — a recipient missed it and it won't be resent"]);
+    expect(p[0].ctx.extra).toEqual({ organizationId: ORG, level: 150, delivered: true, permanent: false, permanentCause: null });
+  });
+
+  it("missing credentials page on their own, and no address was reported by the lookup — neither pages twice", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    withCalls(188);
+    vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(deliveryError({ deliveredCount: 0, wantedCount: 1, permanent: true, permanentCause: "credential-absence" }));
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
+    expect(ops.map((o) => o.op)).toEqual(["insert", "delete"]); // released: a fixed deployment retries
+    ops = []; ledger = new Set();
+    vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(deliveryError({ deliveredCount: 0, wantedCount: 1, permanent: true, permanentCause: "org-config" }));
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
+    expect(ops.map((o) => o.op)).toEqual(["insert"]); // kept: no address to retry to
+    expect(await pages()).toEqual([]);
   });
 });

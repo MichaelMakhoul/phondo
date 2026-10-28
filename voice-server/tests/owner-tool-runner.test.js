@@ -360,9 +360,9 @@ describe("runOwnerToolCall — an owner READ without data is a failure", () => {
   });
   it("with the real executor: a read with data is a success and the ownerVerified envelope rides on the wire", async () => {
     const s = makeSession(); fetches = [];
-    fetchImpl = async () => ({ ok: true, json: async () => ({ success: true, message: "Nothing booked today.", data: { range: "today", count: 0, appointments: [] } }) });
+    fetchImpl = async () => ({ ok: true, json: async () => ({ success: true, message: "No jobs scheduled today.", data: { range: "today", count: 0, appointments: [] } }) });
     const ret = await runOwnerToolCall(s, { name: "owner_list_appointments", args: { range: "today" } }, { executeToolCall, scheduleCache: { invalidate: () => {} } });
-    assert.deepEqual(ret, { message: "Nothing booked today.", data: { range: "today", count: 0, appointments: [] } });
+    assert.deepEqual(ret, { message: "No jobs scheduled today.", data: { range: "today", count: 0, appointments: [] } });
     assert.equal(s.toolCallAudit[0].successful, true);
     assert.equal(fetches[0].body.ownerVerified, true); assert.equal(fetches[0].body.callId, "call-1");
   });

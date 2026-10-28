@@ -39,7 +39,7 @@ function fakeAdmin(tables: Record<string, SingleResult>) {
 const ORG = "11111111-2222-4333-a444-555555555555";
 const PERIOD_END = new Date("2026-11-20T13:00:00.000Z"); // 21 November in Sydney
 const base = { organizationId: ORG, callsLimit: 150, planName: "Starter", periodEnd: PERIOD_END };
-type Sent = { to: string; subject: string; html: string };
+type Sent = { to: string; subject: string; html: string; replyTo?: string };
 const sent = () => resendSend.mock.calls.map((c) => c[0] as Sent);
 const words = (s: string) => s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ");
 
@@ -170,3 +170,52 @@ describe("sendPlanUsageAlertNotification (SCRUM-608) — review killers", () => 
     expect(sent().map((s) => s.html.match(/<a href="([^"]+)">see plans<\/a>/)?.[1])).toEqual(["https://app.phondo.ai/billing", "https://phondo.ai/billing"]);
   });
 });
+
+// SCRUM-609: /review-and-fix on the merged #459 (silent-failure + code lenses).
+describe("sendPlanUsageAlertNotification (SCRUM-609) — review-and-fix", () => {
+  // Silent lens: a database blip looked exactly like "no owner email" — at 125% the period's alert
+  // was spent (kept as no-address), at 150% the team was told the owner had no email on file.
+  it("a database fault looking up the owner THROWS — never mistaken for no owner email; nothing is sent", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin({ org_members: { data: null, error: { code: "08006", message: "connection reset" } } }) as any);
+    const p = sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 });
+    await expect(p).rejects.toThrow("org owner query failed: connection reset");
+    await expect(p).rejects.not.toBeInstanceOf(NotificationDeliveryError);
+    expect(sent()).toEqual([]);
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin({
+      org_members: { data: { user_id: "user-owner" }, error: null },
+      user_profiles: { data: null, error: { code: "57014", message: "statement timeout" } },
+    }) as any);
+    await expect(sendPlanUsageAlertNotification({ ...base, level: 125, callsUsed: 188 })).rejects.toThrow("owner profile query failed: statement timeout");
+    expect(sent()).toEqual([]);
+  });
+
+  it("no owner row (PostgREST's PGRST116) is a real missing owner: the 125% alert is a no-address failure, as before", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin({ org_members: { data: null, error: { code: "PGRST116", message: "0 rows" } } }) as any);
+    const err = await sendPlanUsageAlertNotification({ ...base, level: 125, callsUsed: 188 }).catch((e) => e);
+    expect(err).toBeInstanceOf(NotificationDeliveryError);
+    expect(err.permanentCause).toBe("org-config");
+  });
+
+  it("at 150% with no team address, Sentry hears it — the owner's delivery makes the send 'sent', so a log line was all there was", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    delete process.env.ADMIN_ALERT_EMAIL;
+    const Sentry = await import("@sentry/nextjs");
+    expect(await sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 })).toBe("sent");
+    expect(Sentry.captureMessage).toHaveBeenCalledWith("Plan usage alert: ADMIN_ALERT_EMAIL is unset — the team wasn't told a business is at 150%");
+    vi.mocked(Sentry.captureMessage).mockClear();
+    await sendPlanUsageAlertNotification({ ...base, level: 125, callsUsed: 188 }); // 125% never wants the team
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  // Code lens: "reply to this email" went to the sending address, which nobody reads.
+  it("the owner's email replies to support@phondo.ai; the team's sets no reply-to", async () => {
+    await sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 });
+    const owner = sent().find((m) => m.to === "owner@example.com")!;
+    const team = sent().find((m) => m.to === "team@phondo.ai")!;
+    expect(owner.replyTo).toBe("support@phondo.ai");
+    expect(team).not.toHaveProperty("replyTo");
+  });
+});
+

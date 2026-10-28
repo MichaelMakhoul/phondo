@@ -398,7 +398,14 @@ function reportOwnerEmailLookupFailure(
  * Get organization owner's email
  */
 export async function getOrganizationOwnerEmail(
-  organizationId: string
+  organizationId: string,
+  /**
+   * SCRUM-609: a caller that keeps state on "no email" (the plan-usage alert spends the
+   * period's alert) needs a database fault to THROW, not look like a missing owner.
+   * PGRST116 is `.single()`'s "no row" — a genuinely missing owner or profile — and still
+   * returns null.
+   */
+  opts: { throwOnQueryError?: boolean } = {}
 ): Promise<string | null> {
   const supabase = createAdminClient();
 
@@ -411,6 +418,9 @@ export async function getOrganizationOwnerEmail(
     .single();
 
   if (memberError) {
+    if (opts.throwOnQueryError && memberError.code !== "PGRST116") {
+      throw new Error(`org owner query failed: ${memberError.message || memberError.code}`);
+    }
     console.error("[Notifications] Failed to find org owner:", {
       organizationId,
       error: memberError.message || memberError.code,
@@ -436,6 +446,9 @@ export async function getOrganizationOwnerEmail(
     .single();
 
   if (profileError) {
+    if (opts.throwOnQueryError && profileError.code !== "PGRST116") {
+      throw new Error(`owner profile query failed: ${profileError.message || profileError.code}`);
+    }
     console.error("[Notifications] Failed to load owner profile:", {
       organizationId,
       userId: member.user_id,
@@ -970,13 +983,23 @@ export async function sendPlanUsageAlertNotification(data: PlanUsageAlertData): 
     periodEnd: data.periodEnd.toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric", timeZone: "Australia/Sydney" }),
     trial: data.trial === true,
   };
-  const email = await getOrganizationOwnerEmail(data.organizationId);
+  // A database fault throws (released and retried by the checker) — only a real "no owner
+  // email" may spend the period's alert (SCRUM-609).
+  const email = await getOrganizationOwnerEmail(data.organizationId, { throwOnQueryError: true });
   // The team first (at 150%), so the owner's email says the team knows only when it does.
   let teamTold = false;
   if (data.level === 150) {
     const team = process.env.ADMIN_ALERT_EMAIL;
     if (!team) {
       droppedChannels.push("team-email");
+      // settleChannels only logs a dropped channel, and the owner's delivery makes the send
+      // "sent" — without this page nobody at Phondo hears a business is at 150% (SCRUM-609).
+      Sentry.withScope((scope) => {
+        scope.setLevel("warning");
+        scope.setTag("bug", "plan_usage_alert_team_unset");
+        scope.setExtras({ organizationId: data.organizationId, level: data.level });
+        Sentry.captureMessage("Plan usage alert: ADMIN_ALERT_EMAIL is unset — the team wasn't told a business is at 150%");
+      });
     } else {
       const teamSend = sendEmail({
         to: team,
@@ -996,6 +1019,8 @@ export async function sendPlanUsageAlertNotification(data: PlanUsageAlertData): 
       subject: `You've used ${pct}% of your plan's calls this month`,
       template: "plan-usage-alert",
       data: { ...common, teamTold },
+      // The email says "reply to this email" — the sending address isn't a watched inbox (SCRUM-609).
+      replyTo: PHONDO_SUPPORT_EMAIL,
     }));
   }
   return settleChannels("plan-usage-alert", data.organizationId, channels, droppedChannels);
@@ -1756,7 +1781,12 @@ interface EmailParams {
   subject: string;
   template: string;
   data: Record<string, any>;
+  /** Where a reply goes, when the email invites one (the sending address isn't read). */
+  replyTo?: string;
 }
+
+/** Forwarded to the founder's inbox (Cloudflare email routing). */
+const PHONDO_SUPPORT_EMAIL = "support@phondo.ai";
 
 interface SMSParams {
   to: string;
@@ -1772,7 +1802,7 @@ interface WebhookPayload {
  * Send email using Resend
  */
 async function sendEmail(params: EmailParams): Promise<void> {
-  const { to, subject, template, data } = params;
+  const { to, subject, template, data, replyTo } = params;
 
   const apiKey = process.env.EMAIL_API_KEY;
   const fromEmail = process.env.EMAIL_FROM || "notifications@phondo.ai";
@@ -1804,6 +1834,7 @@ async function sendEmail(params: EmailParams): Promise<void> {
         to: recipient,
         subject,
         html,
+        ...(replyTo ? { replyTo } : {}),
       });
       if (error) {
         throw new Error(`Resend API error: ${error.message}`);
