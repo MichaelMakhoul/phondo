@@ -104,18 +104,19 @@ describe("handleBookAppointment for the owner's assistant", () => {
     expect(sendAppointmentConfirmationSMS).toHaveBeenCalledTimes(1);
   });
 
-  // SCRUM-601: every org's default prompt_config requires a last name — the receptionist's
-  // rule for callers. The owner books for a customer they know, by first name if that's all.
-  it("a first name alone books for the owner even when the business requires a last name; the receptionist still asks", async () => {
+  // SCRUM-602: each business decides what its bookings need (Caller Data Collection). The
+  // rule applies to the owner's bookings as to the receptionist's — the owner handler asks
+  // for the surname before its read-back; this is the backstop behind it.
+  it("the business's required last name applies to owner bookings too; a business that doesn't require one books a first name alone", async () => {
     assistantRow = { prompt_config: { fields: [{ id: "first_name", required: true }, { id: "last_name", required: true }] } };
     const { last_name: _none, ...firstOnly } = ARGS;
-    const owner = await handleBookAppointment(ORG, firstOnly, { callId: OWNER_CALL, ownerBooking: true });
-    expect(owner.success).toBe(true);
-    expect(inserts).toHaveLength(1);
+    const refused = await handleBookAppointment(ORG, firstOnly, { callId: OWNER_CALL, ownerBooking: true });
+    expect(refused).toMatchObject({ success: false, message: "I also need your last name to complete the booking. What is your last name?" });
+    expect(inserts).toEqual([]);
+    assistantRow = { prompt_config: { fields: [{ id: "first_name", required: true }, { id: "last_name", required: false }] } };
+    const booked = await handleBookAppointment(ORG, firstOnly, { callId: OWNER_CALL, ownerBooking: true });
+    expect(booked.success).toBe(true);
     expect(inserts[0]).toMatchObject({ attendee_name: "Jane", metadata: { source: "owner_voice" } });
-    const receptionist = await handleBookAppointment(ORG, firstOnly, { callId: OWNER_CALL });
-    expect(receptionist).toMatchObject({ success: false, message: "I also need your last name to complete the booking. What is your last name?" });
-    expect(inserts).toHaveLength(1);
   });
 
   it("an org on Cliniko is refused — never booked there, nothing written", async () => {

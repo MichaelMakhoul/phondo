@@ -1657,7 +1657,7 @@ describe("SCRUM-599: booking, blocking and marking done go through the same gate
     const s = makeSession();
     const d = makeDeps(prB);
     await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: BOOK }, d.deps));
-    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ['owner_book_appointment|["jane smith","0412345678","2026-10-29T14:00","","hot water unit leaking"]']);
+    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ['owner_book_appointment|["jane smith","0412345678","2026-10-29T14:00","","hot water unit leaking","",""]']);
     assistantTurn(s);
     ownerSpeaks(s);
     const same = { customer_name: "  jane   SMITH ", customer_phone: "+61412345678", start: "2026-10-29T14:00", notes: "hot water unit  leaking", confirmed: true, notify_customer: "text" };
@@ -1687,11 +1687,42 @@ describe("SCRUM-599: booking, blocking and marking done go through the same gate
     const s = makeSession();
     const d = makeDeps(prB);
     await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: "+1 415 555 1234" } }, d.deps));
-    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ['owner_book_appointment|["jane smith","4155551234","2026-10-29T14:00","","hot water unit leaking"]']);
+    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ['owner_book_appointment|["jane smith","4155551234","2026-10-29T14:00","","hot water unit leaking","",""]']);
     assistantTurn(s);
     ownerSpeaks(s);
     await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, customer_phone: "(415) 555-1234", confirmed: true, notify_customer: "none" } }, d.deps)));
     assert.equal(d.calls.at(-1).args.confirmed, true);
+  });
+
+  // SCRUM-602: the business's other details are read back too, so a yes covers exactly them.
+  it("the email and the details are part of a booking's key — however the model cases, spaces or orders them", async () => {
+    const s = makeSession();
+    const d = makeDeps(prB);
+    const first = { ...BOOK, customer_email: "Jane.Smith@Example.com", details: "service address=12 Smith St, Wyong; urgency level: today" };
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: first }, d.deps));
+    assert.deepEqual([...s.ownerPendingConfirmations.keys()], ['owner_book_appointment|["jane smith","0412345678","2026-10-29T14:00","","hot water unit leaking","jane.smith@example.com","[[\\"serviceaddress\\",\\"12 smith st, wyong\\"],[\\"urgencylevel\\",\\"today\\"]]"]']);
+    assistantTurn(s);
+    ownerSpeaks(s);
+    const same = { ...first, customer_email: " jane.smith@example.com ", details: "Urgency Level = today;  Service_Address: 12  Smith St, Wyong", confirmed: true, notify_customer: "none" };
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: same }, d.deps)));
+    assert.equal(d.calls.at(-1).args.confirmed, true, "the same details, written differently, confirm");
+  });
+
+  it("a yes to one set of details never books another: a different email or detail value goes on unconfirmed; unreadable details can't be confirmed at all", async () => {
+    for (const change of [{ customer_email: "jane@example.com" }, { details: "service address=14 Smith St, Wyong" }, { details: "service address=12 Smith St, Wyong; urgency level=this week" }]) {
+      const s = makeSession();
+      const d = makeDeps(prB);
+      const first = { ...BOOK, customer_email: "jane.smith@example.com", details: "service address=12 Smith St, Wyong; urgency level=today" };
+      await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: first }, d.deps));
+      assistantTurn(s);
+      ownerSpeaks(s);
+      await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...first, ...change, confirmed: true, notify_customer: "none" } }, d.deps)));
+      assert.equal(d.calls.at(-1).args.confirmed, false, JSON.stringify(change));
+    }
+    const s = makeSession();
+    const d = makeDeps(prB);
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, details: "just some words" } }, d.deps));
+    assert.equal(s.ownerPendingConfirmations?.size ?? 0, 0, "no field=value pairs: nothing armed (the Map is only created on a first arm)");
   });
 
   it("a yes to one booking never makes another: a different time, person, number, service or note goes on unconfirmed", async () => {
@@ -1729,7 +1760,7 @@ describe("SCRUM-599: booking, blocking and marking done go through the same gate
     await captureConsole(() => runOwnerToolCall(s, { name: "owner_block_time", args: { start: "2026-10-30T13:00", end: "2026-10-30T17:00", reason: "   " } }, d.deps));
     assert.deepEqual([...s.ownerPendingConfirmations.keys()].sort(), [
       'owner_block_time|["2026-10-30T13:00","2026-10-30T17:00",""]',
-      'owner_book_appointment|["jane smith","0412345678","2026-10-29T14:00","","tap | leaking"]',
+      'owner_book_appointment|["jane smith","0412345678","2026-10-29T14:00","","tap | leaking","",""]',
     ]);
     assistantTurn(s);
     ownerSpeaks(s);
@@ -1861,7 +1892,7 @@ describe("SCRUM-599 test lens: behaviour, not just the lists", () => {
   it("silent lens r2 F2: an interrupted repeat booking whose text log couldn't be read never says the customer was NOT told", async () => {
     const told = await interrupted(
       "owner_book_appointment",
-      'owner_book_appointment|["jane smith","0412345678","2026-10-29T14:00","",""]',
+      'owner_book_appointment|["jane smith","0412345678","2026-10-29T14:00","","","",""]',
       { ...BOOK, notify_customer: "text" },
       { success: true, message: "Jane Smith is already booked for Thursday, October 29 at 2:00 PM — that's the booking from a moment ago.", data: { outcome: "booked" } }
     );
@@ -1873,7 +1904,7 @@ describe("SCRUM-599 test lens: behaviour, not just the lists", () => {
   it("K85: an interrupted booking that went through says whether the customer was texted", async () => {
     const told = await interrupted(
       "owner_book_appointment",
-      'owner_book_appointment|["jane smith","0412345678","2026-10-29T14:00","",""]',
+      'owner_book_appointment|["jane smith","0412345678","2026-10-29T14:00","","","",""]',
       { ...BOOK, notify_customer: "text" },
       { success: true, message: "Booked Jane Smith for Thursday, October 29 at 2:00 PM. I've texted Jane Smith to let them know.", data: { outcome: "booked", customer_contact: { method: "text", status: "sent" } } }
     );

@@ -172,7 +172,7 @@ describe("buildOwnerTools", () => {
 describe("SCRUM-599: owner_book_appointment, owner_block_time, owner_mark_callback_done", () => {
   const byName = Object.fromEntries(ot.ownerToolDefinitions.map((d) => [d.function.name, d.function]));
   it("declare exactly what PR B reads, with the same two-call gate", () => {
-    assert.deepEqual(Object.keys(byName.owner_book_appointment.parameters.properties).sort(), ["confirmed", "customer_name", "customer_phone", "notes", "notify_customer", "service_type_id", "start"]);
+    assert.deepEqual(Object.keys(byName.owner_book_appointment.parameters.properties).sort(), ["confirmed", "customer_email", "customer_name", "customer_phone", "details", "notes", "notify_customer", "service_type_id", "start"]);
     assert.deepEqual(byName.owner_book_appointment.parameters.required, ["customer_name", "customer_phone", "start"]);
     assert.deepEqual(Object.keys(byName.owner_block_time.parameters.properties).sort(), ["confirmed", "end", "reason", "start"]);
     assert.deepEqual(byName.owner_block_time.parameters.required, ["start", "end"]);
@@ -199,8 +199,13 @@ describe("SCRUM-599: owner_book_appointment, owner_block_time, owner_mark_callba
     assert.deepEqual(byName.owner_book_appointment.parameters.properties.notify_customer.enum, ["text", "none"]);
     assert.ok(byName.owner_book_appointment.description.includes("a call isn't offered for a new booking"));
     assert.ok(byName.owner_book_appointment.parameters.properties.customer_phone.description.includes("never make one up"));
-    // SCRUM-601: a first name is enough, and the number is read back digit by digit.
-    assert.ok(byName.owner_book_appointment.parameters.properties.customer_name.description.includes("a first name alone is fine if that's all the owner has"));
+    // SCRUM-601/602: the number is read back digit by digit; a first name is enough unless THIS business needs a last name.
+    assert.ok(byName.owner_book_appointment.parameters.properties.customer_name.description.includes("A first name alone is fine unless this business needs a last name — the tool says so (data.missing_fields)."));
+    assert.ok(byName.owner_book_appointment.description.includes("Each business sets which details its bookings need"));
+    assert.ok(byName.owner_book_appointment.description.includes("never ask for anything it didn't name"));
+    assert.ok(byName.owner_book_appointment.parameters.properties.details.description.includes('"field=value; field=value"'));
+    assert.ok(byName.owner_book_appointment.parameters.properties.customer_email.description.includes("Spelled back letter by letter"));
+    assert.deepEqual(byName.owner_book_appointment.parameters.required, ["customer_name", "customer_phone", "start"], "email and details stay optional — the tool asks when the business needs them");
     assert.ok(byName.owner_book_appointment.parameters.properties.customer_phone.description.includes("The read-back says it back digit by digit, so a misheard digit is caught."));
   });
   it("say which outcomes mean it happened", () => {

@@ -255,7 +255,7 @@ describe("website ↔ voice server: what a customer call's row says", () => {
 // cuts every customer sentence the booking handler writes.
 describe("website ↔ voice server: book, block and mark done", () => {
   it("each declares exactly the arguments the route reads", () => {
-    expect(Object.keys(writeTool("owner_book_appointment").parameters.properties).sort()).toEqual(["confirmed", "customer_name", "customer_phone", "notes", "notify_customer", "service_type_id", "start"]);
+    expect(Object.keys(writeTool("owner_book_appointment").parameters.properties).sort()).toEqual(["confirmed", "customer_email", "customer_name", "customer_phone", "details", "notes", "notify_customer", "service_type_id", "start"]);
     expect(Object.keys(writeTool("owner_block_time").parameters.properties).sort()).toEqual(["confirmed", "end", "reason", "start"]);
     expect(Object.keys(writeTool("owner_mark_callback_done").parameters.properties).sort()).toEqual(["callback_id", "confirmed", "note"]);
   });

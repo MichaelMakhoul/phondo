@@ -291,6 +291,25 @@ function confirmationKey(name, args) {
   /** @param {unknown} v optional words: absent or blank is "" (the website reads a blank one as none) */
   const optionalWords = (v) => (v === undefined || v === null || (typeof v === "string" && v.trim() === "") ? "" : words(v));
   /** @param {unknown} v a phone number, digits only, an AU +61 number written as 0… */
+  /** An email however it's cased or spaced; "" when none. */
+  const optionalEmail = (v) => (typeof v === "string" && v.trim() ? v.replace(/\s+/g, "").toLowerCase() : "");
+  /**
+   * "field=value; field=value" → one JSON list of [field, words] pairs sorted by field
+   * (a colon after the field works too, as PR B reads it). Unreadable → null (never confirmable).
+   */
+  const detailsKey = (v) => {
+    if (typeof v !== "string" || !v.trim()) return "";
+    const pairs = [];
+    for (const part of v.split(";")) {
+      if (!part.trim()) continue;
+      const m = /^\s*([^=:]+?)\s*[=:]\s*(.*)$/.exec(part);
+      if (!m) return null;
+      const value = words(m[2]);
+      if (value) pairs.push([m[1].normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, ""), value]);
+    }
+    pairs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    return JSON.stringify(pairs);
+  };
   const phoneDigits = (v) => {
     if (typeof v !== "string") return null;
     const d = v.replace(/\D/g, "");
@@ -313,7 +332,10 @@ function confirmationKey(name, args) {
   /** @param {Array<string|null>} fields */
   const keyOf = (fields) => (fields.includes(null) ? null : `${name}|${JSON.stringify(fields)}`);
   if (name === "owner_book_appointment") {
-    return keyOf([words(args.customer_name), phoneDigits(args.customer_phone), part(args.start), optional(args.service_type_id), optionalWords(args.notes)]);
+    // SCRUM-602: the email and the business's other details are read back too, so a yes
+    // to one set never books another. The details are keyed by field, in field order,
+    // however the model spaced or ordered them.
+    return keyOf([words(args.customer_name), phoneDigits(args.customer_phone), part(args.start), optional(args.service_type_id), optionalWords(args.notes), optionalEmail(args.customer_email), detailsKey(args.details)]);
   }
   if (name === "owner_block_time") return keyOf([part(args.start), part(args.end), optionalWords(args.reason)]);
   if (name === "owner_mark_callback_done") return keyOf([part(args.callback_id), optionalWords(args.note)]);

@@ -30,7 +30,7 @@ import { performRescheduleLeg } from "@/lib/calendar/reschedule-leg";
 import { isServiceTypeQuestion } from "@/lib/calendar/service-type-question";
 import { diffAppointmentFields, recordAppointmentEvent } from "@/lib/appointments/events";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
-import { isValidPhoneNumber, isValidUUID } from "@/lib/security/validation";
+import { isValidEmail, isValidPhoneNumber, isValidUUID } from "@/lib/security/validation";
 import { runAfterResponse } from "@/lib/utils/after-response";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
 import { pageSentry } from "@/lib/observability/page-sentry";
@@ -1112,6 +1112,12 @@ export interface OwnerBookData {
   customer_contact?: CustomerContactResult;
   /** True only when the customer was actually told (a text went out). */
   customer_notified: boolean;
+  /** SCRUM-602: the customer's email, when this business collects one. */
+  customer_email?: string;
+  /** SCRUM-602: the business's other caller details given for this booking (saved in the job's note). */
+  details?: Array<{ id: string; label: string; value: string }>;
+  /** On invalid_details: the business's required fields the booking still needs. */
+  missing_fields?: Array<{ id: string; label: string }>;
 }
 
 export interface OwnerBlockData {
@@ -1176,9 +1182,100 @@ function digitsAloud(shown: string): string {
  * name that isn't plain. Only these let the owner catch a mishearing before it is saved:
  * a real session saved a wrong digit, and dropped a note, without either being said.
  */
-function bookingReadBackRule(shownPhone: string, notes: string | null): string {
+function bookingReadBackRule(shownPhone: string, notes: string | null, verifications: string[] = []): string {
   const note = notes ? "Say the note." : `There's no job note: say "no job note", so the owner can add one.`;
-  return ` Say the phone number back digit by digit, in its groups: "${digitsAloud(shownPhone)}". ${note} Spell back letter by letter any name that isn't a common one, or that the owner corrected — once, not again on a repeated read-back unless it changed.`;
+  const extra = verifications.length ? ` ${verifications.join(" ")}` : "";
+  return ` Say the phone number back digit by digit, in its groups: "${digitsAloud(shownPhone)}". ${note}${extra} Spell back letter by letter any name that isn't a common one, or that the owner corrected — once, not again on a repeated read-back unless it changed.`;
+}
+
+/**
+ * SCRUM-602: a field this business collects from callers (Assistants → Caller Data
+ * Collection, `assistants.prompt_config.fields`). Each business sets its own: some need
+ * a last name, some an email, a tradie an address and how urgent it is.
+ */
+type BookingField = { id: string; label: string; required: boolean; verification: string };
+
+/** The fields the booking's own parameters carry — never asked for again through `details`. */
+const BOOKING_OWN_FIELD_IDS = new Set(["first_name", "full_name", "last_name", "phone_number", "email_address"]);
+/** One detail's value: a line of the owner's words. */
+const DETAIL_VALUE_MAX = 120;
+/** The whole `details` string; longer is refused, never cut. */
+const DETAILS_MAX = 600;
+/** The booking path's own cap on a job's note (`sanitizeString(notes, 500)`) — anything longer would be cut there without a word. */
+const DIARY_NOTES_MAX = 500;
+
+/** "service_address", "Service Address" and "service address" are one field. */
+function fieldKey(value: string): string {
+  return value.normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** "a", "a and b", "a, b and c". */
+function listWords(items: string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/**
+ * The business's caller fields — the row the receptionist's booking path reads
+ * (handleBookAppointment). No assistant or no config means nothing beyond the name and
+ * number; a read fault is a fault, never "nothing required".
+ */
+async function bookingFields(supabase: any, organizationId: string): Promise<BookingField[] | "error"> {
+  const { data, error } = await supabase.from("assistants").select("prompt_config").eq("organization_id", organizationId).limit(1).maybeSingle();
+  if (error) {
+    console.error("[owner-assistant] booking fields read failed:", { organizationId, code: error.code });
+    return "error";
+  }
+  const raw = data?.prompt_config?.fields;
+  if (!Array.isArray(raw)) return [];
+  const fields: BookingField[] = [];
+  for (const f of raw) {
+    const id = typeof f?.id === "string" ? f.id.trim() : "";
+    if (!id || fields.some((k) => k.id === id)) continue;
+    fields.push({
+      id,
+      label: sanitizeCustomerText(f?.label, 60) ?? id.replace(/_/g, " "),
+      required: f?.required === true,
+      verification: typeof f?.verification === "string" ? f.verification : "none",
+    });
+  }
+  return fields;
+}
+
+/**
+ * The extra details as the model passes them: `field=value; field=value` (a colon after
+ * the field works too). The field can be the id or the label.
+ */
+function parseBookingDetails(raw: unknown): Array<{ key: string; value: string }> | "too_long" | "unreadable" {
+  if (raw === undefined || raw === null) return [];
+  if (String(raw).length > DETAILS_MAX) return "too_long";
+  const text = sanitizeCustomerText(raw, DETAILS_MAX);
+  if (!text) return [];
+  const pairs: Array<{ key: string; value: string }> = [];
+  for (const part of text.split(";")) {
+    if (!part.trim()) continue;
+    const m = /^\s*([^=:]+?)\s*[=:]\s*(.*)$/.exec(part);
+    if (!m) return "unreadable";
+    pairs.push({ key: m[1], value: m[2].trim() });
+  }
+  return pairs;
+}
+
+/** How a detail is read back, by the field's own verification setting (the receptionist's rule for callers). */
+function detailVerificationLine(label: string, verification: string): string {
+  const what = label.toLowerCase();
+  switch (verification) {
+    case "read-back-digits":
+      return `Say the ${what} digit by digit.`;
+    case "spell-out":
+      return `Spell the ${what} out letter by letter.`;
+    case "read-back-characters":
+      return `Read the ${what} back character by character.`;
+    case "none":
+      return `Say the ${what}.`;
+    default:
+      return `Repeat the ${what} back.`;
+  }
 }
 
 /**
@@ -1261,6 +1358,8 @@ export async function handleOwnerBookAppointment(
     start?: string;
     service_type_id?: string;
     notes?: string;
+    customer_email?: string;
+    details?: string;
     confirmed?: unknown;
     notify_customer?: string;
   },
@@ -1276,10 +1375,10 @@ export async function handleOwnerBookAppointment(
 
   // The customer's name and number are the model's words for what the owner said:
   // one bounded line each before they reach the diary.
-  const customer = sanitizeCustomerText(args.customer_name, NAME_MAX);
-  if (!customer) return invalidDetails("I need the customer's name for the booking. Who's it for?");
+  const customerSaid = sanitizeCustomerText(args.customer_name, NAME_MAX);
+  if (!customerSaid) return invalidDetails("I need the customer's name for the booking. Who's it for?");
   const phone = typeof args.customer_phone === "string" ? args.customer_phone.trim() : "";
-  if (!phone || !isValidPhoneNumber(phone)) return invalidDetails(`I need a phone number for ${customer} that the booking can go under. What's their number?`);
+  if (!phone || !isValidPhoneNumber(phone)) return invalidDetails(`I need a phone number for ${customerSaid} that the booking can go under. What's their number?`);
   const start = parseOwnerLocalDatetime(args.start, tz);
   if (!start) return invalidTime("I need the time as a date and time, like 2026-10-29T14:00.");
   if (start.getTime() < Date.now()) return invalidTime("That time has already passed. When should the job be?");
@@ -1299,6 +1398,72 @@ export async function handleOwnerBookAppointment(
   if (service === undefined) return errorResult(TROUBLE);
   if (serviceTypeId && !service) return invalidDetails("I couldn't find that service type. Check the SERVICE TYPES list, or leave it out.");
 
+  // SCRUM-602: what THIS business collects from callers — asked for before the read-back,
+  // so a booking never fails after the owner's yes; nothing it doesn't require is asked.
+  const fields = await bookingFields(supabase, organizationId);
+  if (fields === "error") return errorResult(TROUBLE);
+  const parsed = parseBookingDetails(args.details);
+  if (parsed === "too_long") return invalidDetails(`That's too much detail for one booking — keep each detail short (details are limited to ${DETAILS_MAX} characters in all).`);
+  if (parsed === "unreadable") return invalidDetails(`I couldn't read the details. Pass them as "field=value; field=value", using this business's field names${fields.length ? `: ${listWords(fields.filter((f) => !BOOKING_OWN_FIELD_IDS.has(f.id)).map((f) => f.label))}` : ""}.`);
+  const byKey = new Map<string, BookingField>();
+  for (const f of fields) {
+    byKey.set(fieldKey(f.id), f);
+    byKey.set(fieldKey(f.label), f);
+  }
+  const details: Array<{ field: BookingField; value: string }> = [];
+  let surnameGiven: string | null = null;
+  let emailGiven: string | null = typeof args.customer_email === "string" ? sanitizeCustomerText(args.customer_email, 120) : null;
+  for (const { key, value } of parsed) {
+    const k = fieldKey(key);
+    const v = sanitizeCustomerText(value, DETAIL_VALUE_MAX) ?? "";
+    // The booking's own fields, however the model passed them.
+    if (k === "lastname" || k === "surname") { surnameGiven = v || null; continue; }
+    if (k === "emailaddress" || k === "email") { emailGiven = emailGiven || v || null; continue; }
+    if (k === "firstname" || k === "fullname" || k === "name" || k === "phonenumber" || k === "phone") continue;
+    const field = byKey.get(k);
+    if (!field || BOOKING_OWN_FIELD_IDS.has(field.id)) {
+      const known = fields.filter((f) => !BOOKING_OWN_FIELD_IDS.has(f.id)).map((f) => f.label);
+      return invalidDetails(`I don't know a "${sanitizeCustomerText(key, 40)}" detail for this business. ${known.length ? `Its fields are: ${listWords(known)}. Anything else goes in the note.` : "It has no extra fields — put anything else in the note."}`);
+    }
+    if (!v) continue; // a blank value is no value
+    if (!details.some((d) => d.field.id === field.id)) details.push({ field, value: v });
+  }
+  const nameParts = customerSaid.split(" ");
+  const givenName = nameParts[0];
+  const surname = nameParts.slice(1).join(" ") || surnameGiven || "";
+  const customer = surname ? (sanitizeCustomerText(`${givenName} ${surname}`, NAME_MAX) ?? customerSaid) : customerSaid;
+  const email = emailGiven ? emailGiven.replace(/\s+/g, "") : null;
+  if (email && !isValidEmail(email)) return invalidDetails(`That email address doesn't look right ("${email}"). Ask the owner to spell it out, then call again.`);
+  const covered = (f: BookingField): boolean => {
+    if (f.id === "last_name") return surname !== "";
+    if (f.id === "email_address") return email !== null;
+    if (BOOKING_OWN_FIELD_IDS.has(f.id)) return true;
+    return details.some((d) => d.field.id === f.id);
+  };
+  const missing = fields.filter((f) => f.required && !covered(f));
+  if (missing.length) {
+    const named = missing.map((f) => (f.id === "last_name" ? `${givenName}'s last name` : f.id === "email_address" ? `${givenName}'s email address` : `the ${f.label.toLowerCase()}`));
+    return {
+      success: false,
+      message:
+        `This business's bookings also need ${listWords(named)}. Ask the owner, then call again with everything: the surname in customer_name, the email in customer_email, anything else in details ("field=value; field=value"). ` +
+        `If the owner doesn't have one of them, say this business's settings require it for every booking — they can change that in Assistants → Caller Data Collection.`,
+      data: bookData({ outcome: "invalid_details", customer_notified: false, missing_fields: missing.map((f) => ({ id: f.id, label: f.label })) }),
+    };
+  }
+  // The job's note: the owner's words, then each detail on its own line (the dashboard
+  // shows it). The diary cuts anything over its cap without a word — refuse first.
+  const detailLines = details.map((d) => `${d.field.label}: ${d.value}`);
+  const diaryNotes = [notes, ...detailLines].filter((l): l is string => Boolean(l)).join("\n") || null;
+  if (diaryNotes && diaryNotes.length > DIARY_NOTES_MAX) {
+    return invalidDetails(`That's too much for the job's note (${diaryNotes.length - DIARY_NOTES_MAX} characters over). Ask the owner to shorten the note or a detail, then call again.`);
+  }
+  const emailField = fields.find((f) => f.id === "email_address");
+  const verifications = [
+    ...(email ? [detailVerificationLine("email address", emailField?.verification ?? "spell-out")] : []),
+    ...details.map((d) => detailVerificationLine(d.field.label, d.field.verification)),
+  ];
+
   const when = formatWhen(start, tz);
   // The owner says the number the way people do ("0412 345 678"); the diary keeps it
   // in E.164 like the receptionist's bookings (caller ID) when it parses in the org's
@@ -1307,7 +1472,14 @@ export async function handleOwnerBookAppointment(
   // SCRUM-601: read back as the number that will be SAVED, in its groups — a misheard
   // digit is heard there (a real session saved 0412 345 378 for a spoken 678).
   const shownPhone = spokenPhone(bookedPhone, org.country) ?? sanitizeCustomerText(phone, PHONE_MAX) ?? phone;
-  const base = { customer_name: customer, customer_phone: shownPhone, when, ...(service ? { service } : {}) };
+  const base = {
+    customer_name: customer,
+    customer_phone: shownPhone,
+    when,
+    ...(service ? { service } : {}),
+    ...(email ? { customer_email: email } : {}),
+    ...(details.length ? { details: details.map((d) => ({ id: d.field.id, label: d.field.label, value: d.value })) } : {}),
+  };
 
   // As for a change: a confirm needs the owner's answer on telling the customer. A
   // new booking is never offered a call, so "call" is no answer: the question again.
@@ -1320,13 +1492,14 @@ export async function handleOwnerBookAppointment(
     if (args.confirmed === true && !contactWays(contact)) {
       method = "none";
     } else {
-      const change = `book ${customer} on ${shownPhone} for ${service ? `${service} on ` : ""}${when}${notes ? ` — notes: "${notes}"` : ""}`;
+      const said = [...(email ? [`email ${email}`] : []), ...detailLines];
+      const change = `book ${customer} on ${shownPhone} for ${service ? `${service} on ` : ""}${when}${notes ? ` — notes: "${notes}"` : ""}${said.length ? ` — details: ${said.join("; ")}` : ""}`;
       return {
         success: false,
         message:
           args.confirmed === true
             ? askContactMessage(customer, contact, "owner_book_appointment")
-            : readBackMessage(change, customer, contact, "owner_book_appointment", "booked") + bookingReadBackRule(shownPhone, notes),
+            : readBackMessage(change, customer, contact, "owner_book_appointment", "booked") + bookingReadBackRule(shownPhone, notes, verifications),
         data: bookData({
           outcome: "needs_confirmation",
           ...base,
@@ -1359,7 +1532,7 @@ export async function handleOwnerBookAppointment(
     });
     const withWhom = earlier.practitioner ? ` with ${earlier.practitioner}` : "";
     const who = earlier.customer ?? customer;
-    const detailsKept = (serviceTypeId ?? null) !== earlier.serviceTypeId || (notes ?? null) !== earlier.notes;
+    const detailsKept = (serviceTypeId ?? null) !== earlier.serviceTypeId || diaryNotes !== earlier.notes;
     return {
       success: true,
       message:
@@ -1394,15 +1567,15 @@ export async function handleOwnerBookAppointment(
     return { success: false, message: RATE_LIMITED_MSG, data: bookData({ outcome: "rate_limited", ...base, customer_notified: false }) };
   }
 
-  const [firstName, ...rest] = customer.split(" ");
   const result = await handleBookAppointment(
     organizationId,
     {
-      first_name: firstName,
-      ...(rest.length ? { last_name: rest.join(" ") } : {}),
+      first_name: givenName,
+      ...(surname ? { last_name: surname } : {}),
       phone: bookedPhone,
       datetime: toLocalIsoMinute(start, tz),
-      ...(notes ? { notes } : {}),
+      ...(email ? { email } : {}),
+      ...(diaryNotes ? { notes: diaryNotes } : {}),
       ...(serviceTypeId ? { service_type_id: serviceTypeId } : {}),
     },
     { callId: ctx.callId, ownerBooking: true }

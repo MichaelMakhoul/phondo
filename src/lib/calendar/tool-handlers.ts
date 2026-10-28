@@ -1078,9 +1078,9 @@ export async function handleBookAppointment(
   // Also check legacy full_name for backwards compat
   const fullNameField = fields.find((f: any) => f.id === "full_name");
 
-  // SCRUM-601: the owner books for a customer they know, and a first name alone is
-  // theirs to give — the business's last-name rule is for callers the receptionist doesn't.
-  if (lastNameField?.required && !lastName && !internal?.ownerBooking) {
+  // SCRUM-602: the business's own rule, for the receptionist's callers AND the owner's
+  // bookings (the owner handler asks before its read-back; this is the backstop).
+  if (lastNameField?.required && !lastName) {
     return {
       success: false,
       message: "I also need your last name to complete the booking. What is your last name?",
