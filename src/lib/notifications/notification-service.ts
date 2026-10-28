@@ -933,6 +933,67 @@ export async function sendOwnerAssistantRecapNotification(
   return settleChannels("owner-assistant-recap", data.organizationId, channels, droppedChannels);
 }
 
+/** SCRUM-608: the plan-usage levels that email — the owner at 125%, the owner and the Phondo team at 150%. */
+export type PlanUsageAlertLevel = 125 | 150;
+
+export interface PlanUsageAlertData {
+  organizationId: string;
+  level: PlanUsageAlertLevel;
+  callsUsed: number;
+  callsLimit: number;
+  /** The plan's display name ("Starter"). */
+  planName: string;
+  /** When the billing period ends (the count starts again then). */
+  periodEnd: Date;
+}
+
+/**
+ * SCRUM-608: the business has used `level`% of its plan's calls this billing period —
+ * customer calls AND the owner's own chats with the assistant (both count). Nothing is
+ * cut off: this is a heads-up with an upgrade link. To the OWNER, and at 150% to the
+ * Phondo team too (ADMIN_ALERT_EMAIL). No preference gate (it's about their account),
+ * demo org skipped, honest settle (no owner email and no team email ⇒ throws).
+ */
+export async function sendPlanUsageAlertNotification(data: PlanUsageAlertData): Promise<NotificationSendResult> {
+  if (skipDemoOrg("plan-usage-alert", data.organizationId)) return "skipped";
+  const channels: Promise<void>[] = [];
+  const droppedChannels: string[] = [];
+  const pct = Math.round((data.callsUsed / data.callsLimit) * 100);
+  const common = {
+    pct,
+    level: data.level,
+    callsUsed: data.callsUsed,
+    callsLimit: data.callsLimit,
+    planName: data.planName,
+    periodEnd: data.periodEnd.toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric", timeZone: "Australia/Sydney" }),
+  };
+  const email = await getOrganizationOwnerEmail(data.organizationId);
+  if (!email) {
+    droppedChannels.push("owner-email");
+  } else {
+    channels.push(sendEmail({
+      to: email,
+      subject: `You've used ${pct}% of your plan's calls this month`,
+      template: "plan-usage-alert",
+      data: common,
+    }));
+  }
+  if (data.level === 150) {
+    const team = process.env.ADMIN_ALERT_EMAIL;
+    if (!team) {
+      droppedChannels.push("team-email");
+    } else {
+      channels.push(sendEmail({
+        to: team,
+        subject: `[Phondo] An org is at ${pct}% of its ${data.planName} plan`,
+        template: "plan-usage-alert-team",
+        data: { ...common, organizationId: data.organizationId },
+      }));
+    }
+  }
+  return settleChannels("plan-usage-alert", data.organizationId, channels, droppedChannels);
+}
+
 /**
  * One recap line about the customer. Exhaustive (no default): a new outcome — the
  * call outcomes SCRUM-598 adds — must be worded here before it compiles, never
@@ -1924,6 +1985,22 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
     // lock as a flat 15 minutes. No promise of a text to the caller either
     // (customer SMS is paused, SCRUM-264). localTime arrives already written in
     // the org's zone ("Thursday 15 October at 3:04 pm"), hence "on <time>".
+    // SCRUM-608 — the plan-usage heads-up. Scalars, escaped by the caller of this map.
+    "plan-usage-alert": (d) => {
+      const base = escapeHtml((process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai").replace(/\/$/, ""));
+      return `
+      <h2 style="color: #b45309;">You've used ${d.pct}% of your plan's calls</h2>
+      <p>Your receptionist has handled <strong>${d.callsUsed} calls</strong> this billing period on the ${d.planName} plan, which includes ${d.callsLimit}. That counts customer calls and your own chats with your assistant.</p>
+      <p><strong>Nothing has been cut off</strong> — your receptionist keeps answering every call. The count starts again on ${d.periodEnd}.</p>
+      <p>If you're this busy every month, a bigger plan gives you more calls for less per call: <a href="${base}/billing">see plans</a>.</p>
+      ${String(d.level) === "150" ? "<p>We've let the Phondo team know too — reply to this email if you'd like a hand choosing.</p>" : ""}
+    `;
+    },
+    "plan-usage-alert-team": (d) => `
+      <h2>An org is at ${d.pct}% of its plan</h2>
+      <p>Org <code>${d.organizationId}</code> has used <strong>${d.callsUsed} of ${d.callsLimit}</strong> calls this period on the ${d.planName} plan (customer calls plus owner-assistant chats). Its period ends ${d.periodEnd}.</p>
+      <p>Nothing is cut off. The owner has been emailed with an upgrade link.</p>
+    `,
     "owner-pin-locked": (d) => `
       <h2 style="color: #dc2626;">Your assistant line PIN is locked</h2>
       <p>Someone rang your assistant line from <strong>${d.callerPhoneMasked}</strong> on ${d.localTime} and entered the wrong PIN too many times, so the owner line is locked.</p>
