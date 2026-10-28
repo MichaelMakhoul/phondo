@@ -415,7 +415,7 @@ function buildFieldCollectionSection(fields) {
   if (required.length > 0) {
     section += "Required information:\n";
     for (const field of required) {
-      section += `- ${field.label}`;
+      section += `- ${field.label}${fieldDescription(field)}`;
       const verifyNote = getVerificationInstruction(field.verification, field.label);
       if (verifyNote) {
         section += `\n  ${verifyNote}`;
@@ -427,7 +427,7 @@ function buildFieldCollectionSection(fields) {
   if (optional.length > 0) {
     section += "\nOptional (collect if relevant):\n";
     for (const field of optional) {
-      section += `- ${field.label}`;
+      section += `- ${field.label}${fieldDescription(field)}`;
       const verifyNote = getVerificationInstruction(field.verification, field.label);
       if (verifyNote) {
         section += `\n  ${verifyNote}`;
@@ -436,7 +436,28 @@ function buildFieldCollectionSection(fields) {
     }
   }
 
+  section += bookingCollectionRules(fields);
   return section;
+}
+
+/**
+ * SCRUM-617: what a BOOKING needs from DATA COLLECTION, and how a required phone number is
+ * confirmed — the caller's own number counts (caller ID), read back rather than asked for.
+ * The same text as src/lib/prompt-builder/generate-prompt.ts.
+ */
+/** SCRUM-617: a field's description — its choices ("Routine, Urgent, or Emergency") — said with it. */
+function fieldDescription(field) {
+  const text = sanitizeForPrompt(field && field.description);
+  return text ? ` (${text})` : "";
+}
+
+function bookingCollectionRules(fields) {
+  const phone = fields.find((f) => f.id === "phone_number" && f.required);
+  let rules = "\nBefore you book, have every required item above — use what the caller already told you (like why they're calling) instead of asking again; if they have none (no insurer, say), \"none\" is an answer. book_appointment takes the name in first_name and last_name and every other item in details.\n";
+  if (phone) {
+    rules += `${phone.label}: the number they're calling from counts — read it back and ask if it's the best one to reach them; take a different one if they give it.\n`;
+  }
+  return rules;
 }
 
 function buildBehaviorsSection(behaviors, options) {

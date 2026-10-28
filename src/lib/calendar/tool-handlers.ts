@@ -1,4 +1,4 @@
-import { bookingFieldsQuery } from "@/lib/calendar/booking-fields";
+import { bookingFieldsQuery, callerBookingDetails, listWords, normalizeBookingFields } from "@/lib/calendar/booking-fields";
 import crypto from "crypto";
 import * as Sentry from "@sentry/nextjs";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -992,6 +992,8 @@ export async function handleBookAppointment(
     phone?: string;
     email?: string;
     notes?: string;
+    // SCRUM-617: every other field this business requires, "Label: value; Label: value".
+    details?: string;
     service_type_id?: string;
     practitioner_id?: string;
   },
@@ -1015,6 +1017,9 @@ export async function handleBookAppointment(
     // booking path recognise "colliding with the row being replaced" (its slot
     // is legitimately about to be freed) apart from a real conflict.
     rescheduleFromId?: string;
+    // SCRUM-617: the assistant that answered the call (the trusted envelope's), so this
+    // line's own required fields apply. Unset: the org's oldest (the owner's bookings).
+    assistantId?: string;
     // SCRUM-599: the business owner's assistant is booking this (owner_book_appointment).
     // The owner chooses whether the customer is texted (contactCustomer runs after),
     // and the owner's own booking notice would only tell them what they just did — so
@@ -1023,7 +1028,8 @@ export async function handleBookAppointment(
     ownerBooking?: boolean;
   }
 ): Promise<ToolResult> {
-  const { datetime, phone, email, notes, service_type_id } = args;
+  const { datetime, phone, notes, service_type_id } = args;
+  let email = args.email;
 
   // Build the name from first/last or legacy full name
   const firstName = args.first_name?.trim() || "";
@@ -1067,9 +1073,23 @@ export async function handleBookAppointment(
   // Check if business requires both first and last name — the same row, in the same
   // order, as the owner assistant's pre-read-back check (SCRUM-602, bookingFieldsQuery).
   const supabaseForFields = createAdminClient();
-  const { data: assistant, error: fieldsError } = await bookingFieldsQuery(supabaseForFields, organizationId);
-  // A read fault leaves the name rules off for this booking (as before) — but said, not swallowed.
-  if (fieldsError) console.error("[booking] caller fields read failed — name rules not applied:", { organizationId, code: fieldsError.code });
+  const answeringLine = internal?.ownerBooking ? undefined : internal?.assistantId;
+  let { data: assistant, error: fieldsError } = await bookingFieldsQuery(supabaseForFields, organizationId, answeringLine);
+  // The envelope's assistant isn't this org's (or has gone): the org's oldest, as before — said,
+  // never "nothing required".
+  if (answeringLine && !fieldsError && !assistant) {
+    console.warn("[booking] the call's assistant isn't this org's — using the org's oldest assistant's fields:", { organizationId, assistantId: answeringLine });
+    ({ data: assistant, error: fieldsError } = await bookingFieldsQuery(supabaseForFields, organizationId));
+  }
+  // A read fault leaves the business's rules off for this booking (as before) — said, and
+  // paged (SCRUM-617: Sentry never sees console lines; a lasting fault would quietly stop
+  // every business's required fields).
+  if (fieldsError) {
+    console.error("[booking] caller fields read failed — the business's required fields not applied:", { organizationId, code: fieldsError.code });
+    Sentry.captureMessage("Booking: caller fields read failed — required fields not applied", { level: "warning", tags: { feature: "booking-fields" }, extra: { organizationId, code: fieldsError.code } });
+  }
+  // SCRUM-617: a caller's booking names everything missing — the last name with the rest — in one go.
+  const callerBooking = !internal?.ownerBooking && !internal?.rescheduleLeg && !fieldsError;
 
   const fields = ((assistant as any)?.prompt_config?.fields || []) as any[];
   const firstNameField = fields.find((f: any) => f.id === "first_name");
@@ -1079,7 +1099,7 @@ export async function handleBookAppointment(
 
   // SCRUM-602: the business's own rule, for the receptionist's callers AND the owner's
   // bookings (the owner handler asks before its read-back; this is the backstop).
-  if (lastNameField?.required && !lastName) {
+  if (lastNameField?.required && !lastName && !callerBooking) {
     return {
       success: false,
       message: "I also need your last name to complete the booking. What is your last name?",
@@ -1090,6 +1110,55 @@ export async function handleBookAppointment(
       success: false,
       message: "I need your first name to complete the booking. What is your first name?",
     };
+  }
+
+  // SCRUM-617: everything ELSE this business requires (an address, the reason for the call,
+  // an email…), checked here — never left to the model. The booking tool told the model
+  // "first name, last name and the time" for every business, and a caller was booked without
+  // the address and reason the owner had turned on (28 Oct). The owner's assistant checks
+  // its own before its read-back (SCRUM-602), and moving an existing booking (a reschedule
+  // leg) carries what the original collected — neither is held to it here.
+  let detailLines: string[] = [];
+  if (!internal?.ownerBooking && !internal?.rescheduleLeg) {
+    // On a fields read fault nothing is required, but the details the caller gave still reach the note.
+    // A fields read fault books as before (the rules are off): what can't be read is left out, never refused.
+    const check = callerBookingDetails(fieldsError ? [] : normalizeBookingFields(fields), { lastName, email, details: args.details }, { lenient: Boolean(fieldsError) });
+    if ("problem" in check) {
+      return {
+        success: false,
+        message:
+          check.problem === "too_long"
+            ? "That's too much detail for one booking. Keep each detail to a few words, then call book_appointment again."
+            : check.problem === "value_too_long"
+              ? `The ${check.label.toLowerCase()} is too long for the booking. Keep it to a few words, then call book_appointment again.`
+              : 'I couldn\'t read the details. Pass them as "Label: value; Label: value", using the labels in DATA COLLECTION, then call book_appointment again.',
+      };
+    }
+    if (!("problem" in check) && check.missing.length > 0) {
+      const named = check.missing.map((f) =>
+        f.id === "last_name" ? "the caller's last name" : f.id === "email_address" ? "the caller's email address" : `the ${f.label.toLowerCase()}${f.hint ? ` (${f.hint})` : ""}`
+      );
+      const others = check.missing.filter((f) => f.id !== "email_address" && f.id !== "last_name");
+      const where = [
+        ...(check.missing.some((f) => f.id === "last_name") ? ["the last name in last_name"] : []),
+        ...(check.missing.some((f) => f.id === "email_address") ? ["the email in email"] : []),
+        ...(others.length ? [`${others.length < check.missing.length ? "the rest" : "them"} in details ("${others.map((f) => `${f.label}: …`).join("; ")}")`] : []),
+      ];
+      // Never "booked", "confirmed" or "confirmation" in a refusal: the voice server's older
+      // pipelines read those words as a booking (SCRUM-617 review) — this isn't one.
+      return {
+        success: false,
+        message:
+          `Can't book this yet: this business's bookings also need ${listWords(named)}. ` +
+          `Ask the caller for ${check.missing.length === 1 ? "it" : "them"} in one question — use anything they've already told you (like why they're calling) instead of asking again; if they have none (no insurer, say), "none" is an answer — ` +
+          `then call book_appointment again with ${listWords(where)}.`,
+        data: { missing_fields: check.missing.map((f) => ({ id: f.id, label: f.label })) },
+      };
+    }
+    if (!("problem" in check)) {
+      detailLines = check.lines;
+      email = check.email ?? undefined;
+    }
   }
 
   if (!phone) {
@@ -1117,7 +1186,17 @@ export async function handleBookAppointment(
   }
 
   const sanitizedName = sanitizeString(name, 100);
-  const sanitizedNotes = notes ? sanitizeString(notes, 500) : undefined;
+  // The caller's note, then each detail on its own line (the dashboard shows the note). The
+  // diary keeps 500 characters — a detail the business requires is never cut off the end.
+  const callerNote = notes ? sanitizeString(notes, 500) : "";
+  const combinedNotes = [callerNote, ...detailLines].filter(Boolean).join("\n");
+  if (detailLines.length > 0 && combinedNotes.length > 500) {
+    return {
+      success: false,
+      message: "That's too much detail for one booking's note. Keep the note and each detail to a few words, then call book_appointment again.",
+    };
+  }
+  const sanitizedNotes = combinedNotes || undefined;
 
   // ── Validate service_type_id format before DB query ────────────────────
   if (service_type_id && !isValidUUID(service_type_id)) {

@@ -53,12 +53,40 @@ const OWNER_PIPELINES = new Set(["classic", "gemini-live"]);
  * @param {string} [globalPipeline]
  * @returns {string}
  */
-function resolveOwnerPipeline(ownerRaw = process.env.OWNER_PIPELINE, globalPipeline = process.env.VOICE_PIPELINE || "classic") {
+function resolveOwnerPipeline(ownerRaw = process.env.OWNER_PIPELINE, globalPipeline = process.env.VOICE_PIPELINE || "classic", env = process.env) {
   const v = String(ownerRaw || "").trim();
-  if (!v) return globalPipeline;
-  if (OWNER_PIPELINES.has(v)) return v;
-  console.warn(`[Pipeline] OWNER_PIPELINE="${v}" is not a known pipeline (${[...OWNER_PIPELINES].join(", ")}) — owner calls use ${globalPipeline}`);
-  return globalPipeline;
+  let pipeline = globalPipeline;
+  if (OWNER_PIPELINES.has(v)) pipeline = v;
+  else if (v) console.warn(`[Pipeline] OWNER_PIPELINE="${v}" is not a known pipeline (${[...OWNER_PIPELINES].join(", ")}) — owner calls use ${globalPipeline}`);
+  // SCRUM-618: classic that can't reach Claude would apologise on every owner turn —
+  // Gemini instead, paged once (while Gemini is there to fall back to).
+  if (pipeline === "classic" && env.GEMINI_API_KEY) {
+    const problem = ownerClassicProblem(env);
+    if (problem) {
+      if (!ownerClassicWarned) {
+        ownerClassicWarned = true;
+        console.error(`[ALERT:error] [Pipeline] owner calls can't run on classic (${problem}) — they use gemini-live until it's fixed`);
+      }
+      return "gemini-live";
+    }
+  }
+  return pipeline;
+}
+
+/** The owner-on-classic fallback is paged once per process, not once per call. */
+let ownerClassicWarned = false;
+
+/**
+ * SCRUM-618: why the owner assistant can't run on classic now, or null. Only when
+ * classic runs Claude (LLM_PROVIDER=anthropic): the gateway's key, a model it takes
+ * (LLM_MODEL, else Haiku 5.5) and no standing refusal — what fastPathProblem checks
+ * for the fast path.
+ * @param {Record<string, string|undefined>} [env]
+ * @returns {string | null}
+ */
+function ownerClassicProblem(env = process.env) {
+  if ((env.LLM_PROVIDER || "openai") !== "anthropic") return null;
+  return gatewayProblem(env) ?? gatewayModelProblem(env.LLM_MODEL || "claude-haiku-5-5", env) ?? gatewayRefusal();
 }
 
 /**
@@ -168,7 +196,13 @@ module.exports = {
   normNumber,
   KNOWN_TEST_PIPELINES,
   resolveOwnerPipeline,
+  ownerClassicProblem,
   OWNER_PIPELINES,
+  _test: {
+    resetOwnerClassicWarned() {
+      ownerClassicWarned = false;
+    },
+  },
   resolveCallPipeline,
   readDemoLinePipeline,
   DEMO_LINE_PIPELINES,

@@ -156,7 +156,7 @@ const calendarToolDefinitions = [
     function: {
       name: "book_appointment",
       description:
-        "Executes the actual booking in the database. You MUST call this function to secure a time slot — it is IMPOSSIBLE to book an appointment without calling this tool. Do NOT verbally confirm a booking to the caller until this tool returns a success response. Collect first name, last name, and datetime BEFORE calling. The phone number defaults to the number the caller is calling from (caller ID) — do NOT ask the caller for a phone number unless they want to be reached on a DIFFERENT number.",
+        "Executes the actual booking in the database. You MUST call this function to secure a time slot — it is IMPOSSIBLE to book an appointment without calling this tool. Do NOT verbally confirm a booking to the caller until this tool returns a success response. BEFORE calling, have the datetime and everything DATA COLLECTION marks as required for THIS business — it differs per business: the name, and any other required item such as an address or the reason for calling — using what the caller already told you instead of asking again; pass the other items in details. If this tool answers that something is still missing, ask for exactly that and call again. The phone number defaults to the number the caller is calling from (caller ID): when DATA COLLECTION requires a phone number, read that number back and ask if it's the best one to reach them (pass a different one if they give it); otherwise do NOT ask for a phone number.",
       parameters: {
         type: "object",
         properties: {
@@ -187,6 +187,11 @@ const calendarToolDefinitions = [
             description:
               "Any additional notes about the appointment (optional)",
           },
+          details: {
+            type: "string",
+            description:
+              "Every other item DATA COLLECTION lists that the caller gave (all the required ones), as \"Label: value; Label: value\" with the labels from DATA COLLECTION — e.g. \"Address: 12 Smith St, Wyong; Reason for Calling: leaking shower\". Not the name, phone or email: they have their own parameters.",
+          },
           service_type_id: {
             type: "string",
             description:
@@ -202,7 +207,9 @@ const calendarToolDefinitions = [
         // server-side (see applyCallerIdPhoneFallback). Keeping it required made
         // the model compulsively ask the caller for a number we already have,
         // which dead-ended bookings when the model couldn't extract it.
-        required: ["datetime", "first_name", "last_name"],
+        // SCRUM-617: nor `last_name` — whether a business needs one is its own
+        // setting (DATA COLLECTION), enforced by the booking handler.
+        required: ["datetime", "first_name"],
       },
     },
   },

@@ -106,8 +106,9 @@ describe("SCRUM-587: owner session — controller-override pins", () => {
   });
 
   it("resolveOwnerPipeline runs once per call (it warns on every call when misconfigured), in the start handler", () => {
-    // SCRUM-596: and once per browser owner session (/ws/test): two sites in all.
-    assert.equal((src.match(/resolveOwnerPipeline\(/g) || []).length, 2);
+    // SCRUM-596: and once per browser owner session (/ws/test); SCRUM-618: and the boot line.
+    assert.equal((src.match(/resolveOwnerPipeline\(/g) || []).length, 3);
+    assert.match(src, /const ownerPipelineAtBoot = resolveOwnerPipeline\(\);/);
     assert.ok(startHandler.includes("resolveOwnerPipeline()"));
     assert.match(src, /const sessionPipeline = session\.ownerMode \? resolveOwnerPipeline\(\) : VOICE_PIPELINE;/);
     // The start handler never consults the global directly any more.
@@ -331,6 +332,8 @@ async function assemblePrompts({ owner, ownerAuth, timezone }) {
       buildOwnerGreeting,
       buildOwnerGeminiSuffix,
       buildLanguageLockDirective,
+      ...require("../lib/booking-collection"), // SCRUM-617: bookingNeeds, bookingPathSteps
+      listNeeds: require("../lib/booking-collection").listWords,
       forwardingFallbackEligible,
     },
     names: ["allTools", "consentResult", "greeting", "firstMessage", "disclosureText", "geminiSystemPrompt"],

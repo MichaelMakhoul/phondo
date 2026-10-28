@@ -32,6 +32,7 @@ vi.mock("@/lib/security/rate-limiter", () => ({
 
 import { POST } from "../route";
 import {
+  handleBookAppointment,
   handleCancelAppointment,
   handleRescheduleAppointment,
   handleUpdateAppointmentDetails,
@@ -204,5 +205,40 @@ describe("cancel/reschedule call-authority threading (SCRUM-560)", () => {
 
     const call = vi.mocked(handleRescheduleAppointment).mock.calls[0];
     expect(call[3]).toEqual({ callId: CALL_ID });
+  });
+});
+
+// SCRUM-617: the business's other required fields ride in `details` — a route that dropped it
+// would refuse every booking that has them ("Not booked yet…" on every try).
+describe("book_appointment dispatch (SCRUM-617 pin)", () => {
+  it("plucks details along with the booking's own fields", async () => {
+    await post({
+      organizationId: ORG,
+      assistantId: "asst-1",
+      functionName: "book_appointment",
+      arguments: { datetime: "2027-07-01T10:00:00", first_name: "Jane", last_name: "Smith", phone: CALLER, details: "Address: 12 Smith St; Reason for Calling: leak" },
+      callId: CALL_ID,
+    });
+    expect(vi.mocked(handleBookAppointment)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handleBookAppointment).mock.calls[0][1]).toMatchObject({ details: "Address: 12 Smith St; Reason for Calling: leak", first_name: "Jane", last_name: "Smith" });
+  });
+});
+
+// Uses the file's top-level fixtures (post, ORG, CALL_ID, CALLER, handleBookAppointment).
+describe("SCRUM-617 test lens: book_appointment's exemptions never come from the model's arguments", () => {
+  it("M14: ownerBooking / rescheduleLeg / carriedRefs in arguments never reach the internal param — that is the envelope's callId, exactly", async () => {
+    await post({
+      organizationId: ORG,
+      assistantId: "asst-1",
+      functionName: "book_appointment",
+      arguments: { datetime: "2027-07-01T10:00:00", first_name: "Jane", phone: CALLER, details: "Address: 12 Smith St", ownerBooking: true, rescheduleLeg: true, carriedRefs: { service_type: true } },
+      callId: CALL_ID,
+    });
+    expect(vi.mocked(handleBookAppointment)).toHaveBeenCalledTimes(1);
+    const [, args, internal] = vi.mocked(handleBookAppointment).mock.calls[0];
+    // SCRUM-617 round 1: plus the envelope's assistantId (the answering line's fields) — still never the model's arguments.
+    expect(internal).toEqual({ callId: CALL_ID, assistantId: "asst-1" });
+    expect(args).not.toHaveProperty("ownerBooking");
+    expect(args).not.toHaveProperty("rescheduleLeg");
   });
 });

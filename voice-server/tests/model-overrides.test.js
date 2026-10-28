@@ -194,7 +194,7 @@ describe("LLM_MODEL — classic pipeline defaults per provider", () => {
     assert.equal(capture.body.model, "claude-haiku-5-5");
     assert.deepEqual(capture.body.thinking, { type: "disabled" });
     assert.equal(capture.body.temperature, undefined, "Haiku 5.5 400s on temperature (probed)");
-    assert.equal(capture.body.max_tokens, 150);
+    assert.equal(capture.body.max_tokens, 200); // SCRUM-618: as the fast path
   });
 
   it("anthropic streaming turn with tools: same knobs, stream on, tools converted", async () => {
@@ -209,7 +209,7 @@ describe("LLM_MODEL — classic pipeline defaults per provider", () => {
     assert.equal(body.stream, true);
     assert.deepEqual(body.thinking, { type: "disabled" });
     assert.equal(body.temperature, undefined);
-    assert.equal(body.max_tokens, 300);
+    assert.equal(body.max_tokens, 600); // SCRUM-618: 300 cut a multi-field tool call's JSON off
     assert.equal(body.tools[0].name, "check_availability");
   });
 
