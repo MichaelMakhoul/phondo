@@ -211,7 +211,9 @@ describe("buildOwnerPrompt — the rest of the rules the model is held to", () =
     assert.ok(p.includes("this week (the next 7 days)"));
     assert.ok(p.includes("Returns up to 20 jobs"));
     assert.ok(p.includes("Summarise the COUNT and the next 3 jobs unless asked for all."));
-    assert.ok(p.includes("pending callback requests and today's customer calls"));
+    assert.ok(p.includes("pending callback requests and TODAY's customer calls only"));
+    assert.ok(p.includes("the jobs SCHEDULED today / tomorrow / this week (the next 7 days) / on a date"));
+    assert.ok(p.includes("that are still on: not cancelled or moved jobs, not calls, and not when a booking was made."));
     assert.ok(p.includes("owner_reschedule_appointment — move ONE job to a new time."));
     assert.ok(p.includes("owner_cancel_appointment — cancel ONE job."));
     assert.ok(p.includes("end_call — hang up after the owner says goodbye."));
@@ -530,9 +532,18 @@ describe("buildOwnerPrompt — SCRUM-599: booking, blocking and marking done", (
 describe("buildOwnerPrompt — SCRUM-601: what the 27 Oct session got wrong", () => {
   const p = buildOwnerPrompt(base);
   const suffix = buildOwnerGeminiSuffix();
-  it("English unless the owner asks — said up front and in the final rule", () => {
-    assert.ok(p.includes("LANGUAGE: speak English. Switch only when the owner asks you to — never because a name, a word or a mishearing sounds like another language."));
-    assert.ok(suffix.includes("SPEAK ENGLISH unless the owner asks for another language — a name or a misheard word is never a reason to switch."));
+  it("English unless the owner asks — said up front and in the final rule, and never announced (O2 read it aloud)", () => {
+    assert.ok(p.includes("LANGUAGE: reply in English. Switch only when the owner asks you to — never because a name, a word or a mishearing sounds like another language. This is how you work, not something to announce: never mention it."));
+    assert.ok(suffix.includes("REPLY IN ENGLISH unless the owner asks for another language — and never mention this rule."));
+  });
+  // SCRUM-607: the O2 session (28 Oct) answered "this week" with "today", "did anyone call or book
+  // on Monday" with "nothing was booked", and sent the owner to the dashboard for addresses that
+  // didn't exist.
+  it("answers only what a tool result says — never a narrower question, a guessed number, or a dashboard place it hasn't seen", () => {
+    assert.ok(p.includes("ANSWER ONLY WHAT A TOOL RESULT SAYS. If the owner asks something your tools can't see — calls before today, a week's calls, bookings MADE on a day, a job's address that isn't in its note, settings — say plainly that you can't see that yet, and where in the dashboard it is (calls: Calls; bookings: Appointments; settings: Assistants)."));
+    assert.ok(p.includes("Never answer a narrower question instead (today for this week, jobs scheduled for calls or bookings made), never guess a number, and never say something is in the dashboard unless a tool result showed it exists."));
+    assert.ok(suffix.includes("ANSWER ONLY WHAT A TOOL RESULT SAYS — if your tools can't see it (calls before today, bookings made on a day, an address that isn't in a job's note), say so and where in the dashboard it is; never a narrower answer, a guessed number, or a dashboard place you haven't seen."));
+    assert.ok(p.includes("That is also where the receptionist can be set to ask callers for something new (for example their address): turn the field on there — you can't change settings from here yet."));
   });
   it("a booking's read-back says the number digit by digit, the note, and spells an unusual or corrected name", () => {
     assert.ok(p.includes("a booking's phone number DIGIT BY DIGIT in its groups — the digits the tool's message spells out, never from memory (a misheard digit is only caught here) —"));

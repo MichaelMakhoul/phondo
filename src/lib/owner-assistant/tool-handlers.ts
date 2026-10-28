@@ -138,6 +138,16 @@ const ON_A_CALL = "On a call right now";
  * stored value can carry text around them.
  */
 const NAME_MAX = 80;
+/**
+ * SCRUM-607: what each read covers, said in its result. A real session asked "did anyone
+ * call or book on Monday?" and heard "nothing was booked on Monday" (a call and the job it
+ * booked, since cancelled, never showed), and "has anyone called this week?" got today's
+ * count as the week's.
+ */
+const APPOINTMENTS_COVER =
+  "only jobs still on are listed, not cancelled or moved ones; this says nothing about calls or when bookings were made — say so if that's what the owner asked";
+const CALLS_COVER =
+  "only today's calls can be seen here, not earlier days — if the owner asked about another day, say so, and that every call is in Calls in the dashboard";
 const PHONE_MAX = 32;
 const TEXT_MAX = 240;
 
@@ -247,10 +257,14 @@ export async function handleOwnerListAppointments(
   const total = typeof count === "number" ? count : items.length;
   const payload: OwnerListAppointmentsData = { range, date: bounds.firstDate, count: total, appointments: items };
 
+  // SCRUM-607: what this list is — and isn't. A real session asked "did anyone call or
+  // book on Monday?" and heard "nothing was booked on Monday": this lists jobs SCHEDULED
+  // then, so Monday's call — and the job it booked, since cancelled — never showed.
+  // On the head line, so the list keeps one line per job (a note can't forge one).
   if (total === 0) {
-    return { success: true, message: `Nothing booked ${bounds.label}.`, data: payload as unknown as Record<string, unknown> };
+    return { success: true, message: `No jobs scheduled ${bounds.label} (${APPOINTMENTS_COVER}).`, data: payload as unknown as Record<string, unknown> };
   }
-  const head = `${total} ${total === 1 ? "job" : "jobs"} ${bounds.label}${total > items.length ? ` (first ${items.length} listed)` : ""}:`;
+  const head = `${total} ${total === 1 ? "job" : "jobs"} scheduled ${bounds.label}${total > items.length ? ` (first ${items.length} listed)` : ""} (${APPOINTMENTS_COVER}):`;
   return {
     success: true,
     message: [head, ...items.map(describeItem)].join("\n"),
@@ -349,11 +363,11 @@ export async function handleOwnerListMessages(organizationId: string, ctx?: Owne
   if (callsSaturated && callTotal === 0) {
     // Every fetched row was the owner's own: older customer calls today may exist beyond
     // the window, so say what was looked at rather than "no customer calls" or "at least 0".
-    lines.push(`No customer calls among the latest ${CALLS_FETCH_LIMIT} calls today.`);
+    lines.push(`No customer calls among the latest ${CALLS_FETCH_LIMIT} calls today (${CALLS_COVER}).`);
   } else {
     lines.push(
       `${callsSaturated ? "At least " : ""}${callTotal} customer ${callTotal === 1 ? "call" : "calls"} today` +
-        `${callTotal > customerCalls.length ? ` (newest ${customerCalls.length} listed)` : ""}${customerCalls.length ? ":" : "."}`
+        `${callTotal > customerCalls.length ? ` (newest ${customerCalls.length} listed)` : ""} (${CALLS_COVER})${customerCalls.length ? ":" : "."}`
     );
   }
   for (const c of customerCalls) {

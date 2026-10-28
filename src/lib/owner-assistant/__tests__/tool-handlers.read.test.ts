@@ -12,6 +12,10 @@ vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
 import { createAdminClient } from "@/lib/supabase/admin";
 import { OWNER_TOOL_NAMES, handleOwnerListAppointments, handleOwnerListMessages } from "../tool-handlers";
 
+// SCRUM-607: what each read covers, said in its result.
+const APPTS_COVER = "only jobs still on are listed, not cancelled or moved ones; this says nothing about calls or when bookings were made — say so if that's what the owner asked";
+const CALLS_COVER = "only today's calls can be seen here, not earlier days — if the owner asked about another day, say so, and that every call is in Calls in the dashboard";
+
 type Res = { data: unknown; error: { message?: string; code?: string } | null; count?: number | null };
 type Op = { table: string; filters: Array<{ name: string; args: unknown[] }> };
 
@@ -135,7 +139,7 @@ describe("owner_list_appointments", () => {
         status: "confirmed",
       }],
     });
-    expect(r.message).toContain("1 job tomorrow");
+    expect(r.message).toContain(`1 job scheduled tomorrow (${APPTS_COVER}):`);
     expect(r.message).toContain("Friday, October 16 at 10:00 AM: Jane Smith");
     expect(r.message).toContain("Hot water repair");
     expect(r.message).toContain(`(id ${ROW.id})`);
@@ -145,14 +149,14 @@ describe("owner_list_appointments", () => {
     db.queues.appointments = [{ data: [], error: null, count: 0 }];
     const r = await handleOwnerListAppointments(ORG, { range: "today" });
     expect(r.success).toBe(true);
-    expect(r.message).toBe("Nothing booked today.");
+    expect(r.message).toBe(`No jobs scheduled today (${APPTS_COVER}).`);
     expect((r.data as any).count).toBe(0);
   });
 
   it("notes when more than 20 are booked (count beyond the listed rows)", async () => {
     db.queues.appointments = [{ data: Array.from({ length: 20 }, (_, i) => ({ ...ROW, id: `${i}`.padStart(8, "0") + "-0000-4000-8000-000000000000" })), error: null, count: 23 }];
     const r = await handleOwnerListAppointments(ORG, { range: "this_week" });
-    expect(r.message).toContain("23 jobs over the next 7 days (first 20 listed)");
+    expect(r.message).toContain(`23 jobs scheduled over the next 7 days (first 20 listed) (${APPTS_COVER}):`);
     expect((r.data as any).count).toBe(23);
     expect((r.data as any).appointments).toHaveLength(20);
   });
@@ -193,9 +197,9 @@ describe("owner_list_appointments", () => {
   });
 
   it.each([
-    ["today", undefined, "2026-10-14T13:00:00.000Z", "2026-10-15T13:00:00.000Z", "2026-10-15", "Nothing booked today."],
-    ["this_week", undefined, "2026-10-14T13:00:00.000Z", "2026-10-21T13:00:00.000Z", "2026-10-15", "Nothing booked over the next 7 days."],
-    ["date", "2026-11-02", "2026-11-01T13:00:00.000Z", "2026-11-02T13:00:00.000Z", "2026-11-02", "Nothing booked on Monday, November 2."],
+    ["today", undefined, "2026-10-14T13:00:00.000Z", "2026-10-15T13:00:00.000Z", "2026-10-15", `No jobs scheduled today (${APPTS_COVER}).`],
+    ["this_week", undefined, "2026-10-14T13:00:00.000Z", "2026-10-21T13:00:00.000Z", "2026-10-15", `No jobs scheduled over the next 7 days (${APPTS_COVER}).`],
+    ["date", "2026-11-02", "2026-11-01T13:00:00.000Z", "2026-11-02T13:00:00.000Z", "2026-11-02", `No jobs scheduled on Monday, November 2 (${APPTS_COVER}).`],
   ])("range=%s (date %s) queries the org-local window %s → %s, soonest first", async (range, date, gte, lt, firstDate, empty) => {
     db.queues.appointments = [{ data: [], error: null, count: 0 }];
     const r = await handleOwnerListAppointments(ORG, { range, date });
@@ -321,7 +325,7 @@ describe("owner_list_appointments", () => {
     db.queues.appointments = [{ data: [ROW], error: null, count: null }];
     const r = await handleOwnerListAppointments(ORG, { range: "tomorrow" });
     expect((r.data as any).count).toBe(1);
-    expect(r.message).toContain("1 job tomorrow");
+    expect(r.message).toContain(`1 job scheduled tomorrow (${APPTS_COVER}):`);
   });
 
   it.each([
@@ -390,7 +394,7 @@ describe("owner_list_messages", () => {
     });
     expect(r.message).toContain("1 callback waiting:");
     expect(r.message).toContain("Bob");
-    expect(r.message).toContain("2 customer calls today:");
+    expect(r.message).toContain(`2 customer calls today (${CALLS_COVER}):`);
     expect(r.message).toContain("- Thursday, October 15 at 1:00 PM: Unknown caller (+61400000002) — No message — short or missed call");
     expect(r.message).not.toContain("Owner checked tomorrow");
   });
@@ -410,7 +414,7 @@ describe("owner_list_messages", () => {
     expect(filter(cq, "neq")).toEqual([["id", OWN_CALL]]);
     expect(filter(cq, "eq")).toEqual([["organization_id", ORG]]); // alongside, not instead of, the org scope
     expect((r.data as any).calls.map((c: any) => c.call_id)).toEqual(["c-1"]);
-    expect(r.message).toContain("1 customer call today:");
+    expect(r.message).toContain(`1 customer call today (${CALLS_COVER}):`);
     expect(r.message).not.toContain("+61499999999");
     expect(r.message).not.toContain("On a call right now");
   });
@@ -446,7 +450,7 @@ describe("owner_list_messages", () => {
       ["c-missed", "No message — short or missed call"],
       ["c-stuck", "Wants a quote"], // a summary always wins over a placeholder
     ]);
-    expect(r.message).toContain("3 customer calls today:");
+    expect(r.message).toContain(`3 customer calls today (${CALLS_COVER}):`);
     expect(r.message).toContain("- Thursday, October 15 at 1:58 PM: Unknown caller (+61400000021) — On a call right now");
   });
 
@@ -462,7 +466,7 @@ describe("owner_list_messages", () => {
 
     const r = await handleOwnerListMessages(ORG);
 
-    expect(r.message).toBe("0 callbacks waiting.\nNo customer calls among the latest 30 calls today.");
+    expect(r.message).toBe(`0 callbacks waiting.\nNo customer calls among the latest 30 calls today (${CALLS_COVER}).`);
     expect(r.message).not.toMatch(/at least 0/i);
     expect((r.data as any).calls).toEqual([]);
   });
@@ -594,7 +598,7 @@ describe("owner_list_messages", () => {
       customerCalls.slice(0, 10).map((c) => c.id)
     );
     // 12 with a summary + 1 without, the owner's own call left out: 13, of which 10 are read out.
-    expect(r.message).toContain("13 customer calls today (newest 10 listed):");
+    expect(r.message).toContain(`13 customer calls today (newest 10 listed) (${CALLS_COVER}):`);
   });
 
   it("a day of only missed calls is not 'no customer calls': each is listed and counted", async () => {
@@ -610,7 +614,7 @@ describe("owner_list_messages", () => {
     const r = await handleOwnerListMessages(ORG);
 
     expect(r.message).not.toMatch(/no customer calls/i);
-    expect(r.message).toContain("2 customer calls today:");
+    expect(r.message).toContain(`2 customer calls today (${CALLS_COVER}):`);
     expect((r.data as any).calls).toEqual([
       { call_id: "c-missed-1", at: "Thursday, October 15 at 1:00 PM", caller_name: null, caller_phone: "+61400000011", summary: "No message — short or missed call" },
       { call_id: "c-missed-2", at: "Thursday, October 15 at 12:00 PM", caller_name: null, caller_phone: null, summary: "No message — short or missed call" },
@@ -631,7 +635,7 @@ describe("owner_list_messages", () => {
 
     const r = await handleOwnerListMessages(ORG);
 
-    expect(r.message).toContain("At least 28 customer calls today (newest 10 listed):");
+    expect(r.message).toContain(`At least 28 customer calls today (newest 10 listed) (${CALLS_COVER}):`);
     expect((r.data as any).calls.map((c: any) => c.call_id)).toEqual(Array.from({ length: 10 }, (_, i) => `c-${i + 3}`));
   });
 
@@ -644,7 +648,7 @@ describe("owner_list_messages", () => {
       error: null,
     }];
     const r = await handleOwnerListMessages(ORG);
-    expect(r.message).toContain("\n29 customer calls today (newest 10 listed):");
+    expect(r.message).toContain(`\n29 customer calls today (newest 10 listed) (${CALLS_COVER}):`);
     expect(r.message).not.toMatch(/at least/i);
   });
 
@@ -715,14 +719,14 @@ describe("owner_list_messages", () => {
     db.queues.calls = [{ data: [], error: null }];
     const onlyCallbacks = await handleOwnerListMessages(ORG);
     expect(onlyCallbacks.message).toContain("1 callback waiting:");
-    expect(onlyCallbacks.message).toContain("0 customer calls today.");
+    expect(onlyCallbacks.message).toContain(`0 customer calls today (${CALLS_COVER}).`);
 
     db.queues.organizations = [{ data: { timezone: TZ }, error: null }];
     db.queues.callback_requests = [{ data: [], error: null }];
     db.queues.calls = [{ data: [{ id: "c-1", caller_name: "Sue", caller_phone: "+61400000003", summary: "Blocked drain", created_at: "2026-10-15T01:30:00+00:00", metadata: {} }], error: null }];
     const onlyCalls = await handleOwnerListMessages(ORG);
     expect(onlyCalls.message).toContain("0 callbacks waiting.");
-    expect(onlyCalls.message).toContain("1 customer call today:");
+    expect(onlyCalls.message).toContain(`1 customer call today (${CALLS_COVER}):`);
   });
 });
 
@@ -959,7 +963,7 @@ describe("customer-written text reaches the model flattened and capped", () => {
         ["c-ghost", "No message — short or missed call"],
         ["c-real", "Blocked drain"],
       ]);
-      expect(r.message).toContain("2 customer calls today:");
+      expect(r.message).toContain(`2 customer calls today (${CALLS_COVER}):`);
     });
 
     it("reads out the newest ten calls, a summary-less one included, and counts the rest", async () => {
@@ -975,7 +979,7 @@ describe("customer-written text reaches the model flattened and capped", () => {
       const r = await handleOwnerListMessages(ORG);
 
       expect((r.data as any).calls.map((c: any) => c.call_id)).toEqual(["c-ghost", ...Array.from({ length: 9 }, (_, i) => `c-${i + 1}`)]);
-      expect(r.message).toContain("12 customer calls today (newest 10 listed):");
+      expect(r.message).toContain(`12 customer calls today (newest 10 listed) (${CALLS_COVER}):`);
     });
 
     it("shows a caller with no printable name or number as null in data and an unknown caller in the message", async () => {
@@ -1058,5 +1062,19 @@ describe("SCRUM-598 (test lens): owner_list_messages", () => {
     const r = await handleOwnerListMessages(ORG);
     expect((r.data as any).calls.map((c: any) => c.call_id)).toEqual(["c-1"]);
     expect(r.message).not.toContain("Called to confirm Thursday");
+  });
+});
+
+// SCRUM-607: the O2 session (28 Oct) heard "nothing was booked on Monday" when a customer had
+// called Monday and booked a job (since cancelled), and "no one has called today" for "this
+// week". Each read now says what it covers — on its head line, so the list keeps one line per item.
+describe("SCRUM-607: each read says what it covers", () => {
+  it("the jobs list says it shows only jobs still on, and nothing about calls or when bookings were made", () => {
+    expect(APPTS_COVER).toBe("only jobs still on are listed, not cancelled or moved ones; this says nothing about calls or when bookings were made — say so if that's what the owner asked");
+    expect(APPTS_COVER.includes("\n")).toBe(false);
+  });
+  it("the messages say only today's calls can be seen, and where every call is", () => {
+    expect(CALLS_COVER).toBe("only today's calls can be seen here, not earlier days — if the owner asked about another day, say so, and that every call is in Calls in the dashboard");
+    expect(CALLS_COVER.includes("\n")).toBe(false);
   });
 });
