@@ -167,3 +167,29 @@ describe("ownerDiaryProvider routes as handleBookAppointment does — and a look
     expect(errors).toHaveBeenCalledTimes(2);
   });
 });
+
+// ─── SCRUM-602 test lens, round 2b (independent mutants at 33e5f2e2): killer for what the suite let through ───
+// APPEND TO: src/lib/calendar/__tests__/owner-booking.test.ts (at the end of the file —
+// `cat killers-r2b-calendar.txt >> …`). Uses the file's top-level fixtures (fakeAdmin, createAdminClient,
+// handleBookAppointment, ARGS, ORG, OWNER_CALL, inserts). Passes on the real code.
+describe("SCRUM-602 test lens round 2b: a caller-fields read fault on the booking path is said, not swallowed", () => {
+  it("Z02: the booking still goes through without the name rules (fail-open, as before) AND console.error names the fault", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const real = fakeAdmin();
+    vi.mocked(createAdminClient).mockReturnValue({
+      from: (table: string) => {
+        const b = real.from(table);
+        if (table === "assistants") b.maybeSingle = async () => ({ data: null, error: { code: "57014" } });
+        return b;
+      },
+    } as never);
+    const firstOnly = { datetime: ARGS.datetime, first_name: ARGS.first_name, phone: ARGS.phone };
+    const r = await handleBookAppointment(ORG, firstOnly, { callId: OWNER_CALL, ownerBooking: true });
+    expect(r.success).toBe(true);
+    expect(inserts).toHaveLength(1);
+    const said = errors.mock.calls.filter((c) => String(c[0]).includes("caller fields read failed"));
+    expect(said).toHaveLength(1);
+    expect(said[0][1]).toEqual({ organizationId: ORG, code: "57014" });
+    errors.mockRestore();
+  });
+});

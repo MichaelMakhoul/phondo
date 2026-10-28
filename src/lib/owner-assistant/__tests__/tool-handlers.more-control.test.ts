@@ -1373,3 +1373,29 @@ describe("SCRUM-602 test lens round 2: killers for the surviving mutants", () =>
     expect(valuesOf(r)).toEqual(["12 Smith St", "leaking tap", "today"]);
   });
 });
+
+// ─── SCRUM-602 test lens, round 2b (independent mutants at 33e5f2e2): killer for what the suite let through ───
+// APPEND TO: src/lib/owner-assistant/__tests__/tool-handlers.more-control.test.ts (at the end of the
+// file — `cat killers-r2b-website.txt >> …`). Uses the file's top-level fixtures (db, BOOK, ORG, ctx);
+// the SCRUM-602 block's small helpers are redefined here with the same shapes. Passes on the real code.
+describe("SCRUM-602 test lens round 2b: the details cap is 'over 600 normalised characters', not 'at'", () => {
+  const F = (id: string, label: string, required: boolean, verification = "repeat-confirm") => ({ id, label, required, verification, type: "text", category: "universal" });
+  const NAME_FIELDS = (lastRequired: boolean) => [F("first_name", "First Name", true), F("last_name", "Last Name", lastRequired), F("phone_number", "Phone Number", true, "read-back-digits"), F("email_address", "Email Address", false, "spell-out")];
+  const TRADIE = [...NAME_FIELDS(false), F("service_address", "Service Address", true), F("problem_description", "Problem Description", true), F("urgency_level", "Urgency Level", true)];
+  const configured = (fields: unknown[]) => { db.queues.assistants = [{ data: { prompt_config: { fields } }, error: null }]; };
+  const bookArgs = (customer_name: string, extra: Record<string, unknown> = {}) => ({ ...BOOK, customer_name, notes: "Hot water unit leaking", ...extra });
+
+  it("Y02: details of exactly 600 characters pass the details cap (and land on the job-note cap, named by its longest part); 601 are 'too much detail'", async () => {
+    // "service address=" (16) + 290 + "; " (2) + "problem description=" (20) + 251 + "; " (2) + "urgency level=" (14) + 5 = 600
+    const details = (a: number) => `service address=${"a".repeat(a)}; problem description=${"b".repeat(251)}; urgency level=today`;
+    configured(TRADIE);
+    const at = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: details(290) }), ctx);
+    expect(at.data).toMatchObject({ outcome: "invalid_details" });
+    // 22 (the note) + 1 + 17 + 290 + 1 + 21 + 251 + 1 + 15 + 5 = 624 → 124 over ≈ 21 words
+    expect(at.message).toBe("That's too much for the job's note — about 21 words over; the service address is the longest part. Ask the owner to shorten it, then call again.");
+    configured(TRADIE);
+    db.queues.organizations = [AU_ORG];
+    const over = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: details(291) }), ctx);
+    expect(over.message).toBe("That's too much detail for one booking — keep each detail short (about 100 words in all).");
+  });
+});
