@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
 vi.mock("@/lib/stripe/billing-service", () => ({ getSubscriptionInfo: vi.fn() }));
-vi.mock("@sentry/nextjs", () => ({ captureMessage: vi.fn() }));
+vi.mock("@sentry/nextjs", () => ({ captureMessage: vi.fn(), captureException: vi.fn() }));
 vi.mock("@/lib/notifications/notification-service", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/notifications/notification-service")>();
   return { NotificationDeliveryError: actual.NotificationDeliveryError, sendPlanUsageAlertNotification: vi.fn(async () => "sent") };
@@ -60,8 +60,8 @@ function fakeAdmin() {
 }
 /** The subscription; `callsUsed` is the billing counter — the checker reads this period's calls instead. */
 const sub = (extra: Record<string, unknown> = {}) => ({ plan: "starter", status: "active", callsLimit: 150, callsUsed: 0, currentPeriodStart: START, currentPeriodEnd: END, cancelAtPeriodEnd: false, trialEnd: null, ...extra });
-/** this period's counted calls, then run the check */
-const withCalls = (n: number, extra: Record<string, unknown> = {}) => { callsCount = n; vi.mocked(getSubscriptionInfo).mockResolvedValue(sub(extra) as any); };
+/** this period's counted calls (the billing counter agrees unless a test says otherwise), then run the check */
+const withCalls = (n: number, extra: Record<string, unknown> = {}) => { callsCount = n; vi.mocked(getSubscriptionInfo).mockResolvedValue(sub({ callsUsed: n, ...extra }) as any); };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -77,15 +77,20 @@ beforeEach(() => {
 
 describe("checkPlanUsageAlert (SCRUM-608)", () => {
   it("reads THIS period's counted calls for the org — customer calls and owner chats alike (usage_counted)", async () => {
-    withCalls(10);
+    withCalls(188);
     await checkPlanUsageAlert(ORG);
     expect(callsFilters).toEqual([["select", { count: "exact", head: true }], ["eq:organization_id", ORG], ["eq:usage_counted", true], ["gte:created_at", START.toISOString()]]);
   });
 
-  it("under 125% does nothing — no ledger write, no email", async () => {
+  it("under 125% does nothing — no ledger write, no email, and no count at all while the billing counter is under", async () => {
     withCalls(187); // 124.7%
     expect(await checkPlanUsageAlert(ORG)).toBeNull();
     expect(ops).toEqual([]);
+    expect(callsFilters).toEqual([]);
+    expect(sendPlanUsageAlertNotification).not.toHaveBeenCalled();
+    // The counter over but this period's calls under (the reset landed before the period moved): nothing.
+    withCalls(100, { callsUsed: 200 });
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
     expect(sendPlanUsageAlertNotification).not.toHaveBeenCalled();
   });
 
@@ -173,6 +178,24 @@ describe("checkPlanUsageAlert (SCRUM-608)", () => {
     expect(JSON.stringify(logged.mock.calls)).not.toContain("0 channels");
   });
 
+  it("a send that THREW something else (a bug, an outage) releases the claim and reports the fault in full", async () => {
+    const Sentry = await import("@sentry/nextjs");
+    withCalls(188);
+    vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(new TypeError("cannot read x of undefined"));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
+    expect(ops.at(-1)).toMatchObject({ op: "delete", match: { period_key: "125:2026-10-20" } });
+    expect(JSON.stringify(logged.mock.calls)).toContain("cannot read x of undefined");
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it("an expired trial (still 'trialing', trial over) gets nothing", async () => {
+    withCalls(188, { status: "trialing", trialEnd: new Date(Date.now() - 60_000) });
+    expect(await checkPlanUsageAlert(ORG)).toBeNull();
+    withCalls(188, { status: "trialing", trialEnd: new Date(Date.now() + 86_400_000) });
+    expect(await checkPlanUsageAlert(ORG)).toBe(125);
+  });
+
   it("a ledger fault (not a duplicate) sends nothing — skip rather than risk a double", async () => {
     withCalls(188);
     insertError = { code: "57014" };
@@ -208,5 +231,7 @@ describe("checkPlanUsageAlert (SCRUM-608)", () => {
     vi.mocked(getSubscriptionInfo).mockRejectedValue(new Error("db down"));
     await expect(checkPlanUsageAlert(ORG)).resolves.toBeNull();
     expect(sendPlanUsageAlertNotification).not.toHaveBeenCalled();
+    const Sentry = await import("@sentry/nextjs");
+    expect(Sentry.captureException).toHaveBeenCalled();
   });
 });

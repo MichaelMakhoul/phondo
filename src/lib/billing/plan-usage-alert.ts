@@ -78,20 +78,32 @@ async function countedCallsSince(supabase: any, organizationId: string, since: D
   return count;
 }
 
+/** A fault that isn't a delivery result: logged in full and sent to Sentry (a lasting one would stop the alerts). */
+function reportFault(where: string, organizationId: string, err: unknown): void {
+  console.error(`[PlanUsageAlert] ${where}:`, { organizationId, error: err instanceof Error ? err.message : String(err) });
+  Sentry.captureException(err, { tags: { feature: "plan-usage-alert" }, extra: { organizationId, where } });
+}
+
 /**
  * After a call's usage was counted: email the owner (and at 150% the team) the first
  * time this billing period the business passes 125% or 150% of its plan's calls.
  * Never throws — it runs after the response; every fault is logged. (A call counted
- * without a call row — the rare no-callId path — doesn't trigger it; the next counted
- * call reads the whole period and catches up.)
+ * without a call row — the rare no-callId path — isn't in the period's count.)
  * @returns the level emailed, or null when nothing was sent
  */
 export async function checkPlanUsageAlert(organizationId: string): Promise<PlanUsageAlertLevel | null> {
   try {
     const sub = await getSubscriptionInfo(organizationId);
     if (!sub || sub.callsLimit <= 0) return null; // no subscription, or unlimited (agency plans)
-    // A lapsed or past-due account hears from billing already; this is for paying and trial accounts.
+    // A lapsed or past-due account hears from billing already; this is for paying and trial accounts
+    // (not a trial that has run out — calls are blocked there, as canMakeCall does).
     if (sub.status !== "active" && sub.status !== "trialing") return null;
+    if (sub.status === "trialing" && sub.trialEnd && sub.trialEnd.getTime() < Date.now()) return null;
+    // The billing counter first, as a cheap gate: it is never below this period's count
+    // (bar the few calls of the renewal gap), so under 125% there is nothing to count. It
+    // also stops a false alert when the reset lands BEFORE the period moves (the count
+    // would still start from the old period).
+    if (sub.callsUsed < sub.callsLimit * LEVELS[LEVELS.length - 1].ratio) return null;
     if (Number.isNaN(sub.currentPeriodStart.getTime())) {
       console.warn("[PlanUsageAlert] subscription has no billing period start — skipping:", { organizationId });
       return null;
@@ -122,24 +134,30 @@ export async function checkPlanUsageAlert(organizationId: string): Promise<PlanU
         trial: sub.status === "trialing",
       });
     } catch (err) {
-      const failure = err instanceof NotificationDeliveryError ? err : null;
-      const delivered = (failure?.deliveredCount ?? 0) > 0;
+      if (!(err instanceof NotificationDeliveryError)) {
+        // A bug or an outage, not a delivery result: release, and say what it was.
+        for (const k of keys) await release(supabase, organizationId, k);
+        reportFault("send threw", organizationId, err);
+        return null;
+      }
+      const failure = err;
+      const delivered = failure.deliveredCount > 0;
       // No address to send to (no owner email, and no team one): retrying on every
       // counted call would only repeat this — the period's alert is spent.
-      const noAddress = failure?.permanent === true && failure.permanentCause === "org-config";
+      const noAddress = failure.permanent === true && failure.permanentCause === "org-config";
       if (delivered || noAddress) {
         if (delivered) for (const k of keys) await confirm(supabase, organizationId, k);
       } else {
         for (const k of keys) await release(supabase, organizationId, k); // nothing went out — the next counted call retries
       }
       // Never the error's text: a missing-credential error carries the address it was for.
-      console.error("[PlanUsageAlert] send failed:", { organizationId, level: crossed.level, delivered, permanent: failure?.permanent ?? null, permanentCause: failure?.permanentCause ?? null });
+      console.error("[PlanUsageAlert] send failed:", { organizationId, level: crossed.level, delivered, permanent: failure.permanent, permanentCause: failure.permanentCause });
       return null;
     }
     if (result === "sent") for (const k of keys) await confirm(supabase, organizationId, k);
     return result === "sent" ? crossed.level : null;
   } catch (err) {
-    console.error("[PlanUsageAlert] check failed:", { organizationId, error: err instanceof Error ? err.name : "unknown" });
+    reportFault("check failed", organizationId, err);
     return null;
   }
 }
