@@ -630,10 +630,12 @@ describe("/ws/test setup: the owner block, run for real", () => {
 describe("/ws/test classic speech recognition on an owner session, run for real", () => {
   const STT_CALLBACKS = sliceInHandler("onTranscript: ({ transcript, isFinal }) => {", "\n      }, { industry: session.organization?.industry });");
 
-  /** what reached the barge-in check (SCRUM-618) */
+  /** what reached the barge-in check, and what it answers (SCRUM-618) */
   let bargeIns = [];
-  function makeStt(session) {
+  let bargeInSays = false;
+  function makeStt(session, { bargesIn = false } = {}) {
     bargeIns = [];
+    bargeInSays = bargesIn;
     const calls = [];
     const lines = [];
     const ws = fakeWs();
@@ -645,13 +647,27 @@ describe("/ws/test classic speech recognition on an owner session, run for real"
       noteOwnerSpeech,
       logTranscript: () => {},
       handleTestUserSpeech: (s, w, text) => calls.push(["turn", text]),
-      ownerWebBargeIn: (s, w, text) => { bargeIns.push(text); return false; }, // SCRUM-618
+      ownerWebBargeIn: (s, w, text) => { bargeIns.push(text); return bargeInSays; }, // SCRUM-618
+      forgetOwnerReadBacks: (s) => calls.push(["forgetOwnerReadBacks"]),
       cleaningUp: false,
       OWNER_WEB_PROBLEM_MESSAGE: "<owner problem>",
       console: recordingConsole(lines),
     });
     return { cbs: h.cbs, setCleaningUp: h.setCleaningUp, calls, lines, ws };
   }
+
+  // SCRUM-618: every transcript is offered to the barge-in check; one that barges in forgets the
+  // pending read-backs (a cut-off read-back confirms nothing — code lens, round 2).
+  it("each transcript — interim or final — goes to the barge-in check; a barge-in forgets the pending read-backs", () => {
+    const s = ownerSession();
+    const quiet = makeStt(s);
+    quiet.cbs.onTranscript({ transcript: "what about", isFinal: false });
+    assert.deepEqual(bargeIns, ["what about"]);
+    assert.ok(!quiet.calls.some((c) => c[0] === "forgetOwnerReadBacks"));
+    const loud = makeStt(s, { bargesIn: true });
+    loud.cbs.onTranscript({ transcript: "no stop that", isFinal: false });
+    assert.deepEqual(loud.calls.filter((c) => c[0] === "forgetOwnerReadBacks"), [["forgetOwnerReadBacks"]]);
+  });
 
   it("the owner's speech is stamped on a final transcript, never an interim one (as on the phone line), and the final starts a turn", () => {
     const s = ownerSession();

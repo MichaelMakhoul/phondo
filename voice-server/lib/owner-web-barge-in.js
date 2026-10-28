@@ -10,19 +10,22 @@ const STOP_WORDS_RE = /^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse
 
 /**
  * Notes audio sent to the owner's browser: it plays in real time (8 kHz μ-law,
- * 8 bytes a millisecond) after whatever was already queued.
- * @param {{ webAudioUntil?: number }} session
+ * 8 bytes a millisecond) after whatever was already queued — and whose turn it is.
+ * @param {{ webAudioUntil?: number, webAudioTurn?: number }} session
  * @param {number} bytes
+ * @param {number} turn - the turn the audio belongs to
  * @param {number} [now]
  */
-function noteOwnerWebAudio(session, bytes, now = Date.now()) {
+function noteOwnerWebAudio(session, bytes, turn, now = Date.now()) {
   session.webAudioUntil = Math.max(now, session.webAudioUntil || 0) + Math.round(bytes / 8);
+  session.webAudioTurn = turn;
 }
 
 /**
- * The owner spoke while the reply was still playing: the browser drops it, and this
- * turn is marked barged in (session.webBargeInSeq = the turn's number).
- * @param {{ webAudioUntil?: number, webTurnSeq?: number, webBargeInSeq?: number }} session
+ * The owner spoke while the reply was still playing: the browser drops it, and the turn
+ * the playing audio belongs to is marked barged in (session.webBargeInSeq) — never a newer
+ * turn that is still thinking, whose reply the owner hasn't heard a word of.
+ * @param {{ webAudioUntil?: number, webAudioTurn?: number, webTurnSeq?: number, webBargeInSeq?: number }} session
  * @param {{ readyState: number, send: (data: string) => void }} ws
  * @param {string} transcript - what the owner has said so far (a partial counts)
  * @param {number} [now]
@@ -32,7 +35,7 @@ function ownerWebBargeIn(session, ws, transcript, now = Date.now()) {
   if (!(now < (session.webAudioUntil || 0))) return false; // nothing is playing
   const said = String(transcript || "").trim();
   if (!said || (said.split(/\s+/).length <= 2 && !STOP_WORDS_RE.test(said))) return false;
-  session.webBargeInSeq = session.webTurnSeq || 0;
+  session.webBargeInSeq = session.webAudioTurn ?? session.webTurnSeq ?? 0;
   session.webAudioUntil = 0;
   if (ws.readyState === 1) ws.send(JSON.stringify({ type: "clear" })); // 1 = WebSocket.OPEN
   return true;

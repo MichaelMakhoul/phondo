@@ -31,7 +31,7 @@ const { createGeminiSession, GEMINI_MODEL } = require("./services/gemini-live");
 const { createOpenAIRealtimeSession, createGrokRealtimeSession, resolveOpenAIRealtimeModel } = require("./services/openai-realtime"); // SCRUM-378 eval spike (OpenAI + Grok share the adapter)
 const { createSessionWithFailover, isFailoverEnabled } = require("./services/gemini-failover"); // SCRUM-535
 const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline, resolveCallPipeline, fastPathKeysPresent } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override; SCRUM-587 OWNER_PIPELINE; SCRUM-594 DEMO_LINE_PIPELINE
-const { describeGateway: describeAnthropicGateway, gatewayKeyName } = require("./lib/anthropic-gateway"); // SCRUM-594: ANTHROPIC_GATEWAY
+const { describeGateway: describeAnthropicGateway, gatewayProblem } = require("./lib/anthropic-gateway"); // SCRUM-594: ANTHROPIC_GATEWAY
 const { noteOwnerWebAudio, ownerWebBargeIn } = require("./lib/owner-web-barge-in"); // SCRUM-618: the owner talking over the bubble's reply
 const { checkEndCallGuard } = require("./lib/end-call-guard"); // SCRUM-594: the SCRUM-373 end_call guard for the classic pipeline
 const { checkBookingGuards, fastCancelGate, checkCallerDone, withBookedName, noteNameCorrection, forgetCancelledBooking, noteBookingGuardCap, CANCEL_KEPT_NUDGE } = require("./lib/booking-guards"); // SCRUM-594 PHASE 2: the fast path's booking guards
@@ -169,7 +169,7 @@ const { mintStreamToken, verifyStreamToken, withoutOwnerAccess } = require("./li
 // bypasses the customer guards, and the turn clock its confirmation gate reads.
 const { buildOwnerPrompt, buildOwnerGreeting, buildOwnerGeminiSuffix } = require("./lib/owner-prompt");
 const { buildOwnerTools, OWNER_CHANGE_TOOL_NAMES } = require("./lib/owner-tools");
-const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, ownerResultSucceeded, OWNER_MAX_TOOL_ROUNDS } = require("./lib/owner-tool-runner");
+const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, ownerResultSucceeded, OWNER_MAX_TOOL_ROUNDS, forgetOwnerReadBacks } = require("./lib/owner-tool-runner"); // SCRUM-618: forgetOwnerReadBacks — a cut-off read-back confirms nothing
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("./lib/owner-turn-stamps");
 const { OWNER_WEB_MAX_SESSION_MS, OWNER_WEB_RECORD_METADATA, OWNER_WEB_PROBLEM_MESSAGE, isOwnerWebToken, ownerWebCallSid, buildOwnerWebPrompt, createOwnerTokenLedger, createOwnerWebSessions, finishOwnerWebSession } = require("./lib/owner-web-session"); // SCRUM-596: the owner assistant in the dashboard
 const { createOwnerTranscriber } = require("./lib/owner-transcript"); // SCRUM-597: the owner's lines in a browser session, from Deepgram
@@ -187,11 +187,13 @@ const { DEBUG_TRANSCRIPTS, logTranscript, logToolCall } = require("./lib/log-tra
 // Validate required env vars before deriving any constants
 // LLM API key env var depends on provider
 const LLM_KEY_MAP = { openai: "OPENAI_API_KEY", gemini: "GEMINI_API_KEY", anthropic: "ANTHROPIC_API_KEY" };
-// SCRUM-618: classic's Claude goes through the gateway, whose key is OPENROUTER_API_KEY on OpenRouter.
-const llmKeyEnv = LLM_PROVIDER === "anthropic" ? gatewayKeyName() : LLM_KEY_MAP[LLM_PROVIDER] || "ANTHROPIC_API_KEY";
+// SCRUM-618: classic's Claude goes through the gateway — its key isn't a boot requirement
+// (a missing key or a gateway typo would crash-loop every line); it pages at boot instead,
+// and owner calls fall back to Gemini (resolveOwnerPipeline).
+const llmKeyEnv = LLM_PROVIDER === "anthropic" ? null : LLM_KEY_MAP[LLM_PROVIDER] || "ANTHROPIC_API_KEY";
 const REQUIRED_ENV = [
   "DEEPGRAM_API_KEY",
-  llmKeyEnv,
+  ...(llmKeyEnv ? [llmKeyEnv] : []),
   "PUBLIC_URL",
   "SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
@@ -4169,6 +4171,7 @@ const FAST_MAX_MESSAGES = 201;
  */
 function applyOwnerSessionSettings(session) {
   session.maxMessages = FAST_MAX_MESSAGES;
+  session.language = "en"; // the fillers and canned lines (troubleRepeat, goodbye) too
   if (session.deepgramVoice && !/-en$/.test(session.deepgramVoice)) session.deepgramVoice = ENGLISH_FALLBACK_VOICE;
 }
 /**
@@ -5134,12 +5137,15 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
     if (session.ownerMode && !fastTurn && ++session.ownerTurnFailureStreak >= 2) {
       session.callFailed = true;
       console.error(`[ALERT:error] [OwnerPin] owner call ended: ${session.ownerTurnFailureStreak} turns failed in a row (callSid=${session.callSid}, org=${session.organizationId})`);
+      // A change made in this turn is said first (SF5) — "ring back" alone invites a duplicate.
+      const line = lastOwnerTool ? `${ownerToolLoopReply(session, lastOwnerTool)} ${OWNER_PHONE_PROBLEM_LINE}` : OWNER_PHONE_PROBLEM_LINE;
+      let playedUntil = Date.now();
       try {
-        const ms = await sendTTS(session, twilioWs, OWNER_PHONE_PROBLEM_LINE, undefined, NOT_A_REPLY);
-        await hangUpAfterEndCall(session, twilioWs, Date.now() + ms, "owner-turns-failed");
-      } catch (endErr) {
-        console.error(`[OwnerPin] Ending the failing owner call failed (callSid=${session.callSid}):`, endErr);
+        playedUntil += await sendTTS(session, twilioWs, line, undefined, NOT_A_REPLY);
+      } catch (ttsErr) {
+        console.error(`[OwnerPin] The problem line couldn't be played — hanging up anyway (callSid=${session.callSid}):`, ttsErr);
       }
+      await hangUpAfterEndCall(session, twilioWs, playedUntil, "owner-turns-failed"); // never throws
       return;
     }
     try {
@@ -7897,6 +7903,7 @@ testWss.on("connection", (ws, req) => {
           }
           // SCRUM-618: the owner talking over the reply stops it, as on Gemini.
           if (session?.ownerMode && ownerWebBargeIn(session, ws, transcript)) {
+            forgetOwnerReadBacks(session); // a read-back cut off wasn't heard: any "yes" gets a fresh one
             console.log(`[OwnerWeb] Barge-in: the owner spoke over the reply — playback stopped (callSid=${session.callSid})`);
           }
           if (!isFinal) return;
@@ -8141,7 +8148,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: "speaking", speaking: true }));
               ws.send(audioBuffer);
-              if (session?.ownerMode) noteOwnerWebAudio(session, audioBuffer.length);
+              if (session?.ownerMode) noteOwnerWebAudio(session, audioBuffer.length, turnSeq);
             }
             turnAudioBytes += audioBuffer.length;
             // SCRUM-596: a reply sentence reached the owner, so this turn produced speech.
@@ -8157,8 +8164,8 @@ async function handleTestUserSpeech(session, ws, transcript) {
         reply = result.content;
         await ttsChain;
         // SCRUM-596: the reply has been spoken: one assistant turn on the owner confirmation gate's clock.
-        // SCRUM-618: not when the owner talked over it — a read-back they cut off wasn't heard.
-        if (session.ownerMode && !bargedIn()) noteAssistantTurnEnd(session);
+        // (SCRUM-618: a barged-in turn counts too — its read-backs were forgotten when the owner spoke.)
+        if (session.ownerMode) noteAssistantTurnEnd(session);
         // Send final speaking=false and full transcript
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "speaking", speaking: false }));
@@ -8311,6 +8318,9 @@ async function handleTestUserSpeech(session, ws, transcript) {
       session.callFailed = true;
       console.error(`[ALERT:error] [OwnerWeb] owner session ended: ${session.ownerTurnFailureStreak} turns failed in a row (callSid=${session.callSid}, org=${session.organizationId})`);
       if (ws.readyState === WebSocket.OPEN) {
+        // SCRUM-618 (SF5): a change made in this turn is shown before the session ends — "start
+        // again" alone invites a duplicate.
+        if (lastOwnerTool) ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: ownerToolLoopReply(session, lastOwnerTool), isFinal: true }));
         ws.send(JSON.stringify({ type: "error", message: OWNER_WEB_PROBLEM_MESSAGE }));
         ws.close(4500, "Owner turns failing");
       }
@@ -8420,6 +8430,9 @@ server.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`Voice pipeline: ${VOICE_PIPELINE}${VOICE_PIPELINE === "gemini-live" ? ` (Gemini Live: ${GEMINI_MODEL})` : ` (LLM: ${LLM_PROVIDER}/${FULL_MODEL})`}`);
   const anthropicGatewayLine = describeAnthropicGateway(); // SCRUM-594: ANTHROPIC_GATEWAY=openrouter, while the Anthropic balance is empty
   if (anthropicGatewayLine) console.log(anthropicGatewayLine);
+  // SCRUM-618: classic's Claude that can't run is paged at boot (it isn't a boot requirement).
+  const classicClaudeProblem = LLM_PROVIDER === "anthropic" ? gatewayProblem() : null;
+  if (classicClaudeProblem) console.error(`[ALERT:error] [Boot] the classic pipeline's Claude can't run: ${classicClaudeProblem}`);
   // SCRUM-618: where the owner assistant runs, and on classic which model (resolveOwnerPipeline pages a fallback).
   const ownerPipelineAtBoot = resolveOwnerPipeline();
   console.log(`Owner pipeline: ${ownerPipelineAtBoot}${ownerPipelineAtBoot === "classic" ? ` (LLM: ${LLM_PROVIDER}/${DEFAULT_MODEL})` : ""}`);

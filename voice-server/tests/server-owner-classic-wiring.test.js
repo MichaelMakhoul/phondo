@@ -36,7 +36,9 @@ describe("the phone line's classic owner turn (SCRUM-618)", () => {
 
   it("the second failed owner turn in a row ends the call, said as a problem and paged; an answered turn resets the streak", () => {
     assert.match(phoneCatch, /if \(session\.ownerMode && !fastTurn && \+\+session\.ownerTurnFailureStreak >= 2\) \{\n\s*session\.callFailed = true;\n\s*console\.error\(`\[ALERT:error\] \[OwnerPin\] owner call ended: \$\{session\.ownerTurnFailureStreak\} turns failed in a row/);
-    assert.match(phoneCatch, /const ms = await sendTTS\(session, twilioWs, OWNER_PHONE_PROBLEM_LINE, undefined, NOT_A_REPLY\);\n\s*await hangUpAfterEndCall\(session, twilioWs, Date\.now\(\) \+ ms, "owner-turns-failed"\);/);
+    // Silent lens (round 2): the tool's words first (SF5), and the hang-up outside the TTS try (a failed line still ends the call).
+    assert.match(phoneCatch, /const line = lastOwnerTool \? `\$\{ownerToolLoopReply\(session, lastOwnerTool\)\} \$\{OWNER_PHONE_PROBLEM_LINE\}` : OWNER_PHONE_PROBLEM_LINE;/);
+    assert.match(phoneCatch, /playedUntil \+= await sendTTS\(session, twilioWs, line, undefined, NOT_A_REPLY\);\n\s*\} catch \(ttsErr\) \{\n[^\n]*\n\s*\}\n\s*await hangUpAfterEndCall\(session, twilioWs, playedUntil, "owner-turns-failed"\); \/\/ never throws\n\s*return;/);
     assert.match(phoneTurn, /if \(session\.ownerMode\) session\.ownerTurnFailureStreak = 0; \/\/ SCRUM-618: a turn that answered ends a failure streak\n {2}\} catch \(err\) \{/);
   });
 
@@ -58,12 +60,12 @@ describe("owner sessions: settings, English, and the boot checks (SCRUM-618)", (
   it("the settings: the whole conversation in context, and an English voice whatever the receptionist's", () => {
     const fn = slice("function applyOwnerSessionSettings(session) {", "\n}\n");
     const apply = new Function("FAST_MAX_MESSAGES", "ENGLISH_FALLBACK_VOICE", `${fn}\n}\nreturn applyOwnerSessionSettings;`)(201, "aura-2-theia-en");
-    const es = { deepgramVoice: "aura-2-selena-es", maxMessages: 21 };
+    const es = { deepgramVoice: "aura-2-selena-es", maxMessages: 21, language: "es" };
     apply(es);
-    assert.deepEqual(es, { deepgramVoice: "aura-2-theia-en", maxMessages: 201 });
-    const en = { deepgramVoice: "aura-2-thalia-en", maxMessages: 21 };
+    assert.deepEqual(es, { deepgramVoice: "aura-2-theia-en", maxMessages: 201, language: "en" });
+    const en = { deepgramVoice: "aura-2-thalia-en", maxMessages: 21, language: "en" };
     apply(en);
-    assert.deepEqual(en, { deepgramVoice: "aura-2-thalia-en", maxMessages: 201 });
+    assert.deepEqual(en, { deepgramVoice: "aura-2-thalia-en", maxMessages: 201, language: "en" });
   });
 
   it("speech recognition is English for owners on both classic paths, the receptionist's language otherwise", () => {
@@ -71,7 +73,9 @@ describe("owner sessions: settings, English, and the boot checks (SCRUM-618)", (
   });
 
   it("boot: classic's Claude needs the gateway's key, and the owner pipeline is logged (a fallback pages there)", () => {
-    assert.match(src, /const llmKeyEnv = LLM_PROVIDER === "anthropic" \? gatewayKeyName\(\) : LLM_KEY_MAP\[LLM_PROVIDER\] \|\| "ANTHROPIC_API_KEY";/);
+    // Code + silent lenses (round 2): never a boot requirement — a gateway typo would crash-loop every line. Paged instead.
+    assert.match(src, /const llmKeyEnv = LLM_PROVIDER === "anthropic" \? null : LLM_KEY_MAP\[LLM_PROVIDER\] \|\| "ANTHROPIC_API_KEY";\nconst REQUIRED_ENV = \[\n\s*"DEEPGRAM_API_KEY",\n\s*\.\.\.\(llmKeyEnv \? \[llmKeyEnv\] : \[\]\),/);
+    assert.match(src, /const classicClaudeProblem = LLM_PROVIDER === "anthropic" \? gatewayProblem\(\) : null;\n\s*if \(classicClaudeProblem\) console\.error\(`\[ALERT:error\] \[Boot\] the classic pipeline's Claude can't run: \$\{classicClaudeProblem\}`\);/);
     assert.match(src, /const ownerPipelineAtBoot = resolveOwnerPipeline\(\);\n\s*console\.log\(`Owner pipeline: \$\{ownerPipelineAtBoot\}/);
   });
 

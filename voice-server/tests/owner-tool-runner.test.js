@@ -17,7 +17,7 @@ global.fetch = async (url, init) => {
   return fetchImpl(url, init);
 };
 
-const { runOwnerToolCall, buildOwnerCallSummary, OWNER_MAX_TOOL_CALLS, OWNER_MAX_TOOL_ROUNDS, OWNER_CLEANUP_WAIT_MS, CANCELLED_BEFORE_SENT_MESSAGE, LOOP_EXHAUSTED_MESSAGE, describeOwnerToolCall, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply } = require("../lib/owner-tool-runner");
+const { runOwnerToolCall, buildOwnerCallSummary, OWNER_MAX_TOOL_CALLS, OWNER_MAX_TOOL_ROUNDS, OWNER_CLEANUP_WAIT_MS, CANCELLED_BEFORE_SENT_MESSAGE, LOOP_EXHAUSTED_MESSAGE, describeOwnerToolCall, settleOwnerToolRuns, noteCancelledOwnerToolCalls, ownerToolLoopReply, forgetOwnerReadBacks } = require("../lib/owner-tool-runner");
 const { executeToolCall } = require("../services/tool-executor");
 
 // SCRUM-587 — the owner tool path replaces the customer guard chain (spec §5).
@@ -2182,3 +2182,40 @@ describe("SCRUM-602 test lens round 2: the gate reads a U+2028 / U+2029 separato
     assert.equal(await confirmedWith({ details: "service address=12 Smith St urgency level=today" }, { details: "service address=12 Smith St; urgency level=this week" }), false, "another value is still another booking");
   });
 });
+
+// SCRUM-618 (code lens, round 2): the owner talked over a read-back in the bubble. Skipping
+// the turn's count left the read-back pending for the NEXT counted turn — an unrelated answer
+// ("It's 10:42"), then "ok yes", forwarded the cut-off cancel as confirmed. The barge-in now
+// forgets the pending read-backs; the turn counts as usual.
+describe("a read-back the owner cut off confirms nothing (SCRUM-618)", () => {
+  it("cancel read back, cut off, an unrelated answer, 'ok yes': the cancel goes out UNconfirmed, for a fresh read-back", async () => {
+    const s = makeSession();
+    const d = makeDeps(NEEDS_CONFIRMATION);
+    await runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1" } }, d.deps); // the read-back is armed
+    assert.ok(s.ownerPendingConfirmations.size > 0);
+    forgetOwnerReadBacks(s); // the owner talked over it (lib/owner-web-barge-in.js, then server.js)
+    assistantTurn(s); // the barged-in turn counts
+    ownerSpeaks(s); // "what time is it?"
+    assistantTurn(s); // "It's 10:42"
+    ownerSpeaks(s); // "ok yes"
+    await settled(() => runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } }, d.deps));
+    assert.equal(d.calls.at(-1).args.confirmed, false, "a cut-off read-back must never be confirmed by a later yes");
+  });
+
+  it("without the barge-in, the same yes confirms (the gate's normal path is untouched)", async () => {
+    const s = makeSession();
+    const d = makeDeps(NEEDS_CONFIRMATION);
+    await runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1" } }, d.deps);
+    assistantTurn(s); // the read-back is heard
+    ownerSpeaks(s); // "yes"
+    await settled(() => runOwnerToolCall(s, { name: "owner_cancel_appointment", args: { appointment_id: "a1", confirmed: true } }, d.deps));
+    assert.equal(d.calls.at(-1).args.confirmed, true);
+  });
+
+  it("forgetOwnerReadBacks on a session with none is a no-op", () => {
+    const s = makeSession();
+    forgetOwnerReadBacks(s);
+    assert.equal(s.ownerPendingConfirmations, undefined);
+  });
+});
+

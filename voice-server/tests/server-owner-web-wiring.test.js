@@ -200,7 +200,7 @@ function makeLoop({ turns, ownerResults = [], ttsBytes = 8000, onSynth = null })
     // SCRUM-618: what the bubble says is cleaned and spelled as on the phone line; its audio is timed for barge-in.
     stripMarkdown: (t) => t.replace(/\*\*/g, ""),
     spellLettersForTts: (t) => t.replace(/\b([A-Z])-(?=[A-Z]\b)/g, "$1 "),
-    noteOwnerWebAudio: (s, bytes) => { calls.push(["webAudio", bytes]); s.webAudioUntil = (s.webAudioUntil || 0) + bytes / 8; },
+    noteOwnerWebAudio: (s, bytes, turn) => { calls.push(["webAudio", bytes, turn]); s.webAudioUntil = (s.webAudioUntil || 0) + bytes / 8; s.webAudioTurn = turn; },
     setTimeout: (fn, ms) => { timers.push(ms); fn(); },
     console: { log() {}, warn() {}, error() {} },
   };
@@ -374,7 +374,7 @@ describe("handleTestUserSpeech on an owner session: turns that fail (classic, ru
 
 // SCRUM-618: OWNER_PIPELINE=classic carries the bubble — what Gemini did that classic didn't.
 describe("handleTestUserSpeech on an owner session: what classic now does as Gemini did (SCRUM-618, run for real)", () => {
-  it("the owner talking over the reply: the rest of it isn't said, and the turn doesn't count on the confirmation gate's clock", async () => {
+  it("the owner talking over the reply: the rest of it isn't said (the turn still counts — its read-backs were forgotten at the barge-in)", async () => {
     let s;
     const h = makeLoop({
       turns: [{ sentences: ["Here's what I'll book: Jane, Thursday at 2 pm.", "Her number is 0412 345 678.", "Shall I book it?"] }],
@@ -385,7 +385,8 @@ describe("handleTestUserSpeech on an owner session: what classic now does as Gem
     await h.handleTestUserSpeech(s, h.ws, "Book Jane in");
     assert.equal(h.ws.sent.filter((m) => typeof m === "string" && m.startsWith("<audio")).length, 1, "only the sentence before the barge-in reached the browser");
     assert.deepEqual(h.calls.filter((c) => c[0] === "tts").map((c) => c[1]), ["Here's what I'll book: Jane, Thursday at 2 pm.", "Her number is 0412 345 678."], "nothing after it is even synthesised");
-    assert.ok(!h.calls.some((c) => c[0] === "noteAssistantTurnEnd"), "a read-back they cut off wasn't heard — a 'yes' after it must not confirm");
+    // Code lens (round 2): skipping the count left the read-back pending for the NEXT counted turn.
+    assert.equal(h.calls.filter((c) => c[0] === "noteAssistantTurnEnd").length, 1);
   });
 
   it("each turn has its own number: a barge-in in one turn never silences the next", async () => {
@@ -403,7 +404,7 @@ describe("handleTestUserSpeech on an owner session: what classic now does as Gem
     const s = ownerWebSession();
     await h.handleTestUserSpeech(s, h.ws, "Spell it");
     assert.deepEqual(h.calls.filter((c) => c[0] === "tts").map((c) => c[1]), ["Jane is spelled J A N E."]);
-    assert.deepEqual(h.calls.filter((c) => c[0] === "webAudio"), [["webAudio", 16_000]]);
+    assert.deepEqual(h.calls.filter((c) => c[0] === "webAudio"), [["webAudio", 16_000, 1]]);
   });
 
   it("a failure after an owner tool ran: the owner hears the tool's own words, never 'could you repeat that?' (SF5)", async () => {

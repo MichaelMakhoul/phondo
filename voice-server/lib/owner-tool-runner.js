@@ -880,7 +880,18 @@ function buildOwnerCallSummary(audit) {
   return parts.length ? `Owner call: ${parts.join("; ")}.` : "Owner call: no changes made.";
 }
 
+/**
+ * SCRUM-618: the owner talked over the assistant (the bubble's barge-in). A read-back they
+ * cut off wasn't heard, so no pending one may be confirmed by a later "yes" — each change
+ * asked for again gets a fresh read-back (the gate refuses a confirm with nothing pending).
+ * @param {{ ownerPendingConfirmations?: Map<string, unknown> }} session
+ */
+function forgetOwnerReadBacks(session) {
+  if (session.ownerPendingConfirmations instanceof Map) session.ownerPendingConfirmations.clear();
+}
+
 module.exports = {
+  forgetOwnerReadBacks,
   OWNER_MAX_TOOL_CALLS,
   OWNER_MAX_TOOL_ROUNDS,
   CANCELLED_BEFORE_SENT_MESSAGE,

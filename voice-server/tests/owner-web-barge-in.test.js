@@ -13,12 +13,13 @@ function ws() {
 describe("noteOwnerWebAudio", () => {
   it("audio plays after what's queued: two seconds then one more second", () => {
     const s = {};
-    noteOwnerWebAudio(s, 16_000, 1_000);
+    noteOwnerWebAudio(s, 16_000, 1, 1_000);
     assert.equal(s.webAudioUntil, 3_000);
-    noteOwnerWebAudio(s, 8_000, 1_500);
+    noteOwnerWebAudio(s, 8_000, 1, 1_500);
     assert.equal(s.webAudioUntil, 4_000, "queued behind the first, not from now");
-    noteOwnerWebAudio(s, 8_000, 10_000);
+    noteOwnerWebAudio(s, 8_000, 2, 10_000);
     assert.equal(s.webAudioUntil, 11_000, "after the queue has played out, from now");
+    assert.equal(s.webAudioTurn, 2, "and whose audio is playing");
   });
 });
 
@@ -53,6 +54,13 @@ describe("ownerWebBargeIn", () => {
       assert.equal(ownerWebBargeIn(s, w, "and what about tomorrow then", 2_000), false, String(until));
       assert.deepEqual(w.sent, []);
     }
+  });
+
+  // Silent lens (round 2): a barge-in on turn N's tail while turn N+1 thinks must not mute N+1.
+  it("the turn marked is the one whose audio is playing — never a newer turn the owner hasn't heard", () => {
+    const s = { webAudioUntil: 5_000, webAudioTurn: 4, webTurnSeq: 5 };
+    assert.equal(ownerWebBargeIn(s, ws(), "stop that one", 2_000), true);
+    assert.equal(s.webBargeInSeq, 4);
   });
 
   it("a closed socket gets nothing sent, but the turn is still marked (the rest of the reply isn't said)", () => {
