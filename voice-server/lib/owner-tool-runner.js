@@ -295,17 +295,23 @@ function confirmationKey(name, args) {
   const optionalEmail = (v) => (typeof v === "string" && v.trim() ? v.replace(/\s+/g, "").toLowerCase() : "");
   /**
    * "field=value; field=value" → one JSON list of [field, words] pairs sorted by field
-   * (a colon after the field works too, as PR B reads it). Unreadable → null (never confirmable).
+   * (a colon after the field works too, as PR B reads it). Unreadable → null (never
+   * confirmable), and so is a field named twice: PR B refuses that, and a key that
+   * sorted the two could match a string PR B reads the other way round.
    */
   const detailsKey = (v) => {
     if (typeof v !== "string" || !v.trim()) return "";
     const pairs = [];
+    const seen = new Set();
     for (const part of v.split(";")) {
       if (!part.trim()) continue;
       const m = /^\s*([^=:]+?)\s*[=:]\s*(.*)$/.exec(part);
       if (!m) return null;
+      const field = m[1].normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (seen.has(field)) return null;
+      seen.add(field);
       const value = words(m[2]);
-      if (value) pairs.push([m[1].normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, ""), value]);
+      if (value) pairs.push([field, value]);
     }
     pairs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
     return JSON.stringify(pairs);

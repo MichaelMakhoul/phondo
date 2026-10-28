@@ -1719,10 +1719,12 @@ describe("SCRUM-599: booking, blocking and marking done go through the same gate
       await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...first, ...change, confirmed: true, notify_customer: "none" } }, d.deps)));
       assert.equal(d.calls.at(-1).args.confirmed, false, JSON.stringify(change));
     }
-    const s = makeSession();
-    const d = makeDeps(prB);
-    await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, details: "just some words" } }, d.deps));
-    assert.equal(s.ownerPendingConfirmations?.size ?? 0, 0, "no field=value pairs: nothing armed (the Map is only created on a first arm)");
+    for (const details of ["just some words", "dob=1980; dob=2000", "Date of Birth=1980; date_of_birth=2000"]) {
+      const s = makeSession();
+      const d = makeDeps(prB);
+      await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, details } }, d.deps));
+      assert.equal(s.ownerPendingConfirmations?.size ?? 0, 0, `${details}: nothing armed (no pairs, or a field twice — PR B refuses it, and a sorted key could match the other order)`);
+    }
   });
 
   it("a yes to one booking never makes another: a different time, person, number, service or note goes on unconfirmed", async () => {

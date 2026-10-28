@@ -1425,8 +1425,11 @@ export async function handleOwnerBookAppointment(
       const known = fields.filter((f) => !BOOKING_OWN_FIELD_IDS.has(f.id)).map((f) => f.label);
       return invalidDetails(`I don't know a "${sanitizeCustomerText(key, 40)}" detail for this business. ${known.length ? `Its fields are: ${listWords(known)}. Anything else goes in the note.` : "It has no extra fields — put anything else in the note."}`);
     }
+    // The same field twice — by id, by label, or one of each — is refused rather than
+    // picked by position: the gate's key can't tell which one the read-back said.
+    if (details.some((d) => d.field.id === field.id)) return invalidDetails(`"${field.label}" is given twice in the details — pass each detail once.`);
     if (!v) continue; // a blank value is no value
-    if (!details.some((d) => d.field.id === field.id)) details.push({ field, value: v });
+    details.push({ field, value: v });
   }
   const nameParts = customerSaid.split(" ");
   const givenName = nameParts[0];

@@ -1040,6 +1040,18 @@ describe("SCRUM-602: owner bookings follow each business's own required details"
     expect(handleBookAppointment).not.toHaveBeenCalled();
   });
 
+  it("the same field twice — by id, by label, or one of each — is refused, never picked by position (the gate's key couldn't tell which one was read back)", async () => {
+    const DENTAL = [...NAME_FIELDS(false), F("dob", "Date of Birth", true)];
+    for (const details of ["dob=12/03/1980; dob=01/01/2000", "Date of Birth=12/03/1980; date of birth=01/01/2000", "dob=12/03/1980; Date of Birth=01/01/2000", "date of birth=01/01/2000; dob=12/03/1980"]) {
+      configured(DENTAL);
+      db.queues.organizations = [AU_ORG];
+      const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details, confirmed: true, notify_customer: "none" }), ctx);
+      expect(r.data, details).toMatchObject({ outcome: "invalid_details" });
+      expect(r.message, details).toBe(`"Date of Birth" is given twice in the details — pass each detail once.`);
+    }
+    expect(handleBookAppointment).not.toHaveBeenCalled();
+  });
+
   it("details that can't be read, or are too long, are refused before anything else — never cut", async () => {
     configured(TRADIE);
     const unreadable = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: "twelve smith street" }), ctx);
