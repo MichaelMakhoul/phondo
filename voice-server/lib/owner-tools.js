@@ -194,7 +194,7 @@ const ownerToolDefinitions = [
           customer_phone: { type: "string", description: "The customer's phone number. Ask the owner for it if they didn't say it — never make one up. The read-back says it back digit by digit, so a misheard digit is caught." },
           start: { type: "string", description: `The start ${LOCAL_TIME}.` },
           service_type_id: { type: "string", description: "Optional: the ID of the service from the SERVICE TYPES list in your instructions. Never a name." },
-          notes: { type: "string", description: "Optional short note for the job in the owner's words — what's wrong, and the address if they give one (for example \"hot water unit leaking, 12 Smith St\")." },
+          notes: { type: "string", description: "Optional short note for the job in the owner's words — what's wrong, and the address if they give one (for example \"hot water unit leaking, 12 Smith St\") — unless this business collects those as details (the tool names its fields): then they go in details, once, not in the note as well." },
           customer_email: { type: "string", description: "The customer's email address, when this business collects one (the tool asks for it when it's required). Spelled back letter by letter in the read-back." },
           details: { type: "string", description: "The business's other caller details for this booking, as \"field=value; field=value\" using the field names the tool gives (for example \"service address=12 Smith St, Wyong; urgency level=today\"). Only the fields this business has — the tool names them." },
           confirmed: CONFIRMED_PARAM,

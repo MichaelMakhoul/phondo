@@ -307,7 +307,10 @@ function confirmationKey(name, args) {
       if (!part.trim()) continue;
       const m = /^\s*([^=:]+?)\s*[=:]\s*(.*)$/.exec(part);
       if (!m) return null;
-      const field = m[1].normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "");
+      let field = m[1].normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "");
+      // The booking's own fields under either spelling PR B accepts.
+      if (field === "surname") field = "lastname";
+      if (field === "emailaddress") field = "email";
       if (seen.has(field)) return null;
       seen.add(field);
       const value = words(m[2]);

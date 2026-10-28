@@ -204,6 +204,7 @@ describe("SCRUM-599: owner_book_appointment, owner_block_time, owner_mark_callba
     assert.ok(byName.owner_book_appointment.description.includes("Each business sets which details its bookings need"));
     assert.ok(byName.owner_book_appointment.description.includes("never ask for anything it didn't name"));
     assert.ok(byName.owner_book_appointment.parameters.properties.details.description.includes('"field=value; field=value"'));
+    assert.ok(byName.owner_book_appointment.parameters.properties.notes.description.includes("then they go in details, once, not in the note as well"));
     assert.ok(byName.owner_book_appointment.parameters.properties.customer_email.description.includes("Spelled back letter by letter"));
     assert.deepEqual(byName.owner_book_appointment.parameters.required, ["customer_name", "customer_phone", "start"], "email and details stay optional — the tool asks when the business needs them");
     assert.ok(byName.owner_book_appointment.parameters.properties.customer_phone.description.includes("The read-back says it back digit by digit, so a misheard digit is caught."));

@@ -1719,7 +1719,7 @@ describe("SCRUM-599: booking, blocking and marking done go through the same gate
       await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...first, ...change, confirmed: true, notify_customer: "none" } }, d.deps)));
       assert.equal(d.calls.at(-1).args.confirmed, false, JSON.stringify(change));
     }
-    for (const details of ["just some words", "dob=1980; dob=2000", "Date of Birth=1980; date_of_birth=2000"]) {
+    for (const details of ["just some words", "dob=1980; dob=2000", "Date of Birth=1980; date_of_birth=2000", "surname=Smith; last name=Jones", "email=a@example.com; email address=b@example.com"]) {
       const s = makeSession();
       const d = makeDeps(prB);
       await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, details } }, d.deps));

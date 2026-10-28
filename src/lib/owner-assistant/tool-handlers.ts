@@ -1116,8 +1116,8 @@ export interface OwnerBookData {
   customer_email?: string;
   /** SCRUM-602: the business's other caller details given for this booking (saved in the job's note). */
   details?: Array<{ id: string; label: string; value: string }>;
-  /** On invalid_details: the business's required fields the booking still needs. */
-  missing_fields?: Array<{ id: string; label: string }>;
+  /** On invalid_details: the business's required fields the booking still needs (a hint is the field's own description, e.g. its options). */
+  missing_fields?: Array<{ id: string; label: string; hint?: string }>;
 }
 
 export interface OwnerBlockData {
@@ -1193,12 +1193,14 @@ function bookingReadBackRule(shownPhone: string, notes: string | null, verificat
  * Collection, `assistants.prompt_config.fields`). Each business sets its own: some need
  * a last name, some an email, a tradie an address and how urgent it is.
  */
-type BookingField = { id: string; label: string; required: boolean; verification: string };
+type BookingField = { id: string; label: string; required: boolean; verification: string; hint?: string };
 
 /** The fields the booking's own parameters carry — never asked for again through `details`. */
 const BOOKING_OWN_FIELD_IDS = new Set(["first_name", "full_name", "last_name", "phone_number", "email_address"]);
-/** One detail's value: a line of the owner's words. */
-const DETAIL_VALUE_MAX = 120;
+/** One detail's value: a few lines of the owner's words at most; longer is refused, never cut. */
+const DETAIL_VALUE_MAX = 300;
+/** Spoken English runs about six characters a word — "about N words over" means something by voice; "37 characters" doesn't. */
+const wordsOver = (chars: number) => Math.max(1, Math.round(chars / 6));
 /** The whole `details` string; longer is refused, never cut. */
 const DETAILS_MAX = 600;
 /** The booking path's own cap on a job's note (`sanitizeString(notes, 500)`) — anything longer would be cut there without a word. */
@@ -1232,11 +1234,13 @@ async function bookingFields(supabase: any, organizationId: string): Promise<Boo
   for (const f of raw) {
     const id = typeof f?.id === "string" ? f.id.trim() : "";
     if (!id || fields.some((k) => k.id === id)) continue;
+    const hint = sanitizeCustomerText(f?.description, 80);
     fields.push({
       id,
       label: sanitizeCustomerText(f?.label, 60) ?? id.replace(/_/g, " "),
       required: f?.required === true,
       verification: typeof f?.verification === "string" ? f.verification : "none",
+      ...(hint ? { hint } : {}),
     });
   }
   return fields;
@@ -1412,13 +1416,30 @@ export async function handleOwnerBookAppointment(
   }
   const details: Array<{ field: BookingField; value: string }> = [];
   let surnameGiven: string | null = null;
-  let emailGiven: string | null = typeof args.customer_email === "string" ? sanitizeCustomerText(args.customer_email, 120) : null;
+  let surnameSeen = false;
+  const emailParam = typeof args.customer_email === "string" && args.customer_email.trim() ? sanitizeCustomerText(args.customer_email, 120) : null;
+  let emailGiven: string | null = emailParam;
+  let emailSeen = emailParam !== null;
   for (const { key, value } of parsed) {
     const k = fieldKey(key);
+    if (value.length > DETAIL_VALUE_MAX) {
+      return invalidDetails(`The ${sanitizeCustomerText(key, 40)?.toLowerCase() ?? "detail"} is too long for a booking detail — about ${wordsOver(value.length - DETAIL_VALUE_MAX)} words over. Ask the owner for a shorter version, then call again.`);
+    }
     const v = sanitizeCustomerText(value, DETAIL_VALUE_MAX) ?? "";
-    // The booking's own fields, however the model passed them.
-    if (k === "lastname" || k === "surname") { surnameGiven = v || null; continue; }
-    if (k === "emailaddress" || k === "email") { emailGiven = emailGiven || v || null; continue; }
+    // The booking's own fields, however the model passed them — once each: picked by
+    // position, two spellings of one field could save what the read-back didn't say.
+    if (k === "lastname" || k === "surname") {
+      if (surnameSeen) return invalidDetails("The last name is given twice in the details — pass it once, as part of customer_name.");
+      surnameSeen = true;
+      surnameGiven = v || null;
+      continue;
+    }
+    if (k === "emailaddress" || k === "email") {
+      if (emailSeen) return invalidDetails("The email is given twice — pass it once, in customer_email.");
+      emailSeen = true;
+      emailGiven = v || null;
+      continue;
+    }
     if (k === "firstname" || k === "fullname" || k === "name" || k === "phonenumber" || k === "phone") continue;
     const field = byKey.get(k);
     if (!field || BOOKING_OWN_FIELD_IDS.has(field.id)) {
@@ -1445,13 +1466,16 @@ export async function handleOwnerBookAppointment(
   };
   const missing = fields.filter((f) => f.required && !covered(f));
   if (missing.length) {
-    const named = missing.map((f) => (f.id === "last_name" ? `${givenName}'s last name` : f.id === "email_address" ? `${givenName}'s email address` : `the ${f.label.toLowerCase()}`));
+    const named = missing.map((f) =>
+      f.id === "last_name" ? `${givenName}'s last name` : f.id === "email_address" ? `${givenName}'s email address` : `the ${f.label.toLowerCase()}${f.hint ? ` (${f.hint})` : ""}`
+    );
     return {
       success: false,
       message:
-        `This business's bookings also need ${listWords(named)}. Ask the owner, then call again with everything: the surname in customer_name, the email in customer_email, anything else in details ("field=value; field=value"). ` +
-        `If the owner doesn't have one of them, say this business's settings require it for every booking — they can change that in Assistants → Caller Data Collection.`,
-      data: bookData({ outcome: "invalid_details", customer_notified: false, missing_fields: missing.map((f) => ({ id: f.id, label: f.label })) }),
+        `Not booked yet: this business's bookings also need ${listWords(named)}. Pass anything the owner has already said without asking again, and ask for the rest in one question ("I'll also need ${listWords(named)}"). ` +
+        `Then call again with everything — the surname in customer_name, the email in customer_email, the rest in details ("field=value; field=value") — each once, not in the note as well. ` +
+        `If the owner doesn't have one, say their settings require it for every booking, and that they can make ${listWords(missing.map((f) => f.label))} optional in Assistants → Caller Data Collection.`,
+      data: bookData({ outcome: "invalid_details", customer_notified: false, missing_fields: missing.map((f) => ({ id: f.id, label: f.label, ...(f.hint ? { hint: f.hint } : {}) })) }),
     };
   }
   // The job's note: the owner's words, then each detail on its own line (the dashboard
@@ -1459,7 +1483,9 @@ export async function handleOwnerBookAppointment(
   const detailLines = details.map((d) => `${d.field.label}: ${d.value}`);
   const diaryNotes = [notes, ...detailLines].filter((l): l is string => Boolean(l)).join("\n") || null;
   if (diaryNotes && diaryNotes.length > DIARY_NOTES_MAX) {
-    return invalidDetails(`That's too much for the job's note (${diaryNotes.length - DIARY_NOTES_MAX} characters over). Ask the owner to shorten the note or a detail, then call again.`);
+    const parts = [...(notes ? [{ what: "note", length: notes.length }] : []), ...details.map((d) => ({ what: d.field.label.toLowerCase(), length: d.value.length }))];
+    const longest = parts.sort((a, b) => b.length - a.length)[0];
+    return invalidDetails(`That's too much for the job's note — about ${wordsOver(diaryNotes.length - DIARY_NOTES_MAX)} words over; the ${longest.what} is the longest part. Ask the owner to shorten it, then call again.`);
   }
   const emailField = fields.find((f) => f.id === "email_address");
   const verifications = [

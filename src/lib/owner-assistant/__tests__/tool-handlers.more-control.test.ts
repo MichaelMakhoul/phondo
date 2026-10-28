@@ -943,8 +943,8 @@ describe("SCRUM-602: owner bookings follow each business's own required details"
       configured(NAME_FIELDS(true));
       const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane", confirmed ? { confirmed, notify_customer: "none" } : {}), ctx);
       expect(r.data, String(confirmed)).toMatchObject({ outcome: "invalid_details", missing_fields: [{ id: "last_name", label: "Last Name" }] });
-      expect(r.message).toContain("This business's bookings also need Jane's last name.");
-      expect(r.message).toContain("they can change that in Assistants → Caller Data Collection");
+      expect(r.message).toContain(`Not booked yet: this business's bookings also need Jane's last name. Pass anything the owner has already said without asking again, and ask for the rest in one question ("I'll also need Jane's last name").`);
+      expect(r.message).toContain("they can make Last Name optional in Assistants → Caller Data Collection");
       expect(handleBookAppointment).not.toHaveBeenCalled();
     }
   });
@@ -972,7 +972,7 @@ describe("SCRUM-602: owner bookings follow each business's own required details"
     configured(fields);
     const asked = await handleOwnerBookAppointment(ORG, bookArgs("Jane"), ctx);
     expect(asked.data).toMatchObject({ outcome: "invalid_details", missing_fields: [{ id: "email_address", label: "Email Address" }] });
-    expect(asked.message).toContain("This business's bookings also need Jane's email address.");
+    expect(asked.message).toContain("this business's bookings also need Jane's email address.");
     configured(fields);
     db.queues.organizations = [AU_ORG];
     const bad = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { customer_email: "jane at example" }), ctx);
@@ -993,7 +993,8 @@ describe("SCRUM-602: owner bookings follow each business's own required details"
   it("a tradie's business: the address, the problem and the urgency are all asked for in ONE message, read back per field, and saved as lines in the job's note", async () => {
     configured(TRADIE);
     const asked = await handleOwnerBookAppointment(ORG, bookArgs("Jane"), ctx);
-    expect(asked.message).toContain("This business's bookings also need the service address, the problem description and the urgency level.");
+    expect(asked.message).toContain("this business's bookings also need the service address, the problem description and the urgency level.");
+    expect(asked.message).toContain("they can make Service Address, Problem Description and Urgency Level optional in Assistants → Caller Data Collection");
     expect((asked.data as Record<string, unknown>).missing_fields).toEqual([
       { id: "service_address", label: "Service Address" },
       { id: "problem_description", label: "Problem Description" },
@@ -1049,6 +1050,18 @@ describe("SCRUM-602: owner bookings follow each business's own required details"
       expect(r.data, details).toMatchObject({ outcome: "invalid_details" });
       expect(r.message, details).toBe(`"Date of Birth" is given twice in the details — pass each detail once.`);
     }
+    // The booking's own fields under either spelling, and an email in both places.
+    for (const [extra, line] of [
+      [{ details: "surname=Smith; last name=Jones" }, "The last name is given twice in the details — pass it once, as part of customer_name."],
+      [{ details: "email=a@example.com; email address=b@example.com" }, "The email is given twice — pass it once, in customer_email."],
+      [{ customer_email: "a@example.com", details: "email=b@example.com" }, "The email is given twice — pass it once, in customer_email."],
+    ] as const) {
+      configured(DENTAL);
+      db.queues.organizations = [AU_ORG];
+      const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { ...extra, confirmed: true, notify_customer: "none" }), ctx);
+      expect(r.data, JSON.stringify(extra)).toMatchObject({ outcome: "invalid_details" });
+      expect(r.message, JSON.stringify(extra)).toBe(line);
+    }
     expect(handleBookAppointment).not.toHaveBeenCalled();
   });
 
@@ -1065,8 +1078,21 @@ describe("SCRUM-602: owner bookings follow each business's own required details"
     db.queues.organizations = [AU_ORG];
     const over = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { notes: "n".repeat(200), details: `service address=${"a".repeat(120)}; problem description=${"b".repeat(120)}; urgency level=${"c".repeat(120)}` }), ctx);
     expect(over.data).toMatchObject({ outcome: "invalid_details" });
-    expect(over.message).toMatch(/^That's too much for the job's note \(\d+ characters over\)\./);
+    expect(over.message).toMatch(/^That's too much for the job's note — about \d+ words over; the note is the longest part\. Ask the owner to shorten it, then call again\.$/);
+    // One detail over its own cap is refused by name, in words — never trimmed (clients lens: a lawyer's matter description).
+    configured(TRADIE);
+    db.queues.organizations = [AU_ORG];
+    const longValue = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: `problem description=${"p".repeat(330)}; service address=12 Smith St` }), ctx);
+    expect(longValue.data).toMatchObject({ outcome: "invalid_details" });
+    expect(longValue.message).toBe("The problem description is too long for a booking detail — about 5 words over. Ask the owner for a shorter version, then call again.");
     expect(handleBookAppointment).not.toHaveBeenCalled();
+  });
+
+  it("a field's own description is the hint: it's named with the field and handed back, so the model offers the options instead of asking vaguely", async () => {
+    configured([...NAME_FIELDS(false), { ...F("urgency_level", "Urgency Level", true, "none"), description: "Routine, Urgent, or Emergency" }]);
+    const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane"), ctx);
+    expect(r.message).toContain("this business's bookings also need the urgency level (Routine, Urgent, or Emergency).");
+    expect(r.data).toMatchObject({ outcome: "invalid_details", missing_fields: [{ id: "urgency_level", label: "Urgency Level", hint: "Routine, Urgent, or Emergency" }] });
   });
 
   it("no configured fields (no assistant row, or no fields) means nothing beyond the name and number; a read fault is a fault, never 'nothing required'", async () => {

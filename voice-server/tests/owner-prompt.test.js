@@ -546,7 +546,8 @@ describe("buildOwnerPrompt — SCRUM-601: what the 27 Oct session got wrong", ()
   // SCRUM-602: each business decides what its bookings need — the tool says what's missing.
   it("a booking needs exactly what this business's settings require — the tool names it; a first name alone is fine when it didn't ask for more", () => {
     assert.ok(p.includes("Each business decides what else its bookings need (a last name, an email, an address, how urgent it is…): ask for exactly what the tool's invalid_details message names in data.missing_fields, nothing it doesn't — a first name alone is fine when the tool didn't ask for more."));
-    assert.ok(p.includes("If the owner doesn't have a required detail, say this business's settings need it for every booking, and that they can change that in Assistants → Caller Data Collection."));
+    assert.ok(p.includes("Pass anything the owner already said without asking again, and ask for the rest in ONE question; a detail the business collects goes in details once, not in the note as well."));
+    assert.ok(p.includes("If the owner doesn't have a required detail, say their settings need it for every booking, and that they can make that field optional in Assistants → Caller Data Collection."));
     assert.ok(suffix.includes("A BOOKING NEEDS ONLY what the tool's data.missing_fields names for this business — never insist on a surname or an email it didn't ask for."));
     assert.ok(!p.includes("never insist on a surname)"), "the blanket first-name rule is gone");
     assert.ok(!p.includes("the customer's full name"));
