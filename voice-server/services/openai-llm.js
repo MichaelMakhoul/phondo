@@ -4,6 +4,7 @@
 // LLM_MODEL overrides the provider's default model.
 const { DEBUG_TRANSCRIPTS } = require("../lib/log-transcript");
 const { openAIChatParams, claudeLatencyParams } = require("../lib/model-params");
+const { messagesRequest, noteGatewayRefusal } = require("../lib/anthropic-gateway");
 const LLM_PROVIDER = process.env.LLM_PROVIDER || "openai";
 
 // SCRUM-588: defaults were re-measured against their successors on the exact
@@ -41,11 +42,11 @@ const PROVIDER_CONFIG = {
     apiKeyEnv: "ANTHROPIC_API_KEY",
     name: "Anthropic",
     type: "anthropic",
-    baseUrl: "https://api.anthropic.com/v1/messages",
-    authHeader: (key) => ({
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    }),
+    // SCRUM-618: no URL or key of its own — every request goes through
+    // lib/anthropic-gateway.js (ANTHROPIC_GATEWAY), straight to Anthropic by
+    // default or via OpenRouter. Going direct here bypassed it: with prod on
+    // OpenRouter (the Anthropic balance is empty), every classic turn failed,
+    // so OWNER_PIPELINE=classic could not take the owner assistant off Gemini.
   },
 };
 
@@ -240,6 +241,26 @@ function buildOpenAICompatBody(model, messages, options, stream) {
 
 const SENTENCE_BREAK = /(?<=[.!?])\s+/;
 
+/**
+ * The request for this provider: Anthropic through the gateway (its URL, key
+ * and body — the caller's key is ignored, the gateway picks its own), anything
+ * else straight to the provider with the caller's key.
+ * @returns {{ fetchUrl: string, headers: Record<string, string>, payload: string }}
+ */
+function providerRequest(apiKey, model, messages, options, stream) {
+  if (config.type === "anthropic") {
+    const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
+    const req = messagesRequest(buildAnthropicBody(model, system, anthropicMsgs, options?.tools, stream));
+    return { fetchUrl: req.url, headers: req.headers, payload: req.body };
+  }
+  const resolvedKey = getApiKey(apiKey);
+  return {
+    fetchUrl: config.baseUrl,
+    headers: { ...config.authHeader(resolvedKey), "Content-Type": "application/json" },
+    payload: JSON.stringify(buildOpenAICompatBody(model, messages, options, stream)),
+  };
+}
+
 // ─── Non-streaming ──────────────────────────────────────────────────────────
 
 async function getChatResponse(apiKey, messages, options) {
@@ -247,32 +268,15 @@ async function getChatResponse(apiKey, messages, options) {
     throw new Error("getChatResponse called with empty messages array");
   }
 
-  const resolvedKey = getApiKey(apiKey);
   const model = options?.model || DEFAULT_MODEL;
-
-  let fetchUrl, headers;
-  // Request payload differs by provider (anthropic vs openai-compatible)
-  // and gains tools/tool_choice conditionally — type it as an open record.
-  /** @type {Record<string, any>} */
-  let body;
-
-  if (config.type === "anthropic") {
-    const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
-    fetchUrl = config.baseUrl;
-    headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
-    body = buildAnthropicBody(model, system, anthropicMsgs, options?.tools, false);
-  } else {
-    fetchUrl = config.baseUrl;
-    headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
-    body = buildOpenAICompatBody(model, messages, options, false);
-  }
+  const { fetchUrl, headers, payload } = providerRequest(apiKey, model, messages, options, false);
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const res = await fetch(fetchUrl, {
       method: "POST",
       signal: AbortSignal.timeout(10_000),
       headers,
-      body: JSON.stringify(body),
+      body: payload,
     });
 
     if (res.status === 429 && attempt < MAX_RETRIES) {
@@ -285,6 +289,7 @@ async function getChatResponse(apiKey, messages, options) {
 
     if (!res.ok) {
       const text = (await res.text()).slice(0, 500);
+      if (config.type === "anthropic") noteGatewayRefusal(res.status, text);
       throw new Error(`${config.name} API error ${res.status}: ${text}`);
     }
 
@@ -323,25 +328,9 @@ async function streamChatResponse(apiKey, messages, options) {
     throw new Error("streamChatResponse called with empty messages array");
   }
 
-  const resolvedKey = getApiKey(apiKey);
   const model = options?.model || DEFAULT_MODEL;
   const onSentence = options?.onSentence;
-
-  let fetchUrl, headers;
-  // See getChatResponse: provider-specific payload + conditional tools.
-  /** @type {Record<string, any>} */
-  let body;
-
-  if (config.type === "anthropic") {
-    const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
-    fetchUrl = config.baseUrl;
-    headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
-    body = buildAnthropicBody(model, system, anthropicMsgs, options?.tools, true);
-  } else {
-    fetchUrl = config.baseUrl;
-    headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
-    body = buildOpenAICompatBody(model, messages, options, true);
-  }
+  const { fetchUrl, headers, payload } = providerRequest(apiKey, model, messages, options, true);
 
   // Retry loop for rate limits
   let res;
@@ -350,7 +339,7 @@ async function streamChatResponse(apiKey, messages, options) {
       method: "POST",
       signal: AbortSignal.timeout(15_000),
       headers,
-      body: JSON.stringify(body),
+      body: payload,
     });
 
     if (res.status === 429 && attempt < 2) {
@@ -365,6 +354,7 @@ async function streamChatResponse(apiKey, messages, options) {
 
   if (!res.ok) {
     const text = (await res.text()).slice(0, 500);
+    if (config.type === "anthropic") noteGatewayRefusal(res.status, text);
     throw new Error(`${config.name} API error ${res.status}: ${text}`);
   }
 

@@ -175,9 +175,11 @@ function describeGateway(env = process.env) {
   if (!env.ANTHROPIC_GATEWAY || env.ANTHROPIC_GATEWAY === "anthropic") return null;
   const problem = gatewayProblem(env);
   if (problem) return `⚠️ Anthropic requests: ${problem} — every one will fail`;
-  const refused = ["FAST_LLM_MODEL", "VALIDATOR_MODEL", "CR_LLM_MODEL"].filter((name) => env[name] && gatewayModelProblem(env[name], env));
+  const classicClaude = env.LLM_PROVIDER === "anthropic";
+  const refused = ["FAST_LLM_MODEL", "VALIDATOR_MODEL", "CR_LLM_MODEL", ...(classicClaude ? ["LLM_MODEL"] : [])].filter((name) => env[name] && gatewayModelProblem(env[name], env));
   const models = refused.length > 0 ? `; ⚠️ OpenRouter won't take ${refused.map((name) => `${name}=${env[name]}`).join(", ")}` : "";
-  const classic = env.LLM_PROVIDER === "anthropic" ? "; the classic fallback (LLM_PROVIDER=anthropic) still calls Anthropic directly" : "";
+  // SCRUM-618: the classic pipeline's Claude turns go through here too now.
+  const classic = classicClaude ? "; the classic pipeline too (LLM_PROVIDER=anthropic)" : "";
   return `Anthropic requests: via OpenRouter, claude-haiku-5-5 only, pinned to Anthropic's servers${models}${classic}`;
 }
 
