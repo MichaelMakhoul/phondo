@@ -1073,7 +1073,14 @@ export async function handleBookAppointment(
   // Check if business requires both first and last name — the same row, in the same
   // order, as the owner assistant's pre-read-back check (SCRUM-602, bookingFieldsQuery).
   const supabaseForFields = createAdminClient();
-  const { data: assistant, error: fieldsError } = await bookingFieldsQuery(supabaseForFields, organizationId, internal?.ownerBooking ? undefined : internal?.assistantId);
+  const answeringLine = internal?.ownerBooking ? undefined : internal?.assistantId;
+  let { data: assistant, error: fieldsError } = await bookingFieldsQuery(supabaseForFields, organizationId, answeringLine);
+  // The envelope's assistant isn't this org's (or has gone): the org's oldest, as before — said,
+  // never "nothing required".
+  if (answeringLine && !fieldsError && !assistant) {
+    console.warn("[booking] the call's assistant isn't this org's — using the org's oldest assistant's fields:", { organizationId, assistantId: answeringLine });
+    ({ data: assistant, error: fieldsError } = await bookingFieldsQuery(supabaseForFields, organizationId));
+  }
   // A read fault leaves the business's rules off for this booking (as before) — said, and
   // paged (SCRUM-617: Sentry never sees console lines; a lasting fault would quietly stop
   // every business's required fields).
@@ -1114,10 +1121,9 @@ export async function handleBookAppointment(
   let detailLines: string[] = [];
   if (!internal?.ownerBooking && !internal?.rescheduleLeg) {
     // On a fields read fault nothing is required, but the details the caller gave still reach the note.
-    const check = callerBookingDetails(fieldsError ? [] : normalizeBookingFields(fields), { lastName, email, details: args.details });
-    if ("problem" in check && fieldsError) {
-      // A fields read fault books as before (the rules are off): what can't be read is left out, never refused.
-    } else if ("problem" in check) {
+    // A fields read fault books as before (the rules are off): what can't be read is left out, never refused.
+    const check = callerBookingDetails(fieldsError ? [] : normalizeBookingFields(fields), { lastName, email, details: args.details }, { lenient: Boolean(fieldsError) });
+    if ("problem" in check) {
       return {
         success: false,
         message:

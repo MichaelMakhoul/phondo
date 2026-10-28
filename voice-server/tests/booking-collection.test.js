@@ -55,15 +55,24 @@ describe("server.js: a refusal is never a booking, and a missing-details refusal
   const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
   const handler = fs.readFileSync(path.join(__dirname, "..", "..", "src", "lib", "calendar", "tool-handlers.ts"), "utf8");
 
-  it("Gemini's ledger and schedule-cache delta take the handler's own success when it gives one", () => {
-    assert.match(src, /const handlerSaidBooked = \(typeof result === "object" && result !== null && typeof result\.success === "boolean"\)\n\s*\? result\.success === true\n\s*: \(message\.includes\("confirmed"\) \|\| message\.includes\("booked"\) \|\| message\.includes\("confirmation"\)\);/);
+  it("Gemini's ledger and schedule-cache delta need the handler's success (when it gives one) AND the booking words — Cliniko's 'what type?' is success:true and books nothing", () => {
+    assert.match(src, /const handlerSaidBooked = \(typeof result === "object" && result !== null && typeof result\.success === "boolean" \? result\.success === true : true\)\n\s*&& \(message\.includes\("confirmed"\) \|\| message\.includes\("booked"\) \|\| message\.includes\("confirmation"\)\);/);
+    // run the expression itself on the cases that matter
+    const expr = /const handlerSaidBooked = ([\s\S]*?);\n/.exec(src)[1];
+    const booked = new Function("result", "message", `return ${expr};`);
+    assert.equal(booked({ success: true }, "You're booked for Thursday at 2 pm. Your confirmation code is 123456."), true);
+    assert.equal(booked({ success: true }, "Before I check availability, what type of appointment are you after?"), false, "Cliniko's question");
+    assert.equal(booked({ success: false }, "Can't book this yet: this business's bookings also need the address."), false);
+    assert.equal(booked({ success: false }, "That practitioner is already booked at this time."), false);
+    assert.equal(booked("Booked — confirmation 123456", "Booked — confirmation 123456"), true, "a plain-string result: its words decide, as before");
+    assert.equal(booked(undefined, "You're booked in."), true, "no success flag: the words, as before");
     assert.match(src, /if \(session && toolCall\.name === "book_appointment" && handlerSaidBooked\) \{\n\s*if \(!session\.confirmedBookings\)/);
     assert.match(src, /if \(toolCall\.name === "book_appointment" && handlerSaidBooked\) \{\n\s*scheduleCache\.applyDelta\(session\.organizationId, "book"/);
     assert.equal((src.match(/toolCall\.name === "book_appointment" && \(message\.includes\("confirmed"\)/g) || []).length, 0, "no booking check reads the words alone any more");
   });
 
-  it("classic takes the handler's success too, when it gives one", () => {
-    assert.match(src, /const bookedOk = session\.bookingGuards\n\s*\? toolResult\?\.success === true && bookedWords\n\s*: typeof toolResult\?\.success === "boolean" \? toolResult\.success === true : bookedWords;/);
+  it("classic needs the handler's success (when it gives one) and the words too", () => {
+    assert.match(src, /const bookedOk = session\.bookingGuards\n\s*\? toolResult\?\.success === true && bookedWords\n\s*: \(typeof toolResult\?\.success === "boolean" \? toolResult\.success === true : true\) && bookedWords;/);
   });
 
   it("the loop cap skips the handler's missing-details refusal — matched by its exact opening — and pages at the third", () => {
@@ -72,5 +81,7 @@ describe("server.js: a refusal is never a booking, and a missing-details refusal
     assert.ok(src.includes(`/^Can't book this yet: this business's bookings also need /.test(message)`));
     assert.match(src, /if \(missingDetails && \+\+session\.missingDetailsRefusals === 3\) \{\n\s*console\.error\(`\[ALERT:error\] \[BookingFields\]/);
     assert.match(src, /if \(session && toolCall\.name === "book_appointment" && !missingDetails\) \{/);
+    // from the third, the model is told the way out: "none", or a callback
+    assert.match(src, /if \(missingDetails && session\.missingDetailsRefusals >= 3\) \{\n\s*bookLoopDirective = ` \(SYSTEM — booking attempt \$\{session\.missingDetailsRefusals\} refused for missing details\. Don't keep asking the same thing: if the caller has none of something, pass "none" for it; if they can't or won't give it, offer to take their details for a callback with schedule_callback instead\.\)`;/);
   });
 });

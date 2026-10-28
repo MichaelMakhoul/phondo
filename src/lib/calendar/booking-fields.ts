@@ -103,10 +103,32 @@ export function parseBookingDetails(raw: unknown): Array<{ key: string; value: s
   return pairs;
 }
 
+/**
+ * The fault path's reading of the details: every readable "Label: value" part kept, the rest
+ * (a part with no label, anything past the cap) left out — never a refusal.
+ */
+function parseDetailsLeniently(raw: string | undefined): Array<{ key: string; value: string }> {
+  if (!raw) return [];
+  const text = sanitizeCustomerText(raw.replace(LINE_BREAKS, ";").slice(0, DETAILS_MAX * 2), DETAILS_MAX * 2) ?? "";
+  const pairs: Array<{ key: string; value: string }> = [];
+  for (const part of text.split(";")) {
+    const m = /^\s*([^=:]+?)\s*[=:]\s*(.*)$/.exec(part);
+    if (m && m[2].trim()) pairs.push({ key: m[1], value: m[2].trim() });
+  }
+  return pairs;
+}
+
 /** The name and number keys a caller's details may carry: their own parameters hold them. */
 const CALLER_OWN_KEYS = new Set(["firstname", "fullname", "name", "lastname", "surname", "phone", "phonenumber"]);
 /** A field (by its id or label key) that IS an email, whatever its id — the email parameter fills it. */
 const isEmailKey = (k: string) => k === "email" || k === "emailaddress";
+/**
+ * A caller who has none (no email, no insurer): "none" is an answer (DATA COLLECTION says so)
+ * — for a required email it satisfies the field and saves nothing.
+ */
+const NONE_RE = /^(?:none|no|nope|n\/?a|nil|nothing|not applicable|no email|(?:i |they |he |she )?(?:do ?n'?o?t|does ?n'?o?t) have (?:one|any|an? email))\.?$/i;
+/** A key the model copied with its description ("Urgency Level (Routine, Urgent, or Emergency)") is the field. */
+const keyOf = (key: string) => fieldKey(key.replace(/\s*\([^)]*\)\s*$/, ""));
 
 /**
  * The model's details as text: a string as given; an object (`{"Address": "…"}`) or a list
@@ -136,9 +158,11 @@ function detailsText(raw: unknown): string | undefined {
  */
 export function callerBookingDetails(
   fields: BookingField[],
-  given: { lastName?: string | null; email?: string | null; details?: unknown }
+  given: { lastName?: string | null; email?: string | null; details?: unknown },
+  /** A fields read fault: nothing is refused — what can't be read is left out, the rest kept. */
+  opts: { lenient?: boolean } = {}
 ): { problem: "too_long" | "unreadable" } | { problem: "value_too_long"; label: string } | { missing: BookingField[]; lines: string[]; email: string | null } {
-  const parsed = parseBookingDetails(detailsText(given.details));
+  const parsed = opts.lenient ? parseDetailsLeniently(detailsText(given.details)) : parseBookingDetails(detailsText(given.details));
   if (parsed === "too_long" || parsed === "unreadable") return { problem: parsed };
   const byKey = new Map<string, BookingField>();
   for (const f of fields) {
@@ -147,17 +171,24 @@ export function callerBookingDetails(
   }
   const values = new Map<string, string>();
   const others: string[] = [];
-  let email = typeof given.email === "string" && given.email.trim() ? given.email.trim() : null;
+  const givenEmail = typeof given.email === "string" && given.email.trim() ? given.email.trim() : null;
+  let emailNone = givenEmail !== null && NONE_RE.test(givenEmail);
+  let email = emailNone ? null : givenEmail;
   for (const { key, value } of parsed) {
-    // Never cut a detail the business asked for: too long is refused, as on the owner's path.
-    if (value.length > DETAIL_VALUE_MAX) return { problem: "value_too_long", label: byKey.get(fieldKey(key))?.label ?? sanitizeCustomerText(key, 40) ?? "detail" };
+    // Never cut a detail the business asked for: too long is refused, as on the owner's path
+    // (on a fault, left out).
+    if (value.length > DETAIL_VALUE_MAX) {
+      if (opts.lenient) continue;
+      return { problem: "value_too_long", label: byKey.get(keyOf(key))?.label ?? sanitizeCustomerText(key, 40) ?? "detail" };
+    }
     const v = sanitizeCustomerText(value, DETAIL_VALUE_MAX);
     if (!v) continue; // a blank value is no value
-    const k = fieldKey(key);
+    const k = keyOf(key);
     const field = byKey.get(k);
     if (isEmailKey(k)) {
-      // Only something that looks like an address counts ("Email: not given" isn't one).
+      // Only something that looks like an address is one ("Email: not given" isn't); "none" is an answer.
       if (v.includes("@")) email ??= v.replace(/\s+/g, "");
+      else if (NONE_RE.test(v)) emailNone = true;
       if (!field || BOOKING_OWN_FIELD_IDS.has(field.id)) continue;
     }
     if (field && !BOOKING_OWN_FIELD_IDS.has(field.id)) {
@@ -172,10 +203,10 @@ export function callerBookingDetails(
   const missing = fields.filter((f) => {
     if (!f.required) return false;
     if (f.id === "last_name") return lastName === null;
-    if (f.id === "email_address") return email === null;
+    if (f.id === "email_address") return email === null && !emailNone;
     if (BOOKING_OWN_FIELD_IDS.has(f.id)) return false;
     // A custom field that is an email ("Email", "Email Address"): the email parameter fills it too.
-    if (isEmailKey(fieldKey(f.label)) || isEmailKey(fieldKey(f.id))) return email === null && !values.has(f.id);
+    if (isEmailKey(fieldKey(f.label)) || isEmailKey(fieldKey(f.id))) return email === null && !emailNone && !values.has(f.id);
     return !values.has(f.id);
   });
   const lines = [...fields.filter((f) => values.has(f.id)).map((f) => `${f.label}: ${values.get(f.id)}`), ...others];

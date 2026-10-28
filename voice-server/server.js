@@ -3289,6 +3289,9 @@ wss.on("connection", (twilioWs) => {
                   if (missingDetails && ++session.missingDetailsRefusals === 3) {
                     console.error(`[ALERT:error] [BookingFields] a booking was refused 3 times for missing required details — the caller may be stuck (callSid=${session.callSid}, org=${session.organizationId})`);
                   }
+                  if (missingDetails && session.missingDetailsRefusals >= 3) {
+                    bookLoopDirective = ` (SYSTEM — booking attempt ${session.missingDetailsRefusals} refused for missing details. Don't keep asking the same thing: if the caller has none of something, pass "none" for it; if they can't or won't give it, offer to take their details for a callback with schedule_callback instead.)`;
+                  }
                   if (session && toolCall.name === "book_appointment" && !missingDetails) {
                     const lastAudit = session.toolCallAudit[session.toolCallAudit.length - 1] || {};
                     const succeeded = (typeof result === "object" && typeof result.success === "boolean")
@@ -3330,9 +3333,10 @@ wss.on("connection", (twilioWs) => {
                   // SCRUM-617: and only a booking the handler said succeeded, when it says — a
                   // refusal that names what's still needed is no booking (its retry was refused
                   // as "already booked", with nothing in the diary).
-                  const handlerSaidBooked = (typeof result === "object" && result !== null && typeof result.success === "boolean")
-                    ? result.success === true
-                    : (message.includes("confirmed") || message.includes("booked") || message.includes("confirmation"));
+                  // As the fast path ("gate review 3"): a success that books nothing — Cliniko's "Before
+                  // I check availability, what type of appointment…?" — is not a booking either.
+                  const handlerSaidBooked = (typeof result === "object" && result !== null && typeof result.success === "boolean" ? result.success === true : true)
+                    && (message.includes("confirmed") || message.includes("booked") || message.includes("confirmation"));
                   if (session && toolCall.name === "book_appointment" && handlerSaidBooked) {
                     if (!session.confirmedBookings) session.confirmedBookings = new Map();
                     const bookKey = bookingKey(toolCall.args);
@@ -4895,7 +4899,7 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           // SCRUM-617: on classic too, the handler's own success when it gives one.
           const bookedOk = session.bookingGuards
             ? toolResult?.success === true && bookedWords
-            : typeof toolResult?.success === "boolean" ? toolResult.success === true : bookedWords;
+            : (typeof toolResult?.success === "boolean" ? toolResult.success === true : true) && bookedWords;
           if (fnName === "book_appointment" && bookedOk) {
             if (!session.confirmedBookings) session.confirmedBookings = new Map();
             const bookKey = bookingKey(fnArgs);

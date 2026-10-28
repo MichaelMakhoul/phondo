@@ -368,3 +368,61 @@ describe("SCRUM-617 review round 1: refusals, the last name, faults, and the edg
   });
 });
 
+// SCRUM-617 review round 2 (silent + code lenses).
+describe("SCRUM-617 review round 2: 'none', copied descriptions, the fault path, the line's own fields", () => {
+  const EMAIL_REQUIRED = [{ id: "first_name", label: "First Name", required: true }, { id: "email_address", label: "Email Address", required: true }];
+
+  it("a caller with no email books at a business that requires one: 'none' is an answer — in email or in details — and nothing is saved as the email", async () => {
+    withFields(EMAIL_REQUIRED);
+    const byParam = await handleBookAppointment(ORG, { ...ARGS, email: "none" }, { callId: CALL });
+    expect(byParam.success).toBe(true);
+    const byDetail = await handleBookAppointment(ORG, { ...ARGS, details: "Email: they don't have one" }, { callId: CALL });
+    expect(byDetail.success).toBe(true);
+    for (const row of inserts) expect(String(row.attendee_email ?? "")).not.toMatch(/none|have one/i);
+    const stillAsked = await handleBookAppointment(ORG, { ...ARGS, details: "Email: maybe later" }, { callId: CALL });
+    expect(stillAsked.success).toBe(false); // not an address, not a "none"
+  });
+
+  it("a label the model copied with its choices ('Urgency Level (Routine, Urgent, or Emergency)') is the field", async () => {
+    withFields([{ id: "first_name", label: "First Name", required: true }, { id: "urgency_level", label: "Urgency Level", required: true, description: "Routine, Urgent, or Emergency" }]);
+    const r = await handleBookAppointment(ORG, { ...ARGS, details: "Urgency Level (Routine, Urgent, or Emergency): Urgent" }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(inserts[0].notes).toBe("Urgency Level: Urgent");
+  });
+
+  it("a fields read fault keeps every readable detail — one it can't read, or an over-long one, is left out, never all of them", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(createAdminClient).mockReturnValue({
+      from: (table: string) => {
+        const client = fakeAdmin().from(table);
+        if (table === "assistants") client.maybeSingle = async () => ({ data: null, error: { code: "57014" } });
+        return client;
+      },
+    } as never);
+    const r = await handleBookAppointment(ORG, { ...ARGS, details: `Address: 12 Smith St; just a loose phrase; Notes: ${"x".repeat(320)}; Reason for Calling: leak` }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(inserts[0].notes).toBe("Address: 12 Smith St\nReason for Calling: leak");
+  });
+
+  it("the call's assistant isn't the org's (or has gone): the org's oldest assistant's fields still apply — never 'nothing required'", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    assistantRow = { prompt_config: { fields: COPPERLINE_FIELDS } };
+    vi.mocked(createAdminClient).mockReturnValue({
+      from: (table: string) => {
+        const client = fakeAdmin().from(table);
+        if (table === "assistants") {
+          let byId = false;
+          const eq = client.eq;
+          client.eq = (col: string, val: unknown) => { if (col === "id") byId = val !== "asst-real"; return eq(col, val); };
+          client.maybeSingle = async () => ({ data: byId ? null : assistantRow, error: null });
+        }
+        return client;
+      },
+    } as never);
+    const r = await handleBookAppointment(ORG, ARGS, { callId: CALL, assistantId: "asst-other-org" });
+    expect(r.success).toBe(false); // the oldest assistant requires the address and reason
+    expect(r.data).toEqual({ missing_fields: [{ id: "address", label: "Address" }, { id: "reason_for_calling", label: "Reason for Calling" }] });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("the call's assistant isn't this org's"), expect.objectContaining({ assistantId: "asst-other-org" }));
+  });
+});
+
