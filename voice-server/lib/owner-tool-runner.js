@@ -880,7 +880,36 @@ function buildOwnerCallSummary(audit) {
   return parts.length ? `Owner call: ${parts.join("; ")}.` : "Owner call: no changes made.";
 }
 
+/**
+ * SCRUM-618: the owner talked over the assistant (the bubble's barge-in). A read-back they
+ * cut off wasn't heard, so no pending one may be confirmed by a later "yes" — each change
+ * asked for again gets a fresh read-back (the gate refuses a confirm with nothing pending).
+ * Its refusal record goes too: a confirm the gate refuses after a barge-in is expected, not
+ * the "blocking a change the owner confirmed" fault it pages on. That record no longer pages a
+ * lasting cause (the speaker's own echo barging in on every read-back refuses every "yes"), so
+ * barge-ins that cut a read-back off are counted — once per barge-in (`event`) — and paged at
+ * the third.
+ * @param {{ callSid?: string, organizationId?: string, ownerPendingConfirmations?: Map<string, unknown>, ownerConfirmRefusals?: Map<string, unknown>, ownerReadBackCutEvent?: unknown, ownerReadBacksCut?: number }} session
+ * @param {unknown} [event] - the barge-in this is for (the bubble's turn number)
+ * @returns {boolean} whether a read-back was pending
+ */
+function forgetOwnerReadBacks(session, event) {
+  const pending = session.ownerPendingConfirmations;
+  const had = pending instanceof Map && pending.size > 0;
+  if (pending instanceof Map) pending.clear();
+  if (session.ownerConfirmRefusals instanceof Map) session.ownerConfirmRefusals.clear();
+  if (had && event !== undefined && session.ownerReadBackCutEvent !== event) {
+    session.ownerReadBackCutEvent = event;
+    session.ownerReadBacksCut = (session.ownerReadBacksCut || 0) + 1;
+    if (session.ownerReadBacksCut === 3) {
+      console.error(`[ALERT:error] [OwnerTools] 3 read-backs cut off by the owner talking over them in one session — every "yes" needs a fresh read-back; if the owner wasn't talking, check the bubble for echo (callSid=${session.callSid}, org=${session.organizationId})`);
+    }
+  }
+  return had;
+}
+
 module.exports = {
+  forgetOwnerReadBacks,
   OWNER_MAX_TOOL_CALLS,
   OWNER_MAX_TOOL_ROUNDS,
   CANCELLED_BEFORE_SENT_MESSAGE,

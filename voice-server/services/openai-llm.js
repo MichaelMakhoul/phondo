@@ -4,6 +4,7 @@
 // LLM_MODEL overrides the provider's default model.
 const { DEBUG_TRANSCRIPTS } = require("../lib/log-transcript");
 const { openAIChatParams, claudeLatencyParams } = require("../lib/model-params");
+const { messagesRequest, noteGatewayRefusal } = require("../lib/anthropic-gateway");
 const LLM_PROVIDER = process.env.LLM_PROVIDER || "openai";
 
 // SCRUM-588: defaults were re-measured against their successors on the exact
@@ -41,11 +42,11 @@ const PROVIDER_CONFIG = {
     apiKeyEnv: "ANTHROPIC_API_KEY",
     name: "Anthropic",
     type: "anthropic",
-    baseUrl: "https://api.anthropic.com/v1/messages",
-    authHeader: (key) => ({
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-    }),
+    // SCRUM-618: no URL or key of its own — every request goes through
+    // lib/anthropic-gateway.js (ANTHROPIC_GATEWAY), straight to Anthropic by
+    // default or via OpenRouter. Going direct here bypassed it: with prod on
+    // OpenRouter (the Anthropic balance is empty), every classic turn failed,
+    // so OWNER_PIPELINE=classic could not take the owner assistant off Gemini.
   },
 };
 
@@ -56,6 +57,22 @@ if (!config) {
 }
 const DEFAULT_MODEL = process.env.LLM_MODEL || config.defaultModel;
 const MAX_RETRIES = 2;
+/**
+ * SCRUM-618: retried before giving up — a rate limit, and the overloads OpenRouter
+ * passes on (as the fast path's claude-chat.js does). Two transient errors in a row
+ * otherwise end an owner's bubble session.
+ */
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 529]);
+
+/** An error response's own message (Anthropic/OpenRouter `{ error: { message } }`), else its text. */
+function providerErrorMessage(text) {
+  try {
+    const parsed = JSON.parse(text);
+    return typeof parsed?.error?.message === "string" ? parsed.error.message : text;
+  } catch {
+    return text;
+  }
+}
 
 function getApiKey(explicitKey) {
   const key = explicitKey || process.env[config.apiKeyEnv];
@@ -198,7 +215,9 @@ function buildAnthropicBody(model, system, anthropicMsgs, openaiTools, stream) {
     model,
     system: system || undefined,
     messages: anthropicMsgs,
-    max_tokens: openaiTools?.length > 0 ? 300 : 150,
+    // SCRUM-618: as the fast path (claude-chat.js) — 300 cut a multi-field tool call's
+    // JSON off mid-way (owner_book_appointment has nine fields) and long lists mid-sentence.
+    max_tokens: openaiTools?.length > 0 ? 600 : 200,
     ...claudeLatencyParams(model),
   };
   if (stream) body.stream = true;
@@ -240,6 +259,26 @@ function buildOpenAICompatBody(model, messages, options, stream) {
 
 const SENTENCE_BREAK = /(?<=[.!?])\s+/;
 
+/**
+ * The request for this provider: Anthropic through the gateway (its URL, key
+ * and body — the caller's key is ignored, the gateway picks its own), anything
+ * else straight to the provider with the caller's key.
+ * @returns {{ fetchUrl: string, headers: Record<string, string>, payload: string }}
+ */
+function providerRequest(apiKey, model, messages, options, stream) {
+  if (config.type === "anthropic") {
+    const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
+    const req = messagesRequest(buildAnthropicBody(model, system, anthropicMsgs, options?.tools, stream));
+    return { fetchUrl: req.url, headers: req.headers, payload: req.body };
+  }
+  const resolvedKey = getApiKey(apiKey);
+  return {
+    fetchUrl: config.baseUrl,
+    headers: { ...config.authHeader(resolvedKey), "Content-Type": "application/json" },
+    payload: JSON.stringify(buildOpenAICompatBody(model, messages, options, stream)),
+  };
+}
+
 // ─── Non-streaming ──────────────────────────────────────────────────────────
 
 async function getChatResponse(apiKey, messages, options) {
@@ -247,44 +286,28 @@ async function getChatResponse(apiKey, messages, options) {
     throw new Error("getChatResponse called with empty messages array");
   }
 
-  const resolvedKey = getApiKey(apiKey);
   const model = options?.model || DEFAULT_MODEL;
-
-  let fetchUrl, headers;
-  // Request payload differs by provider (anthropic vs openai-compatible)
-  // and gains tools/tool_choice conditionally — type it as an open record.
-  /** @type {Record<string, any>} */
-  let body;
-
-  if (config.type === "anthropic") {
-    const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
-    fetchUrl = config.baseUrl;
-    headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
-    body = buildAnthropicBody(model, system, anthropicMsgs, options?.tools, false);
-  } else {
-    fetchUrl = config.baseUrl;
-    headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
-    body = buildOpenAICompatBody(model, messages, options, false);
-  }
+  const { fetchUrl, headers, payload } = providerRequest(apiKey, model, messages, options, false);
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const res = await fetch(fetchUrl, {
       method: "POST",
       signal: AbortSignal.timeout(10_000),
       headers,
-      body: JSON.stringify(body),
+      body: payload,
     });
 
-    if (res.status === 429 && attempt < MAX_RETRIES) {
-      const retryAfter = res.headers.get("retry-after");
-      const waitSec = retryAfter ? Math.min(parseFloat(retryAfter), 10) : 3;
-      console.warn(`[LLM] Rate limited, retrying in ${waitSec}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
+    if (RETRYABLE_STATUSES.has(res.status) && attempt < MAX_RETRIES) {
+      const retryAfter = res.headers?.get?.("retry-after");
+      const waitSec = retryAfter ? Math.min(parseFloat(retryAfter), 10) : res.status === 429 ? 3 : attempt + 1;
+      console.warn(`[LLM] ${res.status === 429 ? "Rate limited" : `${config.name} error ${res.status}`}, retrying in ${waitSec}s (attempt ${attempt + 1}/${MAX_RETRIES})`);
       await new Promise((r) => setTimeout(r, waitSec * 1000));
       continue;
     }
 
     if (!res.ok) {
       const text = (await res.text()).slice(0, 500);
+      if (config.type === "anthropic") noteGatewayRefusal(res.status, providerErrorMessage(text));
       throw new Error(`${config.name} API error ${res.status}: ${text}`);
     }
 
@@ -323,25 +346,9 @@ async function streamChatResponse(apiKey, messages, options) {
     throw new Error("streamChatResponse called with empty messages array");
   }
 
-  const resolvedKey = getApiKey(apiKey);
   const model = options?.model || DEFAULT_MODEL;
   const onSentence = options?.onSentence;
-
-  let fetchUrl, headers;
-  // See getChatResponse: provider-specific payload + conditional tools.
-  /** @type {Record<string, any>} */
-  let body;
-
-  if (config.type === "anthropic") {
-    const { system, messages: anthropicMsgs } = toAnthropicMessages(messages);
-    fetchUrl = config.baseUrl;
-    headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
-    body = buildAnthropicBody(model, system, anthropicMsgs, options?.tools, true);
-  } else {
-    fetchUrl = config.baseUrl;
-    headers = { ...config.authHeader(resolvedKey), "Content-Type": "application/json" };
-    body = buildOpenAICompatBody(model, messages, options, true);
-  }
+  const { fetchUrl, headers, payload } = providerRequest(apiKey, model, messages, options, true);
 
   // Retry loop for rate limits
   let res;
@@ -350,13 +357,13 @@ async function streamChatResponse(apiKey, messages, options) {
       method: "POST",
       signal: AbortSignal.timeout(15_000),
       headers,
-      body: JSON.stringify(body),
+      body: payload,
     });
 
-    if (res.status === 429 && attempt < 2) {
-      const retryAfter = res.headers.get("retry-after");
+    if (RETRYABLE_STATUSES.has(res.status) && attempt < 2) {
+      const retryAfter = res.headers?.get?.("retry-after");
       const waitMs = Math.min(retryAfter ? Number(retryAfter) * 1000 : 1000 * (attempt + 1), 5000);
-      console.warn(`[LLM] Stream rate limited (429), retrying in ${waitMs}ms (attempt ${attempt + 1}/3)`);
+      console.warn(`[LLM] Stream ${res.status === 429 ? "rate limited (429)" : `${config.name} error ${res.status}`}, retrying in ${waitMs}ms (attempt ${attempt + 1}/3)`);
       await new Promise((r) => setTimeout(r, waitMs));
       continue;
     }
@@ -365,6 +372,7 @@ async function streamChatResponse(apiKey, messages, options) {
 
   if (!res.ok) {
     const text = (await res.text()).slice(0, 500);
+    if (config.type === "anthropic") noteGatewayRefusal(res.status, providerErrorMessage(text));
     throw new Error(`${config.name} API error ${res.status}: ${text}`);
   }
 
@@ -468,6 +476,7 @@ async function parseAnthropicStream(res, onSentence) {
   let textBuffer = "";
   const toolUses = {}; // indexed by block index
   let hasToolCalls = false;
+  let stopReason = null;
   let parseFailures = 0;
 
   const reader = res.body.getReader();
@@ -510,6 +519,8 @@ async function parseAnthropicStream(res, onSentence) {
             arguments: "",
           };
         }
+      } else if (parsed.type === "message_delta") {
+        if (parsed.delta?.stop_reason) stopReason = parsed.delta.stop_reason;
       } else if (parsed.type === "content_block_delta") {
         const delta = parsed.delta;
         if (delta.type === "text_delta") {
@@ -531,21 +542,26 @@ async function parseAnthropicStream(res, onSentence) {
     }
   }
 
+  if (parseFailures > 0) {
+    console.warn(`[LLM] Anthropic stream completed with ${parseFailures} parse failure(s)`);
+  }
+  // SCRUM-618: a reply that ran out of room is cut off — said, not missed (a tool call's JSON would be incomplete).
+  if (stopReason === "max_tokens") {
+    console.warn(`[LLM] Anthropic reply cut off at max_tokens${hasToolCalls ? ` (tool calls: ${Object.values(toolUses).map((t) => t.name).join(", ")})` : ""}`);
+  }
+
   if (hasToolCalls) {
     const toolCalls = Object.keys(toolUses).sort((a, b) => Number(a) - Number(b)).map((idx) => {
       const tu = toolUses[idx];
       return {
         id: tu.id,
         type: "function",
-        function: { name: tu.name, arguments: tu.arguments },
+        // A tool with no arguments streams none: "{}", not "" (which fails to parse and is logged as a fault).
+        function: { name: tu.name, arguments: tu.arguments || "{}" },
       };
     });
     const message = { role: "assistant", content: fullContent || null, tool_calls: toolCalls };
     return { type: "tool_calls", toolCalls, message };
-  }
-
-  if (parseFailures > 0) {
-    console.warn(`[LLM] Anthropic stream completed with ${parseFailures} parse failure(s)`);
   }
 
   if (onSentence && textBuffer.trim()) onSentence(textBuffer.trim());
@@ -585,6 +601,6 @@ module.exports = {
   // Exported for testing only
   _test: {
     toAnthropicMessages, toAnthropicTools, parseAnthropicResponse, processSentenceBuffer,
-    buildAnthropicBody, buildOpenAICompatBody,
+    buildAnthropicBody, buildOpenAICompatBody, providerErrorMessage, RETRYABLE_STATUSES,
   },
 };

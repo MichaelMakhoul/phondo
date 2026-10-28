@@ -110,11 +110,14 @@ describe("describeGateway: the boot log's line", () => {
     assert.equal(describeGateway({ ...DIRECT, ANTHROPIC_GATEWAY: "" }), null, "blank is the default, as messagesRequest reads it");
   });
 
-  it("says where requests go, a missing key, a bad value, and the classic fallback that still goes direct", () => {
+  it("says where requests go, a missing key, a bad value, and that the classic pipeline's Claude turns go the same way", () => {
     assert.equal(describeGateway(OPENROUTER), "Anthropic requests: via OpenRouter, claude-haiku-5-5 only, pinned to Anthropic's servers");
     assert.equal(describeGateway({ ...OPENROUTER, OPENROUTER_API_KEY: "" }), "⚠️ Anthropic requests: OPENROUTER_API_KEY not set (ANTHROPIC_GATEWAY=openrouter) — every one will fail");
     assert.match(describeGateway({ ANTHROPIC_GATEWAY: "nope" }) ?? "", /^⚠️ Anthropic requests: ANTHROPIC_GATEWAY must be .* — every one will fail$/);
-    assert.match(describeGateway({ ...OPENROUTER, LLM_PROVIDER: "anthropic" }) ?? "", /; the classic fallback \(LLM_PROVIDER=anthropic\) still calls Anthropic directly$/);
+    assert.match(describeGateway({ ...OPENROUTER, LLM_PROVIDER: "anthropic" }) ?? "", /; the classic pipeline too \(LLM_PROVIDER=anthropic\)$/);
+    // SCRUM-618: the classic model is checked against OpenRouter's list like the others — but only when classic runs Claude.
+    assert.match(describeGateway({ ...OPENROUTER, LLM_PROVIDER: "anthropic", LLM_MODEL: "claude-sonnet-5-5" }) ?? "", /won't take LLM_MODEL=claude-sonnet-5-5; the classic pipeline too/);
+    assert.ok(!(describeGateway({ ...OPENROUTER, LLM_PROVIDER: "openai", LLM_MODEL: "gpt-4.1-mini" }) ?? "").includes("won't take"));
     assert.ok(!(describeGateway(OPENROUTER) ?? "").includes("sk-or-test"));
   });
 
@@ -129,7 +132,7 @@ describe("describeGateway: the boot log's line", () => {
 });
 
 describe("every Anthropic Messages call goes through the gateway", () => {
-  it("no other source file names api.anthropic.com (the classic fallback, services/openai-llm.js, is the one exemption)", () => {
+  it("no other source file names api.anthropic.com — the classic pipeline (services/openai-llm.js) included, since SCRUM-618", () => {
     // A new call site (e.g. PR #442's booking pre-check) would otherwise hit the empty account while ANTHROPIC_GATEWAY=openrouter.
     const root = path.join(__dirname, "..");
     const offenders = [];
@@ -142,7 +145,7 @@ describe("every Anthropic Messages call goes through the gateway", () => {
       }
     };
     walk(root);
-    assert.deepEqual(offenders.sort(), ["lib/anthropic-gateway.js", "services/openai-llm.js"]);
+    assert.deepEqual(offenders.sort(), ["lib/anthropic-gateway.js"]);
   });
 });
 

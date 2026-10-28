@@ -564,6 +564,7 @@ describe("/ws/test setup: the owner block, run for real", () => {
       finishOwnerWebSession: async (s, args, deps) => { calls.push(["finish", { callFailed: s.callFailed, callRecordId: s.callRecordId }, args, deps]); },
       ownerWebFinishDeps: () => ({ the: "deps" }),
       buildOwnerWebPrompt: (args) => { calls.push(["buildOwnerWebPrompt", args]); return { systemPrompt: "<owner prompt>" }; },
+      applyOwnerSessionSettings: (s) => calls.push(["applyOwnerSessionSettings", s.ownerMode]), // SCRUM-618
       ws,
       console: recordingConsole(lines),
     };
@@ -589,29 +590,30 @@ describe("/ws/test setup: the owner block, run for real", () => {
     assert.equal(r.session.piiRedactionEnabled, true);
     assert.equal(r.session.ownerFirstName, "Dave");
     assert.equal(r.session.callRecordId, "call-1");
-    assert.deepEqual(r.calls.map((c) => c[0]), ["loadOwnerFirstName", "createCallRecord", "buildOwnerWebPrompt"]);
-    const fields = r.calls[1][1];
+    assert.deepEqual(r.calls.map((c) => c[0]), ["applyOwnerSessionSettings", "loadOwnerFirstName", "createCallRecord", "buildOwnerWebPrompt"]);
+    const fields = r.calls[2][1];
     assert.deepEqual({ ...fields, metadata: undefined }, { orgId: "org-1", assistantId: "asst-1", phoneNumberId: null, callerPhone: null, callSid: "web_owner_jti-1", metadata: undefined });
     assert.equal(fields.metadata, OWNER_WEB_RECORD_METADATA);
-    assert.deepEqual(r.calls[2][1], { organization: { name: "Copperline Plumbing", timezone: "Australia/Sydney" }, serviceTypes: [{ id: "st-1", name: "Blocked drain" }], ownerFirstName: "Dave" });
+    assert.deepEqual(r.calls[3][1], { organization: { name: "Copperline Plumbing", timezone: "Australia/Sydney" }, serviceTypes: [{ id: "st-1", name: "Blocked drain" }], ownerFirstName: "Dave" });
+    assert.deepEqual(r.calls[0], ["applyOwnerSessionSettings", true], "SCRUM-618: the owner's settings, applied once owner mode is on");
   });
 
   it("the page closes while the name loads: no row is written", async () => {
     const r = await setup({ closeDuring: "name" });
     assert.equal(r.result, undefined);
-    assert.deepEqual(r.calls.map((c) => c[0]), ["loadOwnerFirstName"]);
+    assert.deepEqual(r.calls.map((c) => c[0]), ["applyOwnerSessionSettings", "loadOwnerFirstName"]);
   });
 
   it("the page closes while the row is written: it is completed at once, as failed (a completed call is billed)", async () => {
     const r = await setup({ closeDuring: "row" });
     assert.equal(r.result, undefined);
-    assert.deepEqual(r.calls.map((c) => c[0]), ["loadOwnerFirstName", "createCallRecord", "finish"]);
-    assert.deepEqual(r.calls[2].slice(1), [{ callFailed: true, callRecordId: "call-1" }, { transcript: "", durationSeconds: 0 }, { the: "deps" }]);
+    assert.deepEqual(r.calls.map((c) => c[0]), ["applyOwnerSessionSettings", "loadOwnerFirstName", "createCallRecord", "finish"]);
+    assert.deepEqual(r.calls[3].slice(1), [{ callFailed: true, callRecordId: "call-1" }, { transcript: "", durationSeconds: 0 }, { the: "deps" }]);
   });
 
   it("the page closes while a row that failed is written: there is nothing to complete", async () => {
     const r = await setup({ closeDuring: "row", recordId: null });
-    assert.deepEqual(r.calls.map((c) => c[0]), ["loadOwnerFirstName", "createCallRecord"]);
+    assert.deepEqual(r.calls.map((c) => c[0]), ["applyOwnerSessionSettings", "loadOwnerFirstName", "createCallRecord"]);
   });
 
   it("the row can't be written: the owner is told and the session closes before anything runs", async () => {
@@ -628,7 +630,12 @@ describe("/ws/test setup: the owner block, run for real", () => {
 describe("/ws/test classic speech recognition on an owner session, run for real", () => {
   const STT_CALLBACKS = sliceInHandler("onTranscript: ({ transcript, isFinal }) => {", "\n      }, { industry: session.organization?.industry });");
 
-  function makeStt(session) {
+  /** what reached the barge-in check, and what it answers (SCRUM-618) */
+  let bargeIns = [];
+  let bargeInSays = false;
+  function makeStt(session, { bargesIn = false } = {}) {
+    bargeIns = [];
+    bargeInSays = bargesIn;
     const calls = [];
     const lines = [];
     const ws = fakeWs();
@@ -640,12 +647,27 @@ describe("/ws/test classic speech recognition on an owner session, run for real"
       noteOwnerSpeech,
       logTranscript: () => {},
       handleTestUserSpeech: (s, w, text) => calls.push(["turn", text]),
+      ownerWebBargeIn: (s, w, text) => { bargeIns.push(text); return bargeInSays; }, // SCRUM-618
+      forgetOwnerReadBacks: (s) => calls.push(["forgetOwnerReadBacks"]),
       cleaningUp: false,
       OWNER_WEB_PROBLEM_MESSAGE: "<owner problem>",
       console: recordingConsole(lines),
     });
     return { cbs: h.cbs, setCleaningUp: h.setCleaningUp, calls, lines, ws };
   }
+
+  // SCRUM-618: every transcript is offered to the barge-in check; one that barges in forgets the
+  // pending read-backs (a cut-off read-back confirms nothing — code lens, round 2).
+  it("each transcript — interim or final — goes to the barge-in check; a barge-in forgets the pending read-backs", () => {
+    const s = ownerSession();
+    const quiet = makeStt(s);
+    quiet.cbs.onTranscript({ transcript: "what about", isFinal: false });
+    assert.deepEqual(bargeIns, ["what about"]);
+    assert.ok(!quiet.calls.some((c) => c[0] === "forgetOwnerReadBacks"));
+    const loud = makeStt(s, { bargesIn: true });
+    loud.cbs.onTranscript({ transcript: "no stop that", isFinal: false });
+    assert.deepEqual(loud.calls.filter((c) => c[0] === "forgetOwnerReadBacks"), [["forgetOwnerReadBacks"]]);
+  });
 
   it("the owner's speech is stamped on a final transcript, never an interim one (as on the phone line), and the final starts a turn", () => {
     const s = ownerSession();

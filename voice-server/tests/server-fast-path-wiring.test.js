@@ -4246,7 +4246,8 @@ describe("SCRUM-594 (F5, F9): the call's languages on the fast path", () => {
     // the fast-path sites (the tool loop, the Flux fallback, the re-prompt) read callLanguage
     assert.match(src, /reply = getErrorMsg\(callLanguage\(session\), "goodbye"\);/);
     assert.match(src, /reply = getErrorMsg\(callLanguage\(session\), "repeatRequest"\);\n\s*console\.warn\(`\[Pipeline\] Tool call loop exhausted/);
-    assert.match(src, /await sendTTS\(session, twilioWs, getErrorMsg\(callLanguage\(session\), "troubleRepeat"\), undefined, NOT_A_REPLY\);/);
+    // SCRUM-618: an owner whose tool ran hears its own words instead (SF5); everyone else the retry line, in the call's language.
+    assert.match(src, /: getErrorMsg\(callLanguage\(session\), "troubleRepeat"\);\n\s*await sendTTS\(session, twilioWs, apology, undefined, NOT_A_REPLY\);/);
     assert.match(src, /const again = getErrorMsg\(callLanguage\(session\), "sayAgain"\);/);
     assert.match(src, /const text = `\$\{getErrorMsg\(callLanguage\(session\), "didntCatch"\)\} \$\{question\}`;/);
   });

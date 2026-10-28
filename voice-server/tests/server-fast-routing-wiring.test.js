@@ -88,7 +88,7 @@ describe("SCRUM-594: demo-line switch — source pins", () => {
     // SCRUM-598: a customer call the assistant placed runs on Gemini Live only, never routed.
     assert.match(startHandler, /const effectivePipeline = session\.ownerMode\s*\?\s*resolveOwnerPipeline\(\)\s*:\s*session\.notify\s*\?\s*"gemini-live"(?:\s*\/\/[^\n]*)?\s*:\s*resolveCallPipeline\(\{/);
     // SCRUM-596: plus the browser owner session's own site in /ws/test.
-    assert.equal((src.match(/resolveOwnerPipeline\(/g) || []).length, 2, "owner calls resolve their pipeline once, at this site (and the browser owner session at its own)");
+    assert.equal((src.match(/resolveOwnerPipeline\(/g) || []).length, 3, "owner calls resolve their pipeline once, at this site (and the browser owner session at its own, and the boot line — SCRUM-618)");
     assert.equal((src.match(/resolveCallPipeline\(/g) || []).length, 1, "one routing decision per call");
   });
 

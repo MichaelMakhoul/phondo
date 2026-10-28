@@ -11,6 +11,8 @@ const {
   DEMO_LINE_PIPELINES,
   fastPathKeysPresent,
   fastPathProblem,
+  ownerClassicProblem,
+  _test: routingTest,
 } = require("../lib/pipeline-routing");
 const { noteGatewayRefusal, _test: gatewayTest } = require("../lib/anthropic-gateway");
 
@@ -423,3 +425,46 @@ describe("resolveCallPipeline: classic-fast without its keys (SCRUM-594 R12c)", 
     assert.equal(fastPathKeysPresent(env), true);
   });
 });
+
+// SCRUM-618: OWNER_PIPELINE=classic takes the owner assistant off Gemini — onto Claude when
+// classic runs it (LLM_PROVIDER=anthropic). Classic that can't reach Claude would apologise on
+// every owner turn, so owner calls fall back to Gemini while it's there, paged once.
+describe("owner calls on classic fall back to Gemini when classic can't reach Claude (SCRUM-618)", () => {
+  const CLAUDE_OK = { LLM_PROVIDER: "anthropic", ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "or-key", GEMINI_API_KEY: "g-key" };
+
+  it("ownerClassicProblem: Claude's gateway key, a model it takes, no standing refusal — and nothing to check when classic isn't Claude", (t) => {
+    t.after(() => gatewayTest.resetRefusal());
+    assert.equal(ownerClassicProblem(CLAUDE_OK), null);
+    assert.equal(ownerClassicProblem({ ...CLAUDE_OK, OPENROUTER_API_KEY: undefined }), "OPENROUTER_API_KEY not set (ANTHROPIC_GATEWAY=openrouter)");
+    assert.match(ownerClassicProblem({ ...CLAUDE_OK, LLM_MODEL: "claude-sonnet-5-5" }) ?? "", /claude-sonnet-5-5/);
+    assert.equal(ownerClassicProblem({ LLM_PROVIDER: "openai" }), null);
+    assert.equal(ownerClassicProblem({}), null, "unset means openai");
+    noteGatewayRefusal(402, "Insufficient credits");
+    assert.match(ownerClassicProblem(CLAUDE_OK) ?? "", /^Claude requests refused \(HTTP 402/);
+  });
+
+  it("classic that can reach Claude stays classic; one that can't goes to gemini-live, paged once per process", (t) => {
+    t.after(() => { gatewayTest.resetRefusal(); routingTest.resetOwnerClassicWarned(); });
+    routingTest.resetOwnerClassicWarned();
+    const errors = [];
+    const realError = console.error;
+    console.error = (...a) => errors.push(a.join(" "));
+    try {
+      assert.equal(resolveOwnerPipeline("classic", "gemini-live", CLAUDE_OK), "classic");
+      const broken = { ...CLAUDE_OK, OPENROUTER_API_KEY: undefined };
+      assert.equal(resolveOwnerPipeline("classic", "gemini-live", broken), "gemini-live");
+      assert.equal(resolveOwnerPipeline(undefined, "classic", broken), "gemini-live", "a global classic falls back the same way");
+    } finally {
+      console.error = realError;
+    }
+    assert.deepEqual(errors, ["[ALERT:error] [Pipeline] owner calls can't run on classic (OPENROUTER_API_KEY not set (ANTHROPIC_GATEWAY=openrouter)) — they use gemini-live until it's fixed"]);
+  });
+
+  it("no Gemini to fall back to: classic stays (its own failures page, turn by turn); Gemini owner calls are untouched", (t) => {
+    t.after(() => routingTest.resetOwnerClassicWarned());
+    const noGemini = { ...CLAUDE_OK, OPENROUTER_API_KEY: undefined, GEMINI_API_KEY: undefined };
+    assert.equal(resolveOwnerPipeline("classic", "gemini-live", noGemini), "classic");
+    assert.equal(resolveOwnerPipeline("gemini-live", "classic", { ...CLAUDE_OK, OPENROUTER_API_KEY: undefined }), "gemini-live");
+  });
+});
+

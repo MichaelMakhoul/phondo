@@ -149,7 +149,7 @@ const { CallSession } = require("../call-session");
  * `turns` is the model's answers in order (each { sentences?, toolCalls? }), and
  * `ownerResults` the owner runner's results in order.
  */
-function makeLoop({ turns, ownerResults = [], ttsBytes = 8000 }) {
+function makeLoop({ turns, ownerResults = [], ttsBytes = 8000, onSynth = null }) {
   const calls = [];
   const timers = [];
   const ws = {
@@ -182,7 +182,8 @@ function makeLoop({ turns, ownerResults = [], ttsBytes = 8000 }) {
       }
       return { type: "content", content: (t.sentences || []).join(" ") };
     },
-    synthesizeSpeech: async () => Buffer.alloc(ttsBytes), // default: one second of 8 kHz μ-law
+    // default: one second of 8 kHz μ-law; what it was asked to say is recorded (SCRUM-618)
+    synthesizeSpeech: async (key, text) => { calls.push(["tts", text]); if (onSynth) onSynth(text); return Buffer.alloc(ttsBytes); },
     WebSocket: { OPEN: 1 },
     logTranscript: () => {},
     parseToolArgs: (tc) => JSON.parse(tc.function.arguments || "{}"),
@@ -196,6 +197,11 @@ function makeLoop({ turns, ownerResults = [], ttsBytes = 8000 }) {
     getErrorMsg: (lang, key) => `<${key}>`,
     OWNER_WEB_PROBLEM_MESSAGE: "<owner problem>",
     detectExpectedInput: () => "general",
+    // SCRUM-618: what the bubble says is cleaned and spelled as on the phone line; its audio is timed for barge-in.
+    stripMarkdown: (t) => t.replace(/\*\*/g, ""),
+    spellLettersForTts: (t) => t.replace(/\b([A-Z])-(?=[A-Z]\b)/g, "$1 "),
+    forgetOwnerReadBacks: () => calls.push(["forgetOwnerReadBacks"]), // SCRUM-618
+    noteOwnerWebAudio: (s, bytes, turn) => { calls.push(["webAudio", bytes, turn]); s.webAudioUntil = (s.webAudioUntil || 0) + bytes / 8; s.webAudioTurn = turn; },
     setTimeout: (fn, ms) => { timers.push(ms); fn(); },
     console: { log() {}, warn() {}, error() {} },
   };
@@ -364,6 +370,69 @@ describe("handleTestUserSpeech on an owner session: turns that fail (classic, ru
     assert.equal(s.ownerTurnFailureStreak, 1);
     assert.equal(s.callFailed, false);
     assert.ok(!h.calls.some((c) => c[0] === "ws.close"));
+  });
+});
+
+// SCRUM-618: OWNER_PIPELINE=classic carries the bubble — what Gemini did that classic didn't.
+describe("handleTestUserSpeech on an owner session: what classic now does as Gemini did (SCRUM-618, run for real)", () => {
+  it("the owner talking over the reply: the rest of it isn't said (the turn still counts — its read-backs were forgotten at the barge-in)", async () => {
+    let s;
+    const h = makeLoop({
+      turns: [{ sentences: ["Here's what I'll book: Jane, Thursday at 2 pm.", "Her number is 0412 345 678.", "Shall I book it?"] }],
+      // The owner speaks while the first sentence plays (what ownerWebBargeIn does on their speech).
+      onSynth: (text) => { if (text.startsWith("Her number")) s.webBargeInSeq = s.webTurnSeq; },
+    });
+    s = ownerWebSession();
+    await h.handleTestUserSpeech(s, h.ws, "Book Jane in");
+    assert.equal(h.ws.sent.filter((m) => typeof m === "string" && m.startsWith("<audio")).length, 1, "only the sentence before the barge-in reached the browser");
+    assert.deepEqual(h.calls.filter((c) => c[0] === "tts").map((c) => c[1]), ["Here's what I'll book: Jane, Thursday at 2 pm.", "Her number is 0412 345 678."], "nothing after it is even synthesised");
+    // Code lens (round 2): skipping the count left the read-back pending for the NEXT counted turn.
+    assert.equal(h.calls.filter((c) => c[0] === "noteAssistantTurnEnd").length, 1);
+    // Code lens (round 3): and what the turn armed after the barge-in (never sent) is forgotten as it ends.
+    assert.deepEqual(h.calls.filter((c) => c[0] === "forgetOwnerReadBacks"), [["forgetOwnerReadBacks"]]);
+  });
+
+  it("each turn has its own number: a barge-in in one turn never silences the next", async () => {
+    const h = makeLoop({ turns: [{ sentences: ["One."] }, { sentences: ["Two."] }] });
+    const s = ownerWebSession();
+    await h.handleTestUserSpeech(s, h.ws, "First");
+    s.webBargeInSeq = s.webTurnSeq; // barged in on the first turn, after it ended
+    await h.handleTestUserSpeech(s, h.ws, "Second");
+    assert.deepEqual(h.calls.filter((c) => c[0] === "tts").map((c) => c[1]), ["One.", "Two."]);
+    assert.equal(h.calls.filter((c) => c[0] === "noteAssistantTurnEnd").length, 2);
+    assert.ok(!h.calls.some((c) => c[0] === "forgetOwnerReadBacks"), "a turn nobody talked over forgets nothing");
+  });
+
+  it("the reply's audio is timed for barge-in, and what's said is cleaned and spelled as on the phone line", async () => {
+    const h = makeLoop({ turns: [{ sentences: ["**Jane** is spelled J-A-N-E."] }], ttsBytes: 16_000 });
+    const s = ownerWebSession();
+    await h.handleTestUserSpeech(s, h.ws, "Spell it");
+    assert.deepEqual(h.calls.filter((c) => c[0] === "tts").map((c) => c[1]), ["Jane is spelled J A N E."]);
+    assert.deepEqual(h.calls.filter((c) => c[0] === "webAudio"), [["webAudio", 16_000, 1]]);
+  });
+
+  it("a failure after an owner tool ran: the owner hears the tool's own words, never 'could you repeat that?' (SF5)", async () => {
+    const h = makeLoop({
+      turns: [{ toolCalls: [{ name: "owner_book_appointment", args: { confirmed: true } }] }, { throws: "Anthropic API error 529: Overloaded" }],
+      ownerResults: [{ message: "Booked Jane for Thursday at 2 pm.", data: { outcome: "booked" } }],
+    });
+    const s = ownerWebSession();
+    await h.handleTestUserSpeech(s, h.ws, "Yes, book it");
+    const said = h.ws.sent.filter((m) => m && m.type === "transcript" && m.role === "assistant").map((m) => m.content);
+    assert.deepEqual(said, ["<loop reply after owner_book_appointment>"]);
+    assert.ok(!said.includes("<troubleRepeat>"));
+    assert.equal(s.ownerTurnFailureStreak, 1);
+  });
+
+  it("a customer's test call is unchanged: no barge-in numbering, no cleaning", async () => {
+    const h = makeLoop({ turns: [{ sentences: ["**Hi** there."] }] });
+    const s = new CallSession("test_1");
+    s.organizationId = "org-1";
+    s.assistantId = "asst-1";
+    await h.handleTestUserSpeech(s, h.ws, "Hello");
+    assert.deepEqual(h.calls.filter((c) => c[0] === "tts").map((c) => c[1]), ["**Hi** there."]);
+    assert.equal(s.webTurnSeq, undefined);
+    assert.ok(!h.calls.some((c) => c[0] === "webAudio"));
   });
 });
 
