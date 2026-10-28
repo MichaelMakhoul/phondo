@@ -211,7 +211,9 @@ describe("buildOwnerPrompt — the rest of the rules the model is held to", () =
     assert.ok(p.includes("this week (the next 7 days)"));
     assert.ok(p.includes("Returns up to 20 jobs"));
     assert.ok(p.includes("Summarise the COUNT and the next 3 jobs unless asked for all."));
-    assert.ok(p.includes("pending callback requests and today's customer calls"));
+    assert.ok(p.includes("pending callback requests and TODAY's customer calls only"));
+    assert.ok(p.includes("the jobs SCHEDULED today / tomorrow / this week (the next 7 days) / on a date"));
+    assert.ok(p.includes("that are still on: no cancelled jobs, a moved job at its new time only, no calls, and not when a booking was made."));
     assert.ok(p.includes("owner_reschedule_appointment — move ONE job to a new time."));
     assert.ok(p.includes("owner_cancel_appointment — cancel ONE job."));
     assert.ok(p.includes("end_call — hang up after the owner says goodbye."));
@@ -530,9 +532,24 @@ describe("buildOwnerPrompt — SCRUM-599: booking, blocking and marking done", (
 describe("buildOwnerPrompt — SCRUM-601: what the 27 Oct session got wrong", () => {
   const p = buildOwnerPrompt(base);
   const suffix = buildOwnerGeminiSuffix();
-  it("English unless the owner asks — said up front and in the final rule", () => {
-    assert.ok(p.includes("LANGUAGE: speak English. Switch only when the owner asks you to — never because a name, a word or a mishearing sounds like another language."));
-    assert.ok(suffix.includes("SPEAK ENGLISH unless the owner asks for another language — a name or a misheard word is never a reason to switch."));
+  it("English unless the owner asks — said up front and in the final rule, and never announced (O2 read it aloud)", () => {
+    assert.ok(p.includes("LANGUAGE: reply in English. Switch only when the owner asks you to — never because a name, a word or a mishearing sounds like another language. This is how you work, not something to announce: never mention it."));
+    assert.ok(suffix.includes("REPLY IN ENGLISH unless the owner asks for another language — and never mention this rule."));
+  });
+  // SCRUM-607: the O2 session (28 Oct) answered "this week" with "today", "did anyone call or book
+  // on Monday" with "nothing was booked", and sent the owner to the dashboard for addresses that
+  // didn't exist.
+  it("answers only what a tool result says — never a narrower question, a guessed number, or a dashboard place it hasn't seen", () => {
+    assert.ok(p.includes("ANSWER ONLY WHAT A TOOL RESULT SAYS. If the owner asks something your tools can't see — calls before today, a week's calls, bookings MADE on a day, settings — lead with what you CAN see, then say plainly that you can't see the rest yet and where in the dashboard it is (calls, and when bookings were made: Calls; jobs: Appointments; what callers are asked: Assistants → Caller Data Collection; hours and notifications: Settings) — name each of these places at most once per call, not in every answer (this doesn't limit the steps below or a tool's own message)."));
+    assert.ok(p.includes("Never answer a narrower question instead (today for this week, jobs scheduled for calls or bookings made), never guess a number, and never say a detail, call or booking exists unless a tool result showed it."));
+    assert.ok(p.includes("A result's data.not_shown lists what it leaves out: it is for you — never read it out; use it only when the owner asked about one of those."));
+    // The O2 address answer ("they're in your dashboard") — no address exists anywhere: never point there for one.
+    // Most tradies' receptionists already ask for Service Address (the home-services preset): it lives on the
+    // caller's call, not the job's note — so neither "none is saved" nor "turn it on" is right for them alone.
+    assert.ok(p.includes("ADDRESSES: if a job's note has no address, say it isn't in the job's note and that you can't see what callers told the receptionist — never say one exists. If the receptionist asks callers for their address, the caller's call in Calls is where it would be (a job the owner booked has one only if they gave it); if it doesn't, the owner can turn on, or add, an address field in Assistants → Caller Data Collection."));
+    assert.ok(!p.includes("Service Address"), "only the home-services preset has a Service Address field");
+    assert.ok(suffix.includes("ANSWER ONLY WHAT A TOOL RESULT SAYS — lead with what you can see; if your tools can't see the rest (calls before today, bookings made on a day), say so and where in the dashboard it is, each place once per call; never a narrower answer, a guessed number, or a detail, call or booking no result showed. A job's address that isn't in its note: say it isn't in the note and that you can't see what callers told the receptionist — never say one exists. data.not_shown is for you: never read it out."));
+    assert.ok(p.includes("That is also where the receptionist can be set to ask callers for something new (for example their address): turn on, or add, the field there — you can't change settings from here yet."));
   });
   it("a booking's read-back says the number digit by digit, the note, and spells an unusual or corrected name", () => {
     assert.ok(p.includes("a booking's phone number DIGIT BY DIGIT in its groups — the digits the tool's message spells out, never from memory (a misheard digit is only caught here) —"));

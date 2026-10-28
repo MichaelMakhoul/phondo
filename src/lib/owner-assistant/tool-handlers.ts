@@ -93,6 +93,8 @@ export interface OwnerListAppointmentsData {
   /** Jobs in the window — can exceed `appointments.length` (capped at 20). */
   count: number;
   appointments: OwnerAppointmentItem[];
+  /** SCRUM-607: what this list leaves out — facts for the model, never read out. */
+  not_shown: string[];
 }
 export interface OwnerCallbackItem {
   callback_id: string;
@@ -119,6 +121,8 @@ export interface OwnerCallItem {
 export interface OwnerListMessagesData {
   callbacks: OwnerCallbackItem[];
   calls: OwnerCallItem[];
+  /** SCRUM-607: what this result leaves out — facts for the model, never read out. */
+  not_shown: string[];
 }
 
 const DEFAULT_TZ = "Australia/Sydney";
@@ -138,6 +142,15 @@ const ON_A_CALL = "On a call right now";
  * stored value can carry text around them.
  */
 const NAME_MAX = 80;
+/**
+ * SCRUM-607: what each read leaves out, as FACTS in `data.not_shown` (the prompt says how
+ * to use them) — never instructions in the message: a fallback reads the message out word
+ * for word. A real session asked "did anyone call or book on Monday?" and heard "nothing
+ * was booked on Monday" (a call and the job it booked, since cancelled, never showed), and
+ * "has anyone called this week?" got today's count as the week's.
+ */
+export const APPOINTMENTS_NOT_SHOWN: readonly string[] = ["cancelled jobs", "calls", "when bookings were made"];
+export const MESSAGES_NOT_SHOWN: readonly string[] = ["calls before today"];
 const PHONE_MAX = 32;
 const TEXT_MAX = 240;
 
@@ -245,12 +258,15 @@ export async function handleOwnerListAppointments(
 
   const items = (data ?? []).map((row: any) => toItem(row, tz));
   const total = typeof count === "number" ? count : items.length;
-  const payload: OwnerListAppointmentsData = { range, date: bounds.firstDate, count: total, appointments: items };
+  const payload: OwnerListAppointmentsData = { range, date: bounds.firstDate, count: total, appointments: items, not_shown: [...APPOINTMENTS_NOT_SHOWN] };
 
+  // SCRUM-607: what this list is — and isn't. A real session asked "did anyone call or
+  // book on Monday?" and heard "nothing was booked on Monday": this lists jobs SCHEDULED
+  // then, so Monday's call — and the job it booked, since cancelled — never showed.
   if (total === 0) {
-    return { success: true, message: `Nothing booked ${bounds.label}.`, data: payload as unknown as Record<string, unknown> };
+    return { success: true, message: `No jobs scheduled ${bounds.label}.`, data: payload as unknown as Record<string, unknown> };
   }
-  const head = `${total} ${total === 1 ? "job" : "jobs"} ${bounds.label}${total > items.length ? ` (first ${items.length} listed)` : ""}:`;
+  const head = `${total} ${total === 1 ? "job" : "jobs"} scheduled ${bounds.label}${total > items.length ? ` (first ${items.length} listed)` : ""}:`;
   return {
     success: true,
     message: [head, ...items.map(describeItem)].join("\n"),
@@ -334,7 +350,7 @@ export async function handleOwnerListMessages(organizationId: string, ctx?: Owne
   // A full fetch window means today may hold more calls than were fetched.
   const callsSaturated = (calls ?? []).length >= CALLS_FETCH_LIMIT;
 
-  const payload: OwnerListMessagesData = { callbacks, calls: customerCalls };
+  const payload: OwnerListMessagesData = { callbacks, calls: customerCalls, not_shown: [...MESSAGES_NOT_SHOWN] };
   if (cbTotal === 0 && callTotal === 0 && !callsSaturated) {
     return { success: true, message: "No messages waiting and no customer calls yet today.", data: payload as unknown as Record<string, unknown> };
   }
