@@ -426,3 +426,47 @@ describe("SCRUM-617 review round 2: 'none', copied descriptions, the fault path,
   });
 });
 
+// Uses the file's top-level fixtures (ORG, ARGS, CALL, COPPERLINE_FIELDS, withFields, inserts,
+// fakeAdmin, createAdminClient, handleBookAppointment).
+describe("SCRUM-617 test lens round 2: the edges of round 1", () => {
+  it("R01: a detail of exactly 300 characters is the most one holds — booked whole, not refused", async () => {
+    withFields(COPPERLINE_FIELDS);
+    const address = "x".repeat(300);
+    const r = await handleBookAppointment(ORG, { ...ARGS, details: `Address: ${address}; Reason for Calling: leak` }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(inserts[0].notes).toBe(`Address: ${address}\nReason for Calling: leak`);
+  });
+
+  it("R03: a custom required 'Email' field answered 'none' is an answer — booked, kept in the note, never taken as the email", async () => {
+    withFields([{ id: "first_name", label: "First Name", required: true }, { id: "custom_1730000000000", label: "Email", required: true }]);
+    const r = await handleBookAppointment(ORG, { ...ARGS, details: "Email: none" }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(inserts[0].notes).toBe("Email: none");
+    expect(String(inserts[0].attendee_email ?? "")).not.toMatch(/none/i); // "none" isn't an address: never saved as the email
+  });
+
+  it("R10: a caller's booking is checked against the line that answered (the envelope's assistantId), not the org's oldest", async () => {
+    const LINE_2 = "22222222-3333-4444-a555-666666666666";
+    const rows: Record<string, unknown> = {
+      oldest: { prompt_config: { fields: [{ id: "first_name", label: "First Name", required: true }] } },
+      [LINE_2]: { prompt_config: { fields: [{ id: "first_name", label: "First Name", required: true }, { id: "address", label: "Address", required: true }] } },
+    };
+    vi.mocked(createAdminClient).mockReturnValue({
+      from: (table: string) => {
+        const client = fakeAdmin().from(table);
+        if (table !== "assistants") return client;
+        let id: string | null = null;
+        client.eq = (column: string, value: string) => {
+          if (column === "id") id = value;
+          return client;
+        };
+        client.maybeSingle = async () => ({ data: rows[id ?? "oldest"] ?? null, error: null });
+        return client;
+      },
+    } as never);
+    const r = await handleBookAppointment(ORG, ARGS, { callId: CALL, assistantId: LINE_2 });
+    expect(r.success).toBe(false);
+    expect(r.data).toEqual({ missing_fields: [{ id: "address", label: "Address" }] });
+    expect(inserts).toEqual([]);
+  });
+});

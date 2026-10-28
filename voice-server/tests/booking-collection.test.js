@@ -85,3 +85,46 @@ describe("server.js: a refusal is never a booking, and a missing-details refusal
     assert.match(src, /if \(missingDetails && session\.missingDetailsRefusals >= 3\) \{\n\s*bookLoopDirective = ` \(SYSTEM — booking attempt \$\{session\.missingDetailsRefusals\} refused for missing details\. Don't keep asking the same thing: if the caller has none of something, pass "none" for it; if they can't or won't give it, offer to take their details for a callback with schedule_callback instead\.\)`;/);
   });
 });
+// Uses the file's top-level requires (describe, it, assert, fs, path).
+describe("SCRUM-617 test lens round 2: the missing-details page, server.js run for real", () => {
+  const { CallSession } = require("../call-session");
+  const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const from = 'const missingDetails = session && toolCall.name === "book_appointment"';
+  const start = server.indexOf(from);
+  const end = server.indexOf('if (session && toolCall.name === "book_appointment" && !missingDetails) {', start);
+  assert.ok(start >= 0 && end > start, "server.js markers");
+  const code = server.slice(start, end);
+  const run = (session, message, lines) =>
+    new Function("session", "toolCall", "message", "console", `${code}\nreturn missingDetails;`)(session, { name: "book_appointment" }, message, { error: (...a) => lines.push(a.join(" ")) });
+
+  it("R13: a fresh call pages once, on the third missing-details refusal; a booking is not one", () => {
+    const session = new CallSession("CA-r13");
+    session.organizationId = "org-1";
+    const lines = [];
+    const REFUSAL = "Can't book this yet: this business's bookings also need the address. Ask the caller for it in one question.";
+    assert.deepEqual([1, 2, 3, 4].map(() => run(session, REFUSAL, lines)), [true, true, true, true]);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /^\[ALERT:error\] \[BookingFields\] a booking was refused 3 times for missing required details/);
+    assert.equal(run(session, "I've booked your appointment for Wednesday at 10 AM. Your confirmation code is 123456.", lines), false);
+  });
+});
+
+// SCRUM-617 test lens round 2: the Cliniko defect test, now passing with the round-2 fix (success AND the words).
+
+describe("SCRUM-617 test lens round 2 (DEFECT): a success that booked nothing is no booking", () => {
+  const { bookingKey } = require("../lib/booking-key");
+  const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  const from = "const handlerSaidBooked = (typeof result";
+  const code = server.slice(server.indexOf(from), server.indexOf("// SCRUM-257: clear confirmedBookings entry on successful cancel", server.indexOf(from)));
+  const ledgerAfter = (result) => {
+    const session = {};
+    const toolCall = { name: "book_appointment", args: { datetime: "2027-07-07T10:00", first_name: "Jane", last_name: "Smith" } };
+    new Function("session", "toolCall", "result", "message", "bookingKey", code)(session, toolCall, result, result.message, bookingKey);
+    return session.confirmedBookings ? session.confirmedBookings.size : 0;
+  };
+  it("Cliniko's 'what type of appointment?' (success: true) leaves the ledger empty — its retry must book", () => {
+    const question = { success: true, message: "Before I check availability, what type of appointment would you like to book?\n\nAvailable appointment types:\n- Initial (60 min)\n\nPlease ask the caller which type they'd like to book." };
+    assert.equal(ledgerAfter(question), 0);
+    assert.equal(ledgerAfter({ success: true, message: "I've booked your appointment for Wednesday at 10 AM. Your confirmation code is 123456." }), 1);
+  });
+});

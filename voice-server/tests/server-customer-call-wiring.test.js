@@ -1089,3 +1089,18 @@ describe("SCRUM-617: Gemini's booking rules follow the business's Caller Data Co
   });
 });
 
+// Uses the file's top-level helpers (describe, it, assert, assemble, makeSession).
+describe("SCRUM-617 test lens round 2: both NAME COLLECTION branches keep the English-letters rule", () => {
+  it("R16: a business that doesn't require a last name still has names in English letters (the handler refuses any other script)", () => {
+    const ruleOf = (fields) => {
+      const p = assemble(makeSession(), { fields }).geminiSystemPrompt;
+      const at = p.indexOf("- NAME COLLECTION IS MANDATORY");
+      assert.ok(at >= 0, "the name rule is there");
+      return p.slice(at, p.indexOf("\n", at));
+    };
+    const firstOnly = ruleOf([{ id: "first_name", label: "First Name", required: true }, { id: "last_name", label: "Last Name", required: false }]);
+    const both = ruleOf([{ id: "first_name", label: "First Name", required: true }, { id: "last_name", label: "Last Name", required: true }]);
+    assert.ok(firstOnly.includes("This business does not require a last name"), firstOnly);
+    for (const rule of [firstOnly, both]) assert.ok(rule.includes("Names MUST be in English letters."), rule);
+  });
+});
