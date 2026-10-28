@@ -131,6 +131,12 @@ export class NotificationDeliveryError extends Error {
   readonly wantedCount: number;
   readonly permanent: boolean;
   readonly permanentCause: "org-config" | "credential-absence" | null;
+  /**
+   * Each recipient's outcome by ROLE (never an address), when the sender tracks it —
+   * the plan-usage alert does (SCRUM-609): a partial delivery is never re-sent, so the
+   * page must say who missed it.
+   */
+  readonly recipients: Readonly<Record<string, RecipientOutcome>> | null;
 
   constructor(
     message: string,
@@ -139,6 +145,7 @@ export class NotificationDeliveryError extends Error {
       wantedCount: number;
       permanent: boolean;
       permanentCause?: "org-config" | "credential-absence";
+      recipients?: Record<string, RecipientOutcome>;
     }
   ) {
     super(message);
@@ -147,8 +154,11 @@ export class NotificationDeliveryError extends Error {
     this.wantedCount = facts.wantedCount;
     this.permanent = facts.permanent;
     this.permanentCause = facts.permanentCause ?? null;
+    this.recipients = facts.recipients ? { ...facts.recipients } : null;
   }
 }
+
+export type RecipientOutcome = "sent" | "failed" | "no-address";
 
 /**
  * A channel send failed because a provider credential is ABSENT — not
@@ -402,8 +412,9 @@ export async function getOrganizationOwnerEmail(
   /**
    * SCRUM-609: a caller that keeps state on "no email" (the plan-usage alert spends the
    * period's alert) needs a database fault to THROW, not look like a missing owner.
-   * PGRST116 is `.single()`'s "no row" — a genuinely missing owner or profile — and still
-   * returns null.
+   * PGRST116 is `.single()`'s "not exactly one row" — no owner or profile (two owners
+   * would land here too; RLS and the create-org RPC never make them) — and still returns
+   * null, reported with its details.
    */
   opts: { throwOnQueryError?: boolean } = {}
 ): Promise<string | null> {
@@ -428,6 +439,8 @@ export async function getOrganizationOwnerEmail(
     reportOwnerEmailLookupFailure("error", "org owner query failed", {
       organizationId,
       error: memberError.message || memberError.code,
+      code: memberError.code,
+      details: memberError.details, // PGRST116: "0 rows" vs "2 rows"
     });
     return null;
   }
@@ -458,6 +471,8 @@ export async function getOrganizationOwnerEmail(
       organizationId,
       userId: member.user_id,
       error: profileError.message || profileError.code,
+      code: profileError.code,
+      details: profileError.details,
     });
     return null;
   }
@@ -986,12 +1001,15 @@ export async function sendPlanUsageAlertNotification(data: PlanUsageAlertData): 
   // A database fault throws (released and retried by the checker) — only a real "no owner
   // email" may spend the period's alert (SCRUM-609).
   const email = await getOrganizationOwnerEmail(data.organizationId, { throwOnQueryError: true });
+  // Who got it, by role — for the checker's page when a send fails part-way (SCRUM-609).
+  const recipients: Record<string, RecipientOutcome> = {};
   // The team first (at 150%), so the owner's email says the team knows only when it does.
   let teamTold = false;
   if (data.level === 150) {
     const team = process.env.ADMIN_ALERT_EMAIL;
     if (!team) {
       droppedChannels.push("team-email");
+      recipients.team = "no-address";
       // settleChannels only logs a dropped channel, and the owner's delivery makes the send
       // "sent" — without this page nobody at Phondo hears a business is at 150% (SCRUM-609).
       Sentry.withScope((scope) => {
@@ -1009,21 +1027,38 @@ export async function sendPlanUsageAlertNotification(data: PlanUsageAlertData): 
       });
       channels.push(teamSend);
       teamTold = await teamSend.then(() => true, () => false);
+      recipients.team = teamTold ? "sent" : "failed";
     }
   }
+  let ownerTold: Promise<boolean> | null = null;
   if (!email) {
     droppedChannels.push("owner-email");
+    recipients.owner = "no-address";
   } else {
-    channels.push(sendEmail({
+    const ownerSend = sendEmail({
       to: email,
       subject: `You've used ${pct}% of your plan's calls this month`,
       template: "plan-usage-alert",
       data: { ...common, teamTold },
       // The email says "reply to this email" — the sending address isn't a watched inbox (SCRUM-609).
       replyTo: PHONDO_SUPPORT_EMAIL,
-    }));
+    });
+    channels.push(ownerSend);
+    ownerTold = ownerSend.then(() => true, () => false);
   }
-  return settleChannels("plan-usage-alert", data.organizationId, channels, droppedChannels);
+  try {
+    return await settleChannels("plan-usage-alert", data.organizationId, channels, droppedChannels);
+  } catch (err) {
+    if (!(err instanceof NotificationDeliveryError)) throw err;
+    if (ownerTold) recipients.owner = (await ownerTold) ? "sent" : "failed";
+    throw new NotificationDeliveryError(err.message, {
+      deliveredCount: err.deliveredCount,
+      wantedCount: err.wantedCount,
+      permanent: err.permanent,
+      ...(err.permanentCause ? { permanentCause: err.permanentCause } : {}),
+      recipients,
+    });
+  }
 }
 
 /**

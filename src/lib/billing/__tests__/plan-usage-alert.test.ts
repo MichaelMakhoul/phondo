@@ -343,7 +343,7 @@ describe("checkPlanUsageAlert (SCRUM-609) — review-and-fix", () => {
       .filter(([m]) => typeof m === "string" && m.startsWith("Plan usage alert: "))
       .map(([m, ctx]) => ({ message: m as string, ctx: ctx as { level?: string; extra?: Record<string, unknown> } }));
   };
-  const deliveryError = (facts: { deliveredCount: number; wantedCount: number; permanent: boolean; permanentCause?: "org-config" | "credential-absence" }) =>
+  const deliveryError = (facts: { deliveredCount: number; wantedCount: number; permanent: boolean; permanentCause?: "org-config" | "credential-absence"; recipients?: Record<string, "sent" | "failed" | "no-address"> }) =>
     new NotificationDeliveryError("send failed", facts);
 
   it("the key is the period's exact start — two periods that start on the same day get their own slots", () => {
@@ -391,19 +391,23 @@ describe("checkPlanUsageAlert (SCRUM-609) — review-and-fix", () => {
     vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(deliveryError({ deliveredCount: 0, wantedCount: 1, permanent: false }));
     expect(await checkPlanUsageAlert(ORG)).toBeNull();
     expect(ops.map((o) => o.op)).toEqual(["insert", "delete"]);
-    expect((await pages()).map((p) => p.message)).toEqual(["Plan usage alert: nothing delivered — the next counted call retries"]);
+    const p = await pages();
+    expect(p.map((x) => x.message)).toEqual(["Plan usage alert: nothing delivered — the next counted call retries"]);
+    // Facts only — never the error's text, which can carry the address it was for (test lens).
+    expect(p[0].ctx).toEqual({ level: "warning", tags: { feature: "plan-usage-alert" }, extra: { organizationId: ORG, level: 125, delivered: false, permanent: false, permanentCause: null, recipients: null } });
   });
 
   it("a partial delivery is confirmed (never re-sent) AND paged — a recipient missed it", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     withCalls(230);
-    vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(deliveryError({ deliveredCount: 1, wantedCount: 2, permanent: false }));
+    vi.mocked(sendPlanUsageAlertNotification).mockRejectedValueOnce(deliveryError({ deliveredCount: 1, wantedCount: 2, permanent: false, recipients: { team: "sent", owner: "failed" } }));
     expect(await checkPlanUsageAlert(ORG)).toBeNull();
     expect(ops.filter((o) => o.op === "update").map((o) => o.match?.period_key)).toEqual(["150:2026-10-20T13:00:00.000Z", "125:2026-10-20T13:00:00.000Z"]);
     expect(ops.some((o) => o.op === "delete")).toBe(false);
     const p = await pages();
     expect(p.map((x) => x.message)).toEqual(["Plan usage alert: partly delivered — a recipient missed it and it won't be resent"]);
-    expect(p[0].ctx.extra).toEqual({ organizationId: ORG, level: 150, delivered: true, permanent: false, permanentCause: null });
+    // Which one missed it (silent lens): the page is all a human has to go on — roles only, never addresses.
+    expect(p[0].ctx.extra).toEqual({ organizationId: ORG, level: 150, delivered: true, permanent: false, permanentCause: null, recipients: { team: "sent", owner: "failed" } });
   });
 
   it("missing credentials page on their own, and no address was reported by the lookup — neither pages twice", async () => {

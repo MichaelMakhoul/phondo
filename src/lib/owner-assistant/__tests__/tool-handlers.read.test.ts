@@ -620,6 +620,21 @@ describe("owner_list_messages", () => {
     ]);
   });
 
+  it("a full window holding only a few customer calls: 'at least', the today-only fact, and no 'newest N listed'", async () => {
+    db.queues.callback_requests = [{ data: [], error: null }];
+    db.queues.calls = [{
+      data: Array.from({ length: 30 }, (_, i) => ({
+        id: `c-${i + 1}`, caller_name: `Caller ${i + 1}`, caller_phone: "+61400000100", summary: `Summary ${i + 1}`,
+        created_at: "2026-10-15T01:00:00+00:00",
+        metadata: i < 25 ? { call_type: "owner" } : {}, // 25 of the 30 are the owner's own
+      })),
+      error: null,
+    }];
+    const r = await handleOwnerListMessages(ORG);
+    expect(r.message).toContain(`At least 5 customer calls today (I can only see today's calls):`);
+    expect(r.message).not.toContain("listed");
+  });
+
   it("a full 30-call fetch window says 'at least', since today may hold more calls than were fetched", async () => {
     db.queues.callback_requests = [{ data: [], error: null }];
     db.queues.calls = [{

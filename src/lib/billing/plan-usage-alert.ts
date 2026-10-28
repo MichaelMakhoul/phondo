@@ -166,7 +166,7 @@ export async function checkPlanUsageAlert(organizationId: string): Promise<PlanU
       if (delivered) for (const k of keys) await confirm(supabase, organizationId, k);
       else if (!noAddress) for (const k of keys) await release(supabase, organizationId, k); // nothing went out — the next counted call retries
       // Never the error's text: a missing-credential error carries the address it was for.
-      const facts = { organizationId, level: crossed.level, delivered, permanent: failure.permanent, permanentCause: failure.permanentCause };
+      const facts = { organizationId, level: crossed.level, delivered, permanent: failure.permanent, permanentCause: failure.permanentCause, recipients: failure.recipients };
       console.error("[PlanUsageAlert] send failed:", facts);
       // A missing credential pages on its own and a missing owner email is reported by the
       // lookup; anything else would otherwise repeat on every counted call, unseen.
