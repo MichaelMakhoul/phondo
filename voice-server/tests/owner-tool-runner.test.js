@@ -2212,6 +2212,15 @@ describe("a read-back the owner cut off confirms nothing (SCRUM-618)", () => {
     assert.equal(d.calls.at(-1).args.confirmed, true);
   });
 
+  // Silent lens (round 3): the refusal record goes too — after a barge-in a refused confirm is
+  // expected, and must not page "blocking a change the owner confirmed".
+  it("the refusal record is forgotten with the read-backs", () => {
+    const s = makeSession({ ownerPendingConfirmations: new Map([["k", { at: 1, seq: 0 }]]), ownerConfirmRefusals: new Map([["k", true]]) });
+    forgetOwnerReadBacks(s);
+    assert.equal(s.ownerPendingConfirmations.size, 0);
+    assert.equal(s.ownerConfirmRefusals.size, 0);
+  });
+
   it("forgetOwnerReadBacks on a session with none is a no-op", () => {
     const s = makeSession();
     forgetOwnerReadBacks(s);

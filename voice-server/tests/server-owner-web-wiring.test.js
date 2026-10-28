@@ -200,6 +200,7 @@ function makeLoop({ turns, ownerResults = [], ttsBytes = 8000, onSynth = null })
     // SCRUM-618: what the bubble says is cleaned and spelled as on the phone line; its audio is timed for barge-in.
     stripMarkdown: (t) => t.replace(/\*\*/g, ""),
     spellLettersForTts: (t) => t.replace(/\b([A-Z])-(?=[A-Z]\b)/g, "$1 "),
+    forgetOwnerReadBacks: () => calls.push(["forgetOwnerReadBacks"]), // SCRUM-618
     noteOwnerWebAudio: (s, bytes, turn) => { calls.push(["webAudio", bytes, turn]); s.webAudioUntil = (s.webAudioUntil || 0) + bytes / 8; s.webAudioTurn = turn; },
     setTimeout: (fn, ms) => { timers.push(ms); fn(); },
     console: { log() {}, warn() {}, error() {} },
@@ -387,6 +388,8 @@ describe("handleTestUserSpeech on an owner session: what classic now does as Gem
     assert.deepEqual(h.calls.filter((c) => c[0] === "tts").map((c) => c[1]), ["Here's what I'll book: Jane, Thursday at 2 pm.", "Her number is 0412 345 678."], "nothing after it is even synthesised");
     // Code lens (round 2): skipping the count left the read-back pending for the NEXT counted turn.
     assert.equal(h.calls.filter((c) => c[0] === "noteAssistantTurnEnd").length, 1);
+    // Code lens (round 3): and what the turn armed after the barge-in (never sent) is forgotten as it ends.
+    assert.deepEqual(h.calls.filter((c) => c[0] === "forgetOwnerReadBacks"), [["forgetOwnerReadBacks"]]);
   });
 
   it("each turn has its own number: a barge-in in one turn never silences the next", async () => {
@@ -397,6 +400,7 @@ describe("handleTestUserSpeech on an owner session: what classic now does as Gem
     await h.handleTestUserSpeech(s, h.ws, "Second");
     assert.deepEqual(h.calls.filter((c) => c[0] === "tts").map((c) => c[1]), ["One.", "Two."]);
     assert.equal(h.calls.filter((c) => c[0] === "noteAssistantTurnEnd").length, 2);
+    assert.ok(!h.calls.some((c) => c[0] === "forgetOwnerReadBacks"), "a turn nobody talked over forgets nothing");
   });
 
   it("the reply's audio is timed for barge-in, and what's said is cleaned and spelled as on the phone line", async () => {

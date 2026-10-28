@@ -5141,7 +5141,8 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
       const line = lastOwnerTool ? `${ownerToolLoopReply(session, lastOwnerTool)} ${OWNER_PHONE_PROBLEM_LINE}` : OWNER_PHONE_PROBLEM_LINE;
       let playedUntil = Date.now();
       try {
-        playedUntil += await sendTTS(session, twilioWs, line, undefined, NOT_A_REPLY);
+        const ms = await sendTTS(session, twilioWs, line, undefined, NOT_A_REPLY);
+        playedUntil = Date.now() + ms; // from when it was sent — synthesis takes time too
       } catch (ttsErr) {
         console.error(`[OwnerPin] The problem line couldn't be played — hanging up anyway (callSid=${session.callSid}):`, ttsErr);
       }
@@ -8341,6 +8342,9 @@ async function handleTestUserSpeech(session, ws, transcript) {
       console.error("[TestPipeline] Fallback TTS also failed — user heard nothing:", fallbackErr.message || fallbackErr);
     }
   } finally {
+    // SCRUM-618: a read-back this turn armed AFTER the owner talked over it was never sent —
+    // forgotten too, so no "yes" can confirm it.
+    if (bargedIn()) forgetOwnerReadBacks(session);
     session.isProcessing = false;
     session.drainPending((text) => handleTestUserSpeech(session, ws, text));
   }

@@ -884,10 +884,13 @@ function buildOwnerCallSummary(audit) {
  * SCRUM-618: the owner talked over the assistant (the bubble's barge-in). A read-back they
  * cut off wasn't heard, so no pending one may be confirmed by a later "yes" — each change
  * asked for again gets a fresh read-back (the gate refuses a confirm with nothing pending).
- * @param {{ ownerPendingConfirmations?: Map<string, unknown> }} session
+ * Its refusal record goes too: a confirm the gate refuses after a barge-in is expected, not
+ * the "blocking a change the owner confirmed" fault it pages on.
+ * @param {{ ownerPendingConfirmations?: Map<string, unknown>, ownerConfirmRefusals?: Map<string, unknown> }} session
  */
 function forgetOwnerReadBacks(session) {
   if (session.ownerPendingConfirmations instanceof Map) session.ownerPendingConfirmations.clear();
+  if (session.ownerConfirmRefusals instanceof Map) session.ownerConfirmRefusals.clear();
 }
 
 module.exports = {

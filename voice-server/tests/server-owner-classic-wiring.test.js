@@ -38,7 +38,8 @@ describe("the phone line's classic owner turn (SCRUM-618)", () => {
     assert.match(phoneCatch, /if \(session\.ownerMode && !fastTurn && \+\+session\.ownerTurnFailureStreak >= 2\) \{\n\s*session\.callFailed = true;\n\s*console\.error\(`\[ALERT:error\] \[OwnerPin\] owner call ended: \$\{session\.ownerTurnFailureStreak\} turns failed in a row/);
     // Silent lens (round 2): the tool's words first (SF5), and the hang-up outside the TTS try (a failed line still ends the call).
     assert.match(phoneCatch, /const line = lastOwnerTool \? `\$\{ownerToolLoopReply\(session, lastOwnerTool\)\} \$\{OWNER_PHONE_PROBLEM_LINE\}` : OWNER_PHONE_PROBLEM_LINE;/);
-    assert.match(phoneCatch, /playedUntil \+= await sendTTS\(session, twilioWs, line, undefined, NOT_A_REPLY\);\n\s*\} catch \(ttsErr\) \{\n[^\n]*\n\s*\}\n\s*await hangUpAfterEndCall\(session, twilioWs, playedUntil, "owner-turns-failed"\); \/\/ never throws\n\s*return;/);
+    // Silent lens (round 3): the wait runs from when the line was sent — synthesis takes time too.
+    assert.match(phoneCatch, /const ms = await sendTTS\(session, twilioWs, line, undefined, NOT_A_REPLY\);\n\s*playedUntil = Date\.now\(\) \+ ms;[^\n]*\n\s*\} catch \(ttsErr\) \{\n[^\n]*\n\s*\}\n\s*await hangUpAfterEndCall\(session, twilioWs, playedUntil, "owner-turns-failed"\); \/\/ never throws\n\s*return;/);
     assert.match(phoneTurn, /if \(session\.ownerMode\) session\.ownerTurnFailureStreak = 0; \/\/ SCRUM-618: a turn that answered ends a failure streak\n {2}\} catch \(err\) \{/);
   });
 
