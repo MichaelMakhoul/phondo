@@ -228,7 +228,7 @@ describe("owner read tools say what they don't cover", () => {
   const byName = Object.fromEntries(ot.ownerToolDefinitions.map((d) => [d.function.name, d.function]));
   it("the jobs list is jobs SCHEDULED and still on — not cancelled or moved jobs, calls, or when bookings were made", () => {
     assert.ok(byName.owner_list_appointments.description.includes("List the business's jobs SCHEDULED in a period that are still on."));
-    assert.ok(byName.owner_list_appointments.description.includes("It does not show cancelled or moved jobs, calls, or when bookings were made — say so if the owner asked about those."));
+    assert.ok(byName.owner_list_appointments.description.includes("It does not show cancelled jobs (a moved job shows at its new time only), calls, or when bookings were made — say so if the owner asked about those."));
   });
   it("the messages are TODAY's calls only", () => {
     assert.ok(byName.owner_list_messages.description.includes("Only today's calls — not yesterday's or this week's; say so when the owner asks about another day."));

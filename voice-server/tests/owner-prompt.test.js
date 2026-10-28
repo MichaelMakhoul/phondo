@@ -213,7 +213,7 @@ describe("buildOwnerPrompt — the rest of the rules the model is held to", () =
     assert.ok(p.includes("Summarise the COUNT and the next 3 jobs unless asked for all."));
     assert.ok(p.includes("pending callback requests and TODAY's customer calls only"));
     assert.ok(p.includes("the jobs SCHEDULED today / tomorrow / this week (the next 7 days) / on a date"));
-    assert.ok(p.includes("that are still on: not cancelled or moved jobs, not calls, and not when a booking was made."));
+    assert.ok(p.includes("that are still on: no cancelled jobs, a moved job at its new time only, no calls, and not when a booking was made."));
     assert.ok(p.includes("owner_reschedule_appointment — move ONE job to a new time."));
     assert.ok(p.includes("owner_cancel_appointment — cancel ONE job."));
     assert.ok(p.includes("end_call — hang up after the owner says goodbye."));
@@ -540,9 +540,12 @@ describe("buildOwnerPrompt — SCRUM-601: what the 27 Oct session got wrong", ()
   // on Monday" with "nothing was booked", and sent the owner to the dashboard for addresses that
   // didn't exist.
   it("answers only what a tool result says — never a narrower question, a guessed number, or a dashboard place it hasn't seen", () => {
-    assert.ok(p.includes("ANSWER ONLY WHAT A TOOL RESULT SAYS. If the owner asks something your tools can't see — calls before today, a week's calls, bookings MADE on a day, a job's address that isn't in its note, settings — say plainly that you can't see that yet, and where in the dashboard it is (calls: Calls; bookings: Appointments; settings: Assistants)."));
-    assert.ok(p.includes("Never answer a narrower question instead (today for this week, jobs scheduled for calls or bookings made), never guess a number, and never say something is in the dashboard unless a tool result showed it exists."));
-    assert.ok(suffix.includes("ANSWER ONLY WHAT A TOOL RESULT SAYS — if your tools can't see it (calls before today, bookings made on a day, an address that isn't in a job's note), say so and where in the dashboard it is; never a narrower answer, a guessed number, or a dashboard place you haven't seen."));
+    assert.ok(p.includes("ANSWER ONLY WHAT A TOOL RESULT SAYS. If the owner asks something your tools can't see — calls before today, a week's calls, bookings MADE on a day, settings — lead with what you CAN see, then say plainly that you can't see the rest yet and where in the dashboard it is (calls, and when bookings were made: Calls; jobs: Appointments; what callers are asked: Assistants → Caller Data Collection; hours and notifications: Settings) — name a dashboard place once per call, not in every answer."));
+    assert.ok(p.includes("Never answer a narrower question instead (today for this week, jobs scheduled for calls or bookings made), never guess a number, and never say a detail, call or booking exists unless a tool result showed it."));
+    assert.ok(p.includes("A result's data.not_shown lists what it leaves out: it is for you — never read it out; use it only when the owner asked about one of those."));
+    // The O2 address answer ("they're in your dashboard") — no address exists anywhere: never point there for one.
+    assert.ok(p.includes("ADDRESSES: if a job's note has no address, say so, and that you can't see what callers told the receptionist — never say an address is in the dashboard. To have callers asked for it, the owner turns on Service Address in Assistants → Caller Data Collection."));
+    assert.ok(suffix.includes("ANSWER ONLY WHAT A TOOL RESULT SAYS — lead with what you can see; if your tools can't see the rest (calls before today, bookings made on a day), say so and where in the dashboard it is, once per call; never a narrower answer, a guessed number, or a detail, call or booking no result showed. A job's address that isn't in its note: say none is saved — never send the owner to look for it. data.not_shown is for you: never read it out."));
     assert.ok(p.includes("That is also where the receptionist can be set to ask callers for something new (for example their address): turn the field on there — you can't change settings from here yet."));
   });
   it("a booking's read-back says the number digit by digit, the note, and spells an unusual or corrected name", () => {
