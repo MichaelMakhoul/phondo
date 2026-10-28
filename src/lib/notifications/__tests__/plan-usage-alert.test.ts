@@ -216,6 +216,8 @@ describe("sendPlanUsageAlertNotification (SCRUM-609) — review-and-fix", () => 
     const partial = await sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 }).catch((e) => e);
     expect(partial).toBeInstanceOf(NotificationDeliveryError);
     expect(partial.deliveredCount).toBe(1);
+    expect(partial.wantedCount).toBe(2);
+    expect(partial.permanent).toBe(false); // the rethrow keeps every delivery fact the checker reads (silent lens)
     expect(partial.recipients).toEqual({ team: "failed", owner: "sent" });
     resendSend.mockClear();
     resendSend.mockImplementation(async () => ({ data: null, error: { message: "owner inbox bounced" } }));
@@ -226,6 +228,7 @@ describe("sendPlanUsageAlertNotification (SCRUM-609) — review-and-fix", () => 
     vi.mocked(createAdminClient).mockReturnValue(fakeAdmin({ org_members: { data: null, error: null } }) as any);
     const none = await sendPlanUsageAlertNotification({ ...base, level: 125, callsUsed: 188 }).catch((e) => e);
     expect(none.recipients).toEqual({ owner: "no-address" });
+    expect(none.permanent).toBe(true); // a lost flag would release and retry on every counted call
     expect(none.permanentCause).toBe("org-config");
   });
 
