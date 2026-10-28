@@ -121,8 +121,6 @@ export interface OwnerCallItem {
 export interface OwnerListMessagesData {
   callbacks: OwnerCallbackItem[];
   calls: OwnerCallItem[];
-  /** SCRUM-607: what this result leaves out — facts for the model, never read out. */
-  not_shown: string[];
 }
 
 const DEFAULT_TZ = "Australia/Sydney";
@@ -143,14 +141,19 @@ const ON_A_CALL = "On a call right now";
  */
 const NAME_MAX = 80;
 /**
- * SCRUM-607: what each read leaves out, as FACTS in `data.not_shown` (the prompt says how
- * to use them) — never instructions in the message: a fallback reads the message out word
- * for word. A real session asked "did anyone call or book on Monday?" and heard "nothing
- * was booked on Monday" (a call and the job it booked, since cancelled, never showed), and
- * "has anyone called this week?" got today's count as the week's.
+ * SCRUM-607: what the jobs list leaves out, as FACTS in `data.not_shown` (the prompt says
+ * how to use them) — never instructions in the message: a fallback reads the message out
+ * word for word. A real session asked "did anyone call or book on Monday?" and heard
+ * "nothing was booked on Monday" (a call and the job it booked, since cancelled, never showed).
  */
 export const APPOINTMENTS_NOT_SHOWN: readonly string[] = ["cancelled jobs", "calls", "when bookings were made"];
-export const MESSAGES_NOT_SHOWN: readonly string[] = ["calls before today"];
+/**
+ * SCRUM-609: the messages read's scope, as a FACT on its calls line. Asked "what calls did I
+ * get this week?", Gemini answered with today's call and never said it can't see the rest —
+ * the scope sat only in data.not_shown, which it skipped. A plain fact is safe to read out
+ * word for word (the fallback does), so it goes where the count is said.
+ */
+export const CALLS_SCOPE = "I can only see today's calls";
 const PHONE_MAX = 32;
 const TEXT_MAX = 240;
 
@@ -350,9 +353,9 @@ export async function handleOwnerListMessages(organizationId: string, ctx?: Owne
   // A full fetch window means today may hold more calls than were fetched.
   const callsSaturated = (calls ?? []).length >= CALLS_FETCH_LIMIT;
 
-  const payload: OwnerListMessagesData = { callbacks, calls: customerCalls, not_shown: [...MESSAGES_NOT_SHOWN] };
+  const payload: OwnerListMessagesData = { callbacks, calls: customerCalls };
   if (cbTotal === 0 && callTotal === 0 && !callsSaturated) {
-    return { success: true, message: "No messages waiting and no customer calls yet today.", data: payload as unknown as Record<string, unknown> };
+    return { success: true, message: `No messages waiting and no customer calls yet today (${CALLS_SCOPE}).`, data: payload as unknown as Record<string, unknown> };
   }
   const lines: string[] = [];
   lines.push(
@@ -365,11 +368,11 @@ export async function handleOwnerListMessages(organizationId: string, ctx?: Owne
   if (callsSaturated && callTotal === 0) {
     // Every fetched row was the owner's own: older customer calls today may exist beyond
     // the window, so say what was looked at rather than "no customer calls" or "at least 0".
-    lines.push(`No customer calls among the latest ${CALLS_FETCH_LIMIT} calls today.`);
+    lines.push(`No customer calls among the latest ${CALLS_FETCH_LIMIT} calls today (${CALLS_SCOPE}).`);
   } else {
     lines.push(
       `${callsSaturated ? "At least " : ""}${callTotal} customer ${callTotal === 1 ? "call" : "calls"} today` +
-        `${callTotal > customerCalls.length ? ` (newest ${customerCalls.length} listed)` : ""}${customerCalls.length ? ":" : "."}`
+        ` (${callTotal > customerCalls.length ? `newest ${customerCalls.length} listed; ` : ""}${CALLS_SCOPE})${customerCalls.length ? ":" : "."}`
     );
   }
   for (const c of customerCalls) {

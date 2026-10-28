@@ -39,7 +39,7 @@ function fakeAdmin(tables: Record<string, SingleResult>) {
 const ORG = "11111111-2222-4333-a444-555555555555";
 const PERIOD_END = new Date("2026-11-20T13:00:00.000Z"); // 21 November in Sydney
 const base = { organizationId: ORG, callsLimit: 150, planName: "Starter", periodEnd: PERIOD_END };
-type Sent = { to: string; subject: string; html: string };
+type Sent = { to: string; subject: string; html: string; replyTo?: string };
 const sent = () => resendSend.mock.calls.map((c) => c[0] as Sent);
 const words = (s: string) => s.replace(/<[^>]+>/g, "").replace(/\s+/g, " ");
 
@@ -168,5 +168,122 @@ describe("sendPlanUsageAlertNotification (SCRUM-608) — review killers", () => 
     delete process.env.NEXT_PUBLIC_APP_URL;
     await sendPlanUsageAlertNotification({ ...base, level: 125, callsUsed: 188 });
     expect(sent().map((s) => s.html.match(/<a href="([^"]+)">see plans<\/a>/)?.[1])).toEqual(["https://app.phondo.ai/billing", "https://phondo.ai/billing"]);
+  });
+});
+
+// SCRUM-609: /review-and-fix on the merged #459 (silent-failure + code lenses).
+describe("sendPlanUsageAlertNotification (SCRUM-609) — review-and-fix", () => {
+  // Silent lens: a database blip looked exactly like "no owner email" — at 125% the period's alert
+  // was spent (kept as no-address), at 150% the team was told the owner had no email on file.
+  it("a database fault looking up the owner THROWS — never mistaken for no owner email; nothing is sent", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin({ org_members: { data: null, error: { code: "08006", message: "connection reset" } } }) as any);
+    const p = sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 });
+    await expect(p).rejects.toThrow("org owner query failed: connection reset");
+    await expect(p).rejects.not.toBeInstanceOf(NotificationDeliveryError);
+    expect(sent()).toEqual([]);
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin({
+      org_members: { data: { user_id: "user-owner" }, error: null },
+      user_profiles: { data: null, error: { code: "57014", message: "statement timeout" } },
+    }) as any);
+    await expect(sendPlanUsageAlertNotification({ ...base, level: 125, callsUsed: 188 })).rejects.toThrow("owner profile query failed: statement timeout");
+    expect(sent()).toEqual([]);
+  });
+
+  it("no owner row (PostgREST's PGRST116) is a real missing owner: the 125% alert is a no-address failure, as before", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin({ org_members: { data: null, error: { code: "PGRST116", message: "0 rows" } } }) as any);
+    const err = await sendPlanUsageAlertNotification({ ...base, level: 125, callsUsed: 188 }).catch((e) => e);
+    expect(err).toBeInstanceOf(NotificationDeliveryError);
+    expect(err.permanentCause).toBe("org-config");
+  });
+
+  it("at 150% with no team address, Sentry hears it — the owner's delivery makes the send 'sent', so a log line was all there was", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    delete process.env.ADMIN_ALERT_EMAIL;
+    const Sentry = await import("@sentry/nextjs");
+    expect(await sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 })).toBe("sent");
+    expect(Sentry.captureMessage).toHaveBeenCalledWith("Plan usage alert: ADMIN_ALERT_EMAIL is unset — the team wasn't told a business is at 150%");
+    vi.mocked(Sentry.captureMessage).mockClear();
+    await sendPlanUsageAlertNotification({ ...base, level: 125, callsUsed: 188 }); // 125% never wants the team
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  // Silent lens: a partial delivery is confirmed and never re-sent — the failure says who missed it.
+  it("a failed send says each recipient's outcome by role: the team's failed, the owner's went; no owner at 125%", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    resendSend.mockImplementationOnce(async () => ({ data: null, error: { message: "team inbox bounced" } }));
+    const partial = await sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 }).catch((e) => e);
+    expect(partial).toBeInstanceOf(NotificationDeliveryError);
+    expect(partial.deliveredCount).toBe(1);
+    expect(partial.wantedCount).toBe(2);
+    expect(partial.permanent).toBe(false); // the rethrow keeps every delivery fact the checker reads (silent lens)
+    expect(partial.recipients).toEqual({ team: "failed", owner: "sent" });
+    resendSend.mockClear();
+    resendSend.mockImplementation(async () => ({ data: null, error: { message: "owner inbox bounced" } }));
+    delete process.env.ADMIN_ALERT_EMAIL;
+    const ownerOnly = await sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 }).catch((e) => e);
+    expect(ownerOnly.recipients).toEqual({ team: "no-address", owner: "failed" });
+    resendSend.mockImplementation(async () => ({ data: { id: "email-1" }, error: null }));
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin({ org_members: { data: null, error: null } }) as any);
+    const none = await sendPlanUsageAlertNotification({ ...base, level: 125, callsUsed: 188 }).catch((e) => e);
+    expect(none.recipients).toEqual({ owner: "no-address" });
+    expect(none.permanent).toBe(true); // a lost flag would release and retry on every counted call
+    expect(none.permanentCause).toBe("org-config");
+  });
+
+  // Code lens: "reply to this email" went to the sending address, which nobody reads.
+  it("the owner's email replies to support@phondo.ai; the team's sets no reply-to", async () => {
+    await sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 });
+    const owner = sent().find((m) => m.to === "owner@example.com")!;
+    const team = sent().find((m) => m.to === "team@phondo.ai")!;
+    expect(owner.replyTo).toBe("support@phondo.ai");
+    expect(team).not.toHaveProperty("replyTo");
+  });
+});
+
+
+// SCRUM-609 test lens (independent mutation run on 0a78c998): paths the tests above leave open.
+// Each passes on the real code and fails on the mutant named in the comment above it.
+describe("SCRUM-609 — test-lens killers", () => {
+  // kills: the profile lookup's PGRST116 exception dropped (strict mode throws on a missing profile row too)
+  it("an owner whose profile row is missing (PGRST116 on user_profiles) is a no-address failure, like a missing owner — not a throw retried on every counted call", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(createAdminClient).mockReturnValue(fakeAdmin({
+      org_members: { data: { user_id: "user-owner" }, error: null },
+      user_profiles: { data: null, error: { code: "PGRST116", message: "0 rows" } },
+    }) as any);
+    const err = await sendPlanUsageAlertNotification({ ...base, level: 125, callsUsed: 188 }).catch((e) => e);
+    expect(err).toBeInstanceOf(NotificationDeliveryError);
+    expect(err.permanentCause).toBe("org-config");
+    expect(sent()).toEqual([]);
+  });
+
+  // kills: the lookup's throw no longer gated on throwOnQueryError, in either branch — every other
+  // caller (missed-call, recap, PIN lockout, Cliniko) would reject on a DB blip instead of degrading
+  it("strict mode is opt-in: without it, a DB fault on either lookup still returns null, never throws", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { getOrganizationOwnerEmail } = await import("@/lib/notifications/notification-service");
+    for (const tables of [
+      { org_members: { data: null, error: { code: "08006", message: "connection reset" } } },
+      { org_members: { data: { user_id: "user-owner" }, error: null }, user_profiles: { data: null, error: { code: "57014", message: "statement timeout" } } },
+    ] as Array<Record<string, SingleResult>>) {
+      vi.mocked(createAdminClient).mockReturnValue(fakeAdmin(tables) as any);
+      await expect(getOrganizationOwnerEmail(ORG)).resolves.toBeNull();
+    }
+  });
+
+  // kills: the ADMIN_ALERT_EMAIL-unset page losing its extras — its message names no business,
+  // so the org id on the scope is all the team has to find who is at 150%
+  it("the team-unset page carries the org and level, at warning level", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    delete process.env.ADMIN_ALERT_EMAIL;
+    const Sentry = await import("@sentry/nextjs");
+    const scope = { setLevel: vi.fn(), setTag: vi.fn(), setExtras: vi.fn() };
+    vi.mocked(Sentry.withScope).mockImplementationOnce(((fn: (s: typeof scope) => unknown) => fn(scope)) as any);
+    expect(await sendPlanUsageAlertNotification({ ...base, level: 150, callsUsed: 230 })).toBe("sent");
+    expect(Sentry.captureMessage).toHaveBeenCalledWith("Plan usage alert: ADMIN_ALERT_EMAIL is unset — the team wasn't told a business is at 150%");
+    expect(scope.setExtras).toHaveBeenCalledWith({ organizationId: ORG, level: 150 });
+    expect(scope.setLevel).toHaveBeenCalledWith("warning");
   });
 });
