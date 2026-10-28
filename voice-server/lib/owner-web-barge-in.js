@@ -1,0 +1,41 @@
+// SCRUM-618: the owner talking over the assistant in the browser bubble stops it,
+// as Gemini's barge-in did. On the classic pipeline the voice server decides: the
+// reply's audio is sent ahead of playback, so it is still playing until
+// `webAudioUntil`; owner speech before then tells the browser to drop it ("clear",
+// which the bubble already handles for Gemini) and marks the turn barged in, so
+// handleTestUserSpeech sends no more of it. More than two words, or a stop word,
+// so the speaker's own echo (the browser cancels most of it) can't barge in.
+
+const STOP_WORDS_RE = /^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse me|hello|hey)\b/i;
+
+/**
+ * Notes audio sent to the owner's browser: it plays in real time (8 kHz μ-law,
+ * 8 bytes a millisecond) after whatever was already queued.
+ * @param {{ webAudioUntil?: number }} session
+ * @param {number} bytes
+ * @param {number} [now]
+ */
+function noteOwnerWebAudio(session, bytes, now = Date.now()) {
+  session.webAudioUntil = Math.max(now, session.webAudioUntil || 0) + Math.round(bytes / 8);
+}
+
+/**
+ * The owner spoke while the reply was still playing: the browser drops it, and this
+ * turn is marked barged in (session.webBargeInSeq = the turn's number).
+ * @param {{ webAudioUntil?: number, webTurnSeq?: number, webBargeInSeq?: number }} session
+ * @param {{ readyState: number, send: (data: string) => void }} ws
+ * @param {string} transcript - what the owner has said so far (a partial counts)
+ * @param {number} [now]
+ * @returns {boolean} whether it barged in
+ */
+function ownerWebBargeIn(session, ws, transcript, now = Date.now()) {
+  if (!(now < (session.webAudioUntil || 0))) return false; // nothing is playing
+  const said = String(transcript || "").trim();
+  if (!said || (said.split(/\s+/).length <= 2 && !STOP_WORDS_RE.test(said))) return false;
+  session.webBargeInSeq = session.webTurnSeq || 0;
+  session.webAudioUntil = 0;
+  if (ws.readyState === 1) ws.send(JSON.stringify({ type: "clear" })); // 1 = WebSocket.OPEN
+  return true;
+}
+
+module.exports = { noteOwnerWebAudio, ownerWebBargeIn };

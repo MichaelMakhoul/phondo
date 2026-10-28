@@ -105,7 +105,7 @@ describe("classic LLM request bodies — streaming (the live path) and non-strea
         assert.deepEqual(sink.body.messages, [{ role: "user", content: "When do you open?" }]);
         assert.deepEqual(sink.body.thinking, { type: "disabled" });
         assert.equal(sink.body.temperature, undefined);
-        assert.equal(sink.body.max_tokens, withTools ? 300 : 150);
+        assert.equal(sink.body.max_tokens, withTools ? 600 : 200); // SCRUM-618: as the fast path
         assert.equal(sink.body.tools?.[0]?.name, withTools ? "check_availability" : undefined);
       });
     }

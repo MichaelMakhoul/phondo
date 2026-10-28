@@ -8,9 +8,9 @@
  * or Opus. Unset or "anthropic" (the default): api.anthropic.com with
  * ANTHROPIC_API_KEY, as before.
  *
- * Used by services/claude-chat.js (the fast path and ConversationRelay) and
- * services/turn-validator.js. The classic fallback's LLM_PROVIDER=anthropic
- * (services/openai-llm.js) still calls Anthropic directly.
+ * Used by services/claude-chat.js (the fast path and ConversationRelay),
+ * services/turn-validator.js and, since SCRUM-618, the classic pipeline's
+ * LLM_PROVIDER=anthropic (services/openai-llm.js).
  */
 
 const { Sentry } = require("./sentry");

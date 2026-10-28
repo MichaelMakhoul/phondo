@@ -127,3 +127,136 @@ describe("classic pipeline Claude turns go through the gateway (SCRUM-618)", () 
     assert.equal(calls[0].headers.Authorization, "Bearer sk-test");
   });
 });
+
+// ─── SCRUM-618 test lens (independent mutants): killers for what the PR's own suite let through ───
+// APPEND TO: voice-server/tests/openai-llm-gateway.test.js (at the end of the file —
+// `cat .claude/review/618/killers.txt >> voice-server/tests/openai-llm-gateway.test.js`). Uses the file's
+// top-level harness (load, recordFetch, MESSAGES, claudeJson, gatewayRefusal, ANTHROPIC_MESSAGES_URL);
+// describeGateway is required inside T4. Each test names the mutant it kills (see the review's mutant
+// table); all pass on eec49dbd, and each fails on its mutant.
+describe("SCRUM-618 test lens: the gateway and its latch are Claude's alone", () => {
+  /** OpenAI's answer to a bad key: a 401, which isStandingRefusal counts as standing. */
+  const openAIBadKey = () => ({
+    ok: false,
+    status: 401,
+    text: async () => JSON.stringify({ error: { message: "Incorrect API key provided.", type: "invalid_request_error", code: "invalid_api_key" } }),
+  });
+  const openAIJson = () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: "Nine." } }] }) });
+
+  it("T1 (M8): an OpenAI 401 fails the turn but never latches the Claude refusal — that would take the demo line off classic-fast and page 'Claude requests refused' — non-streaming and streaming", async () => {
+    const llm = load({ LLM_PROVIDER: "openai", OPENAI_API_KEY: "sk-test", ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "or-key" });
+    globalThis.fetch = recordFetch([], openAIBadKey);
+    await assert.rejects(llm.getChatResponse(undefined, MESSAGES), /OpenAI API error 401/);
+    assert.equal(gatewayRefusal(), null, "non-streaming: an OpenAI error is not a Claude refusal");
+    await assert.rejects(llm.streamChatResponse(undefined, MESSAGES), /OpenAI API error 401/);
+    assert.equal(gatewayRefusal(), null, "streaming: an OpenAI error is not a Claude refusal");
+  });
+
+  it("T2 (M3): gateway unset, the key is the gateway's ANTHROPIC_API_KEY — a caller's stale key is ignored here too, not only on OpenRouter", async () => {
+    const llm = load({ LLM_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "an-key" });
+    const calls = [];
+    globalThis.fetch = recordFetch(calls, claudeJson);
+    await llm.getChatResponse("a-stale-anthropic-key", MESSAGES);
+    assert.equal(calls[0].url, ANTHROPIC_MESSAGES_URL);
+    assert.equal(calls[0].headers["x-api-key"], "an-key");
+  });
+
+  it("T3 (M14): OpenAI with no caller key falls back to OPENAI_API_KEY; with neither, the turn fails before any request", async () => {
+    let llm = load({ LLM_PROVIDER: "openai", OPENAI_API_KEY: "sk-env" });
+    const calls = [];
+    globalThis.fetch = recordFetch(calls, openAIJson);
+    await llm.getChatResponse(undefined, MESSAGES);
+    assert.equal(calls[0].headers.Authorization, "Bearer sk-env");
+    llm = load({ LLM_PROVIDER: "openai" });
+    await assert.rejects(llm.streamChatResponse(undefined, MESSAGES), /LLM API key not configured.*OPENAI_API_KEY/);
+    assert.equal(calls.length, 1, "nothing sent without a key");
+  });
+
+  it("T4 (M9, M11): the boot line checks LLM_MODEL and names the classic pipeline only for LLM_PROVIDER=anthropic — not openai, gemini, or unset (openai-llm.js's default)", () => {
+    const { describeGateway } = require("../lib/anthropic-gateway");
+    const VIA_OPENROUTER = { ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "sk-or-test" };
+    const plain = "Anthropic requests: via OpenRouter, claude-haiku-5-5 only, pinned to Anthropic's servers";
+    assert.equal(describeGateway({ ...VIA_OPENROUTER, LLM_PROVIDER: "openai", LLM_MODEL: "gpt-6-luna" }), plain);
+    assert.equal(describeGateway({ ...VIA_OPENROUTER, LLM_PROVIDER: "gemini", LLM_MODEL: "gemini-3.5-flash" }), plain);
+    assert.equal(describeGateway({ ...VIA_OPENROUTER, LLM_MODEL: "gpt-6-luna" }), plain, "unset LLM_PROVIDER is openai");
+    assert.equal(
+      describeGateway({ ...VIA_OPENROUTER, LLM_PROVIDER: "anthropic", LLM_MODEL: "claude-haiku-5-5" }),
+      `${plain}; the classic pipeline too (LLM_PROVIDER=anthropic)`,
+      "Haiku 5.5 is the model OpenRouter takes: no warning",
+    );
+  });
+});
+
+// SCRUM-618 review round 1: what makes the classic pipeline fit to carry the owner assistant.
+describe("classic Claude turns: room to answer, retries, the refusal's own words, the stream's gaps (SCRUM-618)", () => {
+  const withHeaders = (r) => ({ ...r, headers: { get: () => null } });
+  const overloaded = () => withHeaders({ ok: false, status: 529, text: async () => JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }) });
+
+  it("a reply has room for a multi-field tool call: 600 tokens with tools, 200 without (as the fast path)", async () => {
+    const llm = load({ LLM_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "an-key" });
+    const calls = [];
+    globalThis.fetch = recordFetch(calls, claudeJson);
+    await llm.getChatResponse(undefined, MESSAGES, { tools: TOOLS });
+    await llm.getChatResponse(undefined, MESSAGES);
+    assert.deepEqual(calls.map((c) => c.body.max_tokens), [600, 200]);
+  });
+
+  it("an overload (529) or a 5xx is retried, then answers — non-streaming and streaming; a 400 is not retried", async () => {
+    let llm = load({ LLM_PROVIDER: "anthropic", ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "or-key" });
+    let n = 0;
+    globalThis.fetch = async () => (n++ === 0 ? overloaded() : claudeJson());
+    assert.deepEqual(await llm.getChatResponse(undefined, MESSAGES), { type: "content", content: "One job today." });
+    assert.equal(n, 2);
+    llm = load({ LLM_PROVIDER: "anthropic", ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "or-key" });
+    n = 0;
+    globalThis.fetch = async () => (n++ === 0 ? withHeaders({ ok: false, status: 502, text: async () => "bad gateway" }) : claudeStream());
+    assert.equal((await llm.streamChatResponse(undefined, MESSAGES)).content, "One job today.");
+    assert.equal(n, 2);
+    n = 0;
+    globalThis.fetch = async () => { n++; return withHeaders({ ok: false, status: 400, text: async () => JSON.stringify({ error: { message: "messages: bad shape" } }) }); };
+    await assert.rejects(llm.streamChatResponse(undefined, MESSAGES), /Anthropic API error 400/);
+    assert.equal(n, 1);
+  });
+
+  it("the refusal latch keeps the provider's own message, not the JSON around it", async () => {
+    const llm = load({ LLM_PROVIDER: "anthropic", ANTHROPIC_GATEWAY: "openrouter", OPENROUTER_API_KEY: "or-key" });
+    globalThis.fetch = recordFetch([], creditRefusal);
+    await assert.rejects(llm.getChatResponse(undefined, MESSAGES));
+    assert.equal(gatewayRefusal(), "Claude requests refused (HTTP 400: Your credit balance is too low to access the Anthropic API.)");
+  });
+
+  it("a tool with no arguments streams none: its arguments are '{}', never '' (which logged a false parse fault)", async () => {
+    const llm = load({ LLM_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "an-key" });
+    const events = [
+      { type: "message_start", message: { usage: { input_tokens: 10 } } },
+      { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tu1", name: "owner_list_messages", input: {} } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 5 } },
+      { type: "message_stop" },
+    ];
+    globalThis.fetch = async () => new Response(events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+    const r = await llm.streamChatResponse(undefined, MESSAGES, { tools: TOOLS });
+    assert.equal(r.type, "tool_calls");
+    assert.equal(r.toolCalls[0].function.arguments, "{}");
+  });
+
+  it("a reply cut off at max_tokens is said, with the tool calls it cut", async () => {
+    const llm = load({ LLM_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "an-key" });
+    const events = [
+      { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tu1", name: "owner_book_appointment", input: {} } },
+      { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"customer_name":"Ja' } },
+      { type: "message_delta", delta: { stop_reason: "max_tokens" }, usage: { output_tokens: 600 } },
+      { type: "message_stop" },
+    ];
+    globalThis.fetch = async () => new Response(events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+    const warned = [];
+    const realWarn = console.warn;
+    console.warn = (...a) => warned.push(a.join(" "));
+    try {
+      await llm.streamChatResponse(undefined, MESSAGES, { tools: TOOLS });
+    } finally {
+      console.warn = realWarn;
+    }
+    assert.ok(warned.some((l) => l === "[LLM] Anthropic reply cut off at max_tokens (tool calls: owner_book_appointment)"), warned.join("\n"));
+  });
+});
