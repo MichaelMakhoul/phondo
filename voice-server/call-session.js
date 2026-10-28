@@ -318,6 +318,8 @@ class CallSession {
     // stops re-asking the caller to repeat the same detail (the prose-only
     // "3 strikes" guidance fails under re-STT churn). Reset to 0 on success.
     this.bookRejectionCount = 0;
+    // SCRUM-617: book_appointment refusals naming the business's still-missing details (paged at 3).
+    this.missingDetailsRefusals = 0;
     // Set true once a booking completes under escalation — its name/phone were
     // AI-supplied, so post-call review may want to verify the spelling.
     this.bookNameEscalated = false;

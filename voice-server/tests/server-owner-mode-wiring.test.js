@@ -332,6 +332,8 @@ async function assemblePrompts({ owner, ownerAuth, timezone }) {
       buildOwnerGreeting,
       buildOwnerGeminiSuffix,
       buildLanguageLockDirective,
+      ...require("../lib/booking-collection"), // SCRUM-617: bookingNeeds, bookingPathSteps
+      listNeeds: require("../lib/booking-collection").listWords,
       forwardingFallbackEligible,
     },
     names: ["allTools", "consentResult", "greeting", "firstMessage", "disclosureText", "geminiSystemPrompt"],

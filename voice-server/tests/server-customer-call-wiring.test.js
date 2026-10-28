@@ -48,6 +48,7 @@ const { maskPhone } = require("../lib/mask-phone");
 const { timingSafeEqualStr } = require("../lib/timing-safe");
 const { buildOwnerCallSummary, settleOwnerToolRuns } = require("../lib/owner-tool-runner");
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("../lib/owner-turn-stamps");
+const { bookingNeeds, listWords: listNeeds, bookingPathSteps } = require("../lib/booking-collection"); // SCRUM-617
 
 const { buildLanguageLockDirective, languageName } = runSlice({
   from: "const LANG_DISPLAY = {",
@@ -69,12 +70,12 @@ const NOTIFY = Object.freeze({
 });
 const BRIEFING = Object.freeze({ customerName: "Jane Smith", startTime: START, previousStartTime: null, window: null });
 
-function makeContext({ language = "en" } = {}) {
+function makeContext({ language = "en", fields = [] } = {}) {
   return {
     organizationId: "org-1",
     assistantId: "asst-1",
     organization: { name: "Copperline Plumbing", timezone: "Australia/Sydney", country: "AU", businessState: "NSW", recordingConsentMode: "auto", recording_disclosure_text: null, industry: "home_services" },
-    assistant: { voiceId: "v1", language, promptConfig: { fields: [] }, settings: {} },
+    assistant: { voiceId: "v1", language, promptConfig: { fields }, settings: {} },
     knowledgeBase: "",
     serviceTypes: [],
     calendarProvider: null,
@@ -99,9 +100,9 @@ function makeSession({ notify = NOTIFY, briefing = BRIEFING, language = "en" } =
 // ─── The Gemini assembly: prompt, opener, tools ─────────────────────────────
 
 const RECEPTIONIST_TOOLS = [{ type: "function", function: { name: "check_availability" } }, { type: "function", function: { name: "book_appointment" } }];
-function assemble(session, { consentRequired = true, language = "en" } = {}) {
+function assemble(session, { consentRequired = true, language = "en", fields = [] } = {}) {
   const calls = [];
-  const context = makeContext({ language });
+  const context = makeContext({ language, fields });
   const r = runSlice({
     from: 'const notifyVoicemail = session.notify?.mode === "voicemail";',
     to: "// Transcript buffering — accumulate fragments, flush on turn complete",
@@ -118,6 +119,7 @@ function assemble(session, { consentRequired = true, language = "en" } = {}) {
       forwardingFallbackEligible,
       notifyPrompt,
       languageName,
+      bookingNeeds, listNeeds, bookingPathSteps, // SCRUM-617
     },
     names: ["allTools", "consentResult", "firstMessage", "disclosureText", "geminiSystemPrompt"],
   });
@@ -1049,5 +1051,56 @@ describe("SCRUM-598 (test lens, rounds 1-3): timing constants the slice stubs hi
     const { NOTIFY_VOICEMAIL_MAX_MS } = timing();
     assert.ok(NOTIFY_VOICEMAIL_MAX_MS <= 60_000, `${NOTIFY_VOICEMAIL_MAX_MS} ms`);
     assert.ok(NOTIFY_VOICEMAIL_MAX_MS >= 20_000, "long enough for a slow first turn");
+  });
+});
+
+// SCRUM-617: Gemini's booking rules (its freshest instruction) follow THIS business's fields —
+// they demanded a first and last name for every business and nothing else, so the address and
+// reason an owner had turned on were never asked for.
+describe("SCRUM-617: Gemini's booking rules follow the business's Caller Data Collection, run for real", () => {
+  const COPPERLINE = [
+    { id: "first_name", label: "First Name", required: true, verification: "repeat-confirm" },
+    { id: "last_name", label: "Last Name", required: true, verification: "repeat-confirm" },
+    { id: "phone_number", label: "Phone Number", required: true, verification: "read-back-digits" },
+    { id: "address", label: "Address", required: true, verification: "repeat-confirm" },
+    { id: "reason_for_calling", label: "Reason for Calling", required: true, verification: "none" },
+  ];
+
+  it("Copperline: both names, then the address and reason in details — in the rules and in the BOOKING PATH", () => {
+    const p = assemble(makeSession(), { fields: COPPERLINE }).geminiSystemPrompt;
+    assert.ok(p.includes("- NAME COLLECTION IS MANDATORY — ZERO EXCEPTIONS:"));
+    assert.ok(p.includes("- THIS BUSINESS ALSO NEEDS, BEFORE BOOKING: Address and Reason for Calling. Have them before calling book_appointment"));
+    assert.ok(p.includes("Pass the rest in book_appointment's details"));
+    assert.match(p, / {2}3\. You ask for last name \(if not captured\)\n {2}4\. You collect what this business also needs: Address and Reason for Calling/);
+  });
+
+  it("a business that doesn't require a last name: the first name only, and no last-name step", () => {
+    const p = assemble(makeSession(), { fields: [{ id: "first_name", label: "First Name", required: true }, { id: "last_name", label: "Last Name", required: false }] }).geminiSystemPrompt;
+    assert.ok(p.includes("This business does not require a last name — pass one only if the caller gives it."));
+    assert.ok(!p.includes("ZERO EXCEPTIONS"));
+    assert.ok(!p.includes("You ask for last name"));
+    assert.ok(!p.includes("THIS BUSINESS ALSO NEEDS"));
+  });
+
+  it("a required email is named with the rest and goes in email", () => {
+    const p = assemble(makeSession(), { fields: [{ id: "first_name", required: true }, { id: "email_address", label: "Email Address", required: true }] }).geminiSystemPrompt;
+    assert.ok(p.includes("- THIS BUSINESS ALSO NEEDS, BEFORE BOOKING: Email Address. Have it before calling book_appointment"));
+    assert.ok(p.includes("Pass the email in email and the rest in book_appointment's details"));
+  });
+});
+
+// Uses the file's top-level helpers (describe, it, assert, assemble, makeSession).
+describe("SCRUM-617 test lens round 2: both NAME COLLECTION branches keep the English-letters rule", () => {
+  it("R16: a business that doesn't require a last name still has names in English letters (the handler refuses any other script)", () => {
+    const ruleOf = (fields) => {
+      const p = assemble(makeSession(), { fields }).geminiSystemPrompt;
+      const at = p.indexOf("- NAME COLLECTION IS MANDATORY");
+      assert.ok(at >= 0, "the name rule is there");
+      return p.slice(at, p.indexOf("\n", at));
+    };
+    const firstOnly = ruleOf([{ id: "first_name", label: "First Name", required: true }, { id: "last_name", label: "Last Name", required: false }]);
+    const both = ruleOf([{ id: "first_name", label: "First Name", required: true }, { id: "last_name", label: "Last Name", required: true }]);
+    assert.ok(firstOnly.includes("This business does not require a last name"), firstOnly);
+    for (const rule of [firstOnly, both]) assert.ok(rule.includes("Names MUST be in English letters."), rule);
   });
 });

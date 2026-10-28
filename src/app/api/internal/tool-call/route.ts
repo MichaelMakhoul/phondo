@@ -351,13 +351,17 @@ export async function POST(request: Request) {
             phone: parsedArgs.phone,
             email: parsedArgs.email,
             notes: parsedArgs.notes,
+            details: parsedArgs.details, // SCRUM-617: the business's other required fields
             service_type_id: parsedArgs.service_type_id,
             practitioner_id: parsedArgs.practitioner_id,
           },
           // SCRUM-514: from the request envelope, never from `arguments` — the
           // model must not be able to claim another call's id and be handed
-          // that call's confirmation code.
-          isProductionCall ? { callId: payload.callId } : undefined
+          // that call's confirmation code. SCRUM-617: the assistant that answered,
+          // from the envelope too, so that line's own required fields apply.
+          isProductionCall
+            ? { callId: payload.callId, ...(typeof payload.assistantId === "string" && payload.assistantId ? { assistantId: payload.assistantId } : {}) }
+            : undefined
         );
         break;
 
