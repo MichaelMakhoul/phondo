@@ -1203,6 +1203,10 @@ const BOOKING_OWN_FIELD_IDS = new Set(["first_name", "full_name", "last_name", "
 const DETAIL_VALUE_MAX = 300;
 /** Spoken English runs about six characters a word — "about N words over" means something by voice; "37 characters" doesn't. */
 const wordsOver = (chars: number) => Math.max(1, Math.round(chars / 6));
+const aboutWordsOver = (chars: number) => {
+  const n = wordsOver(chars);
+  return `about ${n} word${n === 1 ? "" : "s"} over`;
+};
 /** The whole `details` string; longer is refused, never cut. */
 const DETAILS_MAX = 600;
 /** The booking path's own cap on a job's note (`sanitizeString(notes, 500)`) — anything longer would be cut there without a word. */
@@ -1240,7 +1244,7 @@ async function bookingFields(supabase: any, organizationId: string): Promise<Boo
     fields.push({
       id,
       label: sanitizeCustomerText(f?.label, 60) ?? id.replace(/_/g, " "),
-      required: f?.required === true,
+      required: Boolean(f?.required), // truthy, as the booking path's own check reads it
       verification: typeof f?.verification === "string" ? f.verification : "none",
       ...(hint ? { hint } : {}),
     });
@@ -1248,14 +1252,19 @@ async function bookingFields(supabase: any, organizationId: string): Promise<Boo
   return fields;
 }
 
+/** A line break between details is a separator — on both sides (the gate's key reads it the same way). */
+const LINE_BREAKS = /[\r\n\u2028\u2029]+/g;
+
 /**
  * The extra details as the model passes them: `field=value; field=value` (a colon after
- * the field works too). The field can be the id or the label.
+ * the field works too; a line break separates like a semicolon). The field can be the id
+ * or the label. Exported for the voice-server parity test: what this accepts, the gate's
+ * key must be able to confirm, and what this refuses the gate must never arm.
  */
-function parseBookingDetails(raw: unknown): Array<{ key: string; value: string }> | "too_long" | "unreadable" {
+export function parseBookingDetails(raw: unknown): Array<{ key: string; value: string }> | "too_long" | "unreadable" {
   if (raw === undefined || raw === null) return [];
   if (String(raw).length > DETAILS_MAX) return "too_long";
-  const text = sanitizeCustomerText(raw, DETAILS_MAX);
+  const text = sanitizeCustomerText(String(raw).replace(LINE_BREAKS, ";"), DETAILS_MAX);
   if (!text) return [];
   const pairs: Array<{ key: string; value: string }> = [];
   for (const part of text.split(";")) {
@@ -1422,30 +1431,25 @@ export async function handleOwnerBookAppointment(
   // = email), blank, ignored or not — is refused here too: the gate can never confirm it.
   const keysSeen = new Set<string>();
   let surnameGiven: string | null = null;
-  let surnameSeen = false;
   const emailParam = typeof args.customer_email === "string" && args.customer_email.trim() ? sanitizeCustomerText(args.customer_email, 120) : null;
   let emailGiven: string | null = emailParam;
-  let emailSeen = emailParam !== null;
   for (const { key, value } of parsed) {
     const k = fieldKey(key);
     const canonical = k === "surname" ? "lastname" : k === "emailaddress" ? "email" : k;
     if (keysSeen.has(canonical)) return invalidDetails(`"${byKey.get(k)?.label ?? sanitizeCustomerText(key, 40)}" is given twice in the details — pass each detail once.`);
     keysSeen.add(canonical);
     if (value.length > DETAIL_VALUE_MAX) {
-      return invalidDetails(`The ${sanitizeCustomerText(key, 40)?.toLowerCase() ?? "detail"} is too long for a booking detail — about ${wordsOver(value.length - DETAIL_VALUE_MAX)} words over. Ask the owner for a shorter version, then call again.`);
+      return invalidDetails(`The ${sanitizeCustomerText(key, 40)?.toLowerCase() ?? "detail"} is too long for a booking detail — ${aboutWordsOver(value.length - DETAIL_VALUE_MAX)}. Ask the owner for a shorter version, then call again.`);
     }
     const v = sanitizeCustomerText(value, DETAIL_VALUE_MAX) ?? "";
     // The booking's own fields, however the model passed them — once each: picked by
     // position, two spellings of one field could save what the read-back didn't say.
     if (k === "lastname" || k === "surname") {
-      if (surnameSeen) return invalidDetails("The last name is given twice in the details — pass it once, as part of customer_name.");
-      surnameSeen = true;
       surnameGiven = v || null;
       continue;
     }
     if (k === "emailaddress" || k === "email") {
-      if (emailSeen) return invalidDetails("The email is given twice — pass it once, in customer_email.");
-      emailSeen = true;
+      if (emailParam !== null) return invalidDetails("The email is given twice — pass it once, in customer_email.");
       emailGiven = v || null;
       continue;
     }
@@ -1498,7 +1502,7 @@ export async function handleOwnerBookAppointment(
   if (diaryNotes && diaryNotes.length > DIARY_NOTES_MAX) {
     const parts = [...(notes ? [{ what: "note", length: notes.length }] : []), ...details.map((d) => ({ what: d.field.label.toLowerCase(), length: d.value.length }))];
     const longest = parts.sort((a, b) => b.length - a.length)[0];
-    return invalidDetails(`That's too much for the job's note — about ${wordsOver(diaryNotes.length - DIARY_NOTES_MAX)} words over; the ${longest.what} is the longest part. Ask the owner to shorten it, then call again.`);
+    return invalidDetails(`That's too much for the job's note — ${aboutWordsOver(diaryNotes.length - DIARY_NOTES_MAX)}; the ${longest.what} is the longest part. Ask the owner to shorten it, then call again.`);
   }
   const emailField = fields.find((f) => f.id === "email_address");
   const verifications = [

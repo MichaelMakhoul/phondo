@@ -304,9 +304,19 @@ function confirmationKey(name, args) {
     if (typeof v !== "string") return null; // not what PR B reads as "none" — never confirmable
     const pairs = [];
     const seen = new Set();
-    // Line breaks and tabs are spaces, as PR B reads them (its regex runs on sanitised
-    // text; this one must not stop at a newline and null a string PR B accepted).
-    for (const part of v.normalize("NFKC").replace(/\s+/g, " ").split(";")) {
+    // Read as PR B reads it (sanitizeCustomerText, after its line-break rule): a line
+    // break separates like ";", NFKC, tabs are spaces, controls and invisible marks go,
+    // spaces collapse — so a string PR B accepted is never left unconfirmable here, and a
+    // string PR B refuses is never armed.
+    const text = v
+      .replace(/[\r\n\u2028\u2029]+/g, ";")
+      .normalize("NFKC")
+      .replace(/\t/g, " ")
+      .replace(/\p{C}/gu, "")
+      .replace(/[\p{Default_Ignorable_Code_Point}\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    for (const part of text.split(";")) {
       if (!part.trim()) continue;
       const m = /^\s*([^=:]+?)\s*[=:]\s*(.*)$/.exec(part);
       if (!m) return null;

@@ -2062,3 +2062,38 @@ describe("SCRUM-601 round 2: space around a booking's number never changes which
     assert.equal(await confirmedWith(" +64 9 555 1234", "+1 649 555 1234"), false);
   });
 });
+
+// ─── SCRUM-602 test lens (independent mutants): killers for what the PR's own suite let through ───
+// APPEND TO: voice-server/tests/owner-tool-runner.test.js (at the end of the file —
+// `cat killers-voice.txt >> …`). Uses the file's top-level harness (makeSession, makeDeps,
+// captureConsole, settled, assistantTurn, ownerSpeaks, runOwnerToolCall); the SCRUM-599 block's
+// prB and BOOK are local to that describe, so they are redefined here with the same shapes.
+// Each test names the mutant it kills (see the review's mutant table); all pass on the real code.
+describe("SCRUM-602 test lens: the booking key over an email the model spaced, and a blank detail", () => {
+  const prB = (name, args) =>
+    args.confirmed === true
+      ? { success: true, message: "Done.", data: { outcome: "booked" } }
+      : { success: false, message: "Read this back…", data: { outcome: "needs_confirmation" } };
+  const BOOK = { customer_name: "Jane Smith", customer_phone: "0412 345 678", start: "2026-10-29T14:00", notes: "Hot water unit leaking" };
+  /** Arm with `first`, hear the read-back, confirm with `second`: what the gate forwarded as confirmed. */
+  async function confirmedWith(first, second) {
+    const s = makeSession();
+    const d = makeDeps(prB);
+    await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, ...first } }, d.deps));
+    assistantTurn(s);
+    ownerSpeaks(s);
+    await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, ...second, confirmed: true, notify_customer: "none" } }, d.deps)));
+    return d.calls.at(-1).args.confirmed;
+  }
+
+  it("V04: an email the model spaced INSIDE ('jane.smith @ example.com' — PR B reads it as one address) confirms as 'jane.smith@example.com'; the owner is never stuck re-reading one email", async () => {
+    assert.equal(await confirmedWith({ customer_email: "jane.smith @ example.com" }, { customer_email: "jane.smith@example.com" }), true);
+    assert.equal(await confirmedWith({ customer_email: "jane.smith@example.com" }, { customer_email: "jane .smith@example.com" }), true);
+    assert.equal(await confirmedWith({ customer_email: "jane.smith@example.com" }, { customer_email: "jane.smyth@example.com" }), false, "a different address is still another booking");
+  });
+
+  it("V06: a blank detail value is no detail (PR B drops it): 'urgency level=' on the first call and nothing on the confirm are one booking; a value given only on the confirm is not", async () => {
+    assert.equal(await confirmedWith({ details: "service address=12 Smith St; urgency level=" }, { details: "service address=12 Smith St" }), true);
+    assert.equal(await confirmedWith({ details: "service address=12 Smith St; urgency level= " }, { details: "urgency level=today; service address=12 Smith St" }), false);
+  });
+});

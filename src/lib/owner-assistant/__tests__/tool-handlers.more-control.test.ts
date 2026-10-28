@@ -1052,8 +1052,8 @@ describe("SCRUM-602: owner bookings follow each business's own required details"
     }
     // The booking's own fields under either spelling, and an email in both places.
     for (const [extra, line] of [
-      [{ details: "surname=Smith; last name=Jones" }, "The last name is given twice in the details — pass it once, as part of customer_name."],
-      [{ details: "email=a@example.com; email address=b@example.com" }, "The email is given twice — pass it once, in customer_email."],
+      [{ details: "surname=Smith; last name=Jones" }, `"Last Name" is given twice in the details — pass each detail once.`],
+      [{ details: "email=a@example.com; email address=b@example.com" }, `"Email Address" is given twice in the details — pass each detail once.`],
       [{ customer_email: "a@example.com", details: "email=b@example.com" }, "The email is given twice — pass it once, in customer_email."],
     ] as const) {
       configured(DENTAL);
@@ -1156,6 +1156,36 @@ describe("SCRUM-602: owner bookings follow each business's own required details"
     expect(none.message).not.toContain("It keeps");
   });
 
+  it("a line break between details separates like a semicolon; inside a value it leaves a part with no field, which is refused — never a garbled read-back", async () => {
+    configured(TRADIE);
+    const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: "service address=12 Smith St\nproblem description: leaking tap\r\nurgency level=today" }), ctx);
+    expect(r.data).toMatchObject({ outcome: "needs_confirmation" });
+    expect(((r.data as Record<string, unknown>).details as Array<{ value: string }>).map((d) => d.value)).toEqual(["12 Smith St", "leaking tap", "today"]);
+    configured(TRADIE);
+    db.queues.organizations = [AU_ORG];
+    const inside = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: "service address=12 Smith St; problem description=tap leaking\nunder the sink; urgency level=today" }), ctx);
+    expect(inside.data).toMatchObject({ outcome: "invalid_details" });
+    expect(inside.message).toContain("I couldn't read the details.");
+    // A ";" inside a value is the same: refused, consistently on both sides.
+    configured(TRADIE);
+    db.queues.organizations = [AU_ORG];
+    const semi = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: "service address=12 Smith St; Wyong; urgency level=today" }), ctx);
+    expect(semi.message).toContain("I couldn't read the details.");
+  });
+
+  it("'required' is read as the booking path reads it — truthy — so a config with the string \"true\" is required on both sides, never required only after the yes", async () => {
+    configured([F("first_name", "First Name", true), { ...F("last_name", "Last Name", false), required: "true" }, F("phone_number", "Phone Number", true)]);
+    const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane"), ctx);
+    expect(r.data).toMatchObject({ outcome: "invalid_details", missing_fields: [{ id: "last_name", label: "Last Name" }] });
+  });
+
+  it("an email the owner gives is kept even when the business doesn't collect one — an extra, never asked for", async () => {
+    configured(NAME_FIELDS(false).filter((f) => f.id !== "email_address"));
+    const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { customer_email: "jane@example.com", confirmed: true, notify_customer: "none" }), ctx);
+    expect(r.data).toMatchObject({ outcome: "booked" });
+    expect(vi.mocked(handleBookAppointment).mock.calls[0][1]).toMatchObject({ email: "jane@example.com" });
+  });
+
   it("no configured fields (no assistant row, or no fields) means nothing beyond the name and number; a read fault is a fault, never 'nothing required'", async () => {
     db.queues.assistants = [{ data: null, error: null }];
     expect((await handleOwnerBookAppointment(ORG, bookArgs("Jane"), ctx)).data).toMatchObject({ outcome: "needs_confirmation" });
@@ -1167,5 +1197,111 @@ describe("SCRUM-602: owner bookings follow each business's own required details"
     const fault = await handleOwnerBookAppointment(ORG, bookArgs("Jane"), ctx);
     expect(fault.error).toBe(true);
     expect(handleBookAppointment).not.toHaveBeenCalled();
+  });
+});
+
+// ─── SCRUM-602 test lens (independent mutants): killers for what the PR's own suite let through ───
+// APPEND TO: src/lib/owner-assistant/__tests__/tool-handlers.more-control.test.ts (at the end of
+// the file — `cat killers-website.txt >> …`). Uses the file's top-level fixtures (db, BOOK, ORG, ctx,
+// AU_ORG, NEW_ID, handleOwnerBookAppointment, handleBookAppointment). The SCRUM-602 block's small
+// helpers are local to that describe, so they are redefined here with the same shapes.
+// Each test names the mutant it kills (see the review's mutant table); all pass on the real code.
+describe("SCRUM-602 test lens: killers for the surviving mutants", () => {
+  const F = (id: string, label: string, required: boolean, verification = "repeat-confirm") => ({ id, label, required, verification, type: "text", category: "universal" });
+  const NAME_FIELDS = (lastRequired: boolean) => [F("first_name", "First Name", true), F("last_name", "Last Name", lastRequired), F("phone_number", "Phone Number", true, "read-back-digits"), F("email_address", "Email Address", false, "spell-out")];
+  const TRADIE = [...NAME_FIELDS(false), F("service_address", "Service Address", true), F("problem_description", "Problem Description", true), F("urgency_level", "Urgency Level", true)];
+  const configured = (fields: unknown[]) => { db.queues.assistants = [{ data: { prompt_config: { fields } }, error: null }]; };
+  const bookArgs = (customer_name: string, extra: Record<string, unknown> = {}) => ({ ...BOOK, customer_name, notes: "Hot water unit leaking", ...extra });
+  const KEPT = "It keeps the service, note and contact details it was booked with — the new ones weren't added";
+
+  it("W05: when the model passes both, neither email is picked over the other — it is refused, and nothing of the second shows anywhere", async () => {
+    configured(NAME_FIELDS(false));
+    const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { customer_email: "jane@example.com", details: "email=other@example.com" }), ctx);
+    expect(r.data).toMatchObject({ outcome: "invalid_details" });
+    expect(r.message).toBe("The email is given twice — pass it once, in customer_email.");
+    expect(r.message).not.toContain("other@example.com");
+  });
+
+  it("W07: a job note of exactly the diary's 500 characters is kept — only one OVER is refused, and the count says by how much", async () => {
+    // 200 (the owner's note, its own cap) + "\n" + "Service Address: " (17) + 100 + "\n" + "Problem Description: " (21) + 100 + "\n" + "Urgency Level: " (15) + 44 = 500
+    const details = `service address=${"a".repeat(100)}; problem description=${"b".repeat(100)}; urgency level=${"c".repeat(44)}`;
+    configured(TRADIE);
+    const at = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { notes: "n".repeat(200), details }), ctx);
+    expect(at.data).toMatchObject({ outcome: "needs_confirmation" });
+    configured(TRADIE);
+    db.queues.organizations = [AU_ORG];
+    const over = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { notes: "n".repeat(200), details: details.replace("c".repeat(44), "c".repeat(45)) }), ctx);
+    expect(over.data).toMatchObject({ outcome: "invalid_details" });
+    expect(over.message).toBe("That's too much for the job's note — about 1 word over; the note is the longest part. Ask the owner to shorten it, then call again.");
+  });
+
+  it("W10: a field's id written with spaces ('service address' for service_address) is that field even when its label is something else", async () => {
+    configured([...NAME_FIELDS(false), F("service_address", "Address", true)]);
+    const byId = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: "service address=12 Smith St" }), ctx);
+    expect(byId.data).toMatchObject({ outcome: "needs_confirmation", details: [{ id: "service_address", label: "Address", value: "12 Smith St" }] });
+    configured([...NAME_FIELDS(false), F("service_address", "Address", true)]);
+    db.queues.organizations = [AU_ORG];
+    const byLabel = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: "Address: 12 Smith St" }), ctx);
+    expect(byLabel.data).toMatchObject({ outcome: "needs_confirmation", details: [{ id: "service_address", label: "Address", value: "12 Smith St" }] });
+  });
+
+  it("W13: an email given to a business with no email field is still spelled back letter by letter (the default), never merely said", async () => {
+    configured(NAME_FIELDS(false).filter((f) => f.id !== "email_address"));
+    const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { customer_email: "jane@example.com" }), ctx);
+    expect(r.data).toMatchObject({ outcome: "needs_confirmation", customer_email: "jane@example.com" });
+    expect(r.message).toContain("Say the note. Spell the email address out letter by letter. Spell back letter by letter any name");
+  });
+
+  it("W15: the surname the owner SAID ('Jane Smith') is the booking's — a 'last name=' detail that disagrees doesn't replace it", async () => {
+    configured(NAME_FIELDS(true));
+    const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane Smith", { details: "last name=Smyth" }), ctx);
+    expect(r.data).toMatchObject({ outcome: "needs_confirmation", customer_name: "Jane Smith" });
+    expect(r.message).toContain("book Jane Smith on 0412 345 678");
+  });
+
+  it("W18: a repeat of a booking made WITH details compares the WHOLE note — the same note and details again say nothing about kept details; details the first booking lacked do", async () => {
+    const EARLIER = { id: NEW_ID, attendee_name: "Jane", attendee_phone: "+61412345678", confirmation_code: "654321", practitioners: { name: "Alex" }, service_type_id: null };
+    const details = "service address=12 Smith St, Wyong; problem description=leaking tap; urgency level=today";
+    const diaryNotes = "Hot water unit leaking\nService Address: 12 Smith St, Wyong\nProblem Description: leaking tap\nUrgency Level: today";
+    configured(TRADIE);
+    db.queues.appointments = [{ data: [{ ...EARLIER, notes: diaryNotes }], error: null }];
+    db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
+    const same = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details, confirmed: true, notify_customer: "none" }), ctx);
+    expect(same.data).toMatchObject({ outcome: "booked", appointment_id: NEW_ID });
+    expect(same.message).not.toContain(KEPT);
+    configured(TRADIE);
+    db.queues.organizations = [AU_ORG];
+    db.queues.appointments = [{ data: [{ ...EARLIER, notes: "Hot water unit leaking" }], error: null }];
+    db.queues.appointment_events = [{ data: [{ id: "ev-1" }], error: null }];
+    const added = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details, confirmed: true, notify_customer: "none" }), ctx);
+    expect(added.data).toMatchObject({ outcome: "booked", appointment_id: NEW_ID });
+    expect(added.message).toContain(KEPT);
+    expect(handleBookAppointment).not.toHaveBeenCalled();
+  });
+
+  it("W19: the same field twice in details is never picked by position — refused, and neither value shows anywhere", async () => {
+    configured(TRADIE);
+    const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: "service address=12 Smith St; Service Address=14 Smith St; problem description=leaking tap; urgency level=today" }), ctx);
+    expect(r.data).toMatchObject({ outcome: "invalid_details" });
+    expect(r.message).toBe(`"Service Address" is given twice in the details — pass each detail once.`);
+    expect(r.message).not.toContain("14 Smith St");
+  });
+
+  it("W20: a field listed twice in the business's config is one field — asked for once, named once", async () => {
+    configured([...TRADIE, F("service_address", "Service Address", true)]);
+    const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane"), ctx);
+    expect((r.data as Record<string, unknown>).missing_fields).toEqual([
+      { id: "service_address", label: "Service Address" },
+      { id: "problem_description", label: "Problem Description" },
+      { id: "urgency_level", label: "Urgency Level" },
+    ]);
+    expect(r.message).toContain("this business's bookings also need the service address, the problem description and the urgency level.");
+  });
+
+  it("W24: the booking's own fields passed again through details ('first name=', 'phone=') are ignored — never refused as unknown", async () => {
+    configured(TRADIE);
+    const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: "first name=Jane; phone=0412 345 678; service address=12 Smith St; problem description=leaking tap; urgency level=today" }), ctx);
+    expect(r.data).toMatchObject({ outcome: "needs_confirmation", customer_name: "Jane" });
+    expect((r.data as Record<string, unknown>).details).toHaveLength(3);
   });
 });
