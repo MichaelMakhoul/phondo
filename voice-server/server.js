@@ -32,6 +32,7 @@ const { createOpenAIRealtimeSession, createGrokRealtimeSession, resolveOpenAIRea
 const { createSessionWithFailover, isFailoverEnabled } = require("./services/gemini-failover"); // SCRUM-535
 const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline, resolveCallPipeline, fastPathKeysPresent } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override; SCRUM-587 OWNER_PIPELINE; SCRUM-594 DEMO_LINE_PIPELINE
 const { describeGateway: describeAnthropicGateway } = require("./lib/anthropic-gateway"); // SCRUM-594: ANTHROPIC_GATEWAY
+const { bookingNeeds, listWords: listNeeds, bookingPathSteps } = require("./lib/booking-collection"); // SCRUM-617: what THIS business's bookings need
 const { checkEndCallGuard } = require("./lib/end-call-guard"); // SCRUM-594: the SCRUM-373 end_call guard for the classic pipeline
 const { checkBookingGuards, fastCancelGate, checkCallerDone, withBookedName, noteNameCorrection, forgetCancelledBooking, noteBookingGuardCap, CANCEL_KEPT_NUDGE } = require("./lib/booking-guards"); // SCRUM-594 PHASE 2: the fast path's booking guards
 // SCRUM-594: the fast classic pipeline (DEMO_LINE_PIPELINE=classic-fast, spec 4.8):
@@ -2830,7 +2831,18 @@ wss.on("connection", (twilioWs) => {
                 nameInstruction = "Repeat the name back and ask them to confirm it's correct.";
               }
 
-              geminiSystemPrompt += `\n- NAME COLLECTION IS MANDATORY — ZERO EXCEPTIONS: Before calling book_appointment, you MUST: (1) Ask for FIRST NAME — wait for answer, (2) ${nameInstruction}, (3) Ask for LAST NAME — wait for answer, (4) ${nameInstruction}, (5) ONLY after you have BOTH confirmed names, call book_appointment with first_name and last_name. Names MUST be in English letters. If you are unsure of the spelling, ask again. NEVER call book_appointment until the caller has fully spelled and confirmed BOTH names. If you only have one name, ask for the other BEFORE booking.`;
+              // SCRUM-617: what THIS business's bookings need (its Caller Data Collection
+              // fields) — a last name only where it's required, and the other required items.
+              const needs = bookingNeeds(context.assistant.promptConfig?.fields);
+              const otherNeeds = [...needs.others, ...(needs.email ? ["Email Address"] : [])];
+              if (needs.lastName) {
+                geminiSystemPrompt += `\n- NAME COLLECTION IS MANDATORY — ZERO EXCEPTIONS: Before calling book_appointment, you MUST: (1) Ask for FIRST NAME — wait for answer, (2) ${nameInstruction}, (3) Ask for LAST NAME — wait for answer, (4) ${nameInstruction}, (5) ONLY after you have BOTH confirmed names, call book_appointment with first_name and last_name. Names MUST be in English letters. If you are unsure of the spelling, ask again. NEVER call book_appointment until the caller has fully spelled and confirmed BOTH names. If you only have one name, ask for the other BEFORE booking.`;
+              } else {
+                geminiSystemPrompt += `\n- NAME COLLECTION IS MANDATORY: Before calling book_appointment, you MUST: (1) Ask for FIRST NAME — wait for answer, (2) ${nameInstruction}, (3) ONLY after it is confirmed, call book_appointment with first_name. This business does not require a last name — pass one only if the caller gives it. Names MUST be in English letters. If you are unsure of the spelling, ask again.`;
+              }
+              if (otherNeeds.length > 0) {
+                geminiSystemPrompt += `\n- THIS BUSINESS ALSO NEEDS, BEFORE BOOKING: ${listNeeds(otherNeeds)}. Have ${otherNeeds.length === 1 ? "it" : "them"} before calling book_appointment — use what the caller already told you (like why they're calling) instead of asking again, and ask for the rest in one question; if they have none (no insurer, say), "none" is an answer. Pass ${needs.email ? "the email in email and " : ""}the rest in book_appointment's details ("Label: value; Label: value"). If book_appointment answers that something is still missing, ask for exactly that and call it again.`;
+              }
               geminiSystemPrompt += `\n- CONFIRM BOOKING DETAILS: AFTER book_appointment returns a successful result, read back ALL details to the caller: name, date, time, and practitioner. Then ask "Is everything correct?" If the caller says something is wrong, fix it (cancel and rebook with the correct details). Do NOT end the booking conversation without confirmation. NEVER promise a confirmation text, email, or any other follow-up notification — none are sent automatically. The read-back is the only confirmation the caller receives.`;
               geminiSystemPrompt += `\n- FILLER WORDS — SPEAK FIRST, THEN CALL TOOL: When you need to call a tool, you MUST speak a filler phrase FIRST as a separate response BEFORE making the tool call. Say a brief filler in the caller's language (the equivalent of "one moment, let me check that") and WAIT for the audio to play. THEN make the tool call in the next step. NEVER bundle the filler and tool result into one response. The caller must hear the filler DURING the silence, not after. Example flow: (1) caller asks for availability → (2) you say "Let me check that for you" → (3) you call check_availability → (4) you say "We have slots on Wednesday...". Steps 2 and 4 must be SEPARATE speech outputs.`;
               geminiSystemPrompt += `\n- POST-CONFIRMATION CLOSE — MANDATORY: When the caller responds to "Is everything correct?" with ANY positive answer (yes, sounds right, sounds good, thanks, perfect, great, looks good, sure, yep, absolutely) or says goodbye, you MUST follow this exact sequence in ONE response: (1) Say ONE brief warm closing phrase IN THE CALLER'S LANGUAGE (the equivalent of "Perfect! You're all set. Have a great day!") (2) IMMEDIATELY call end_call with reason="booking_complete" in the SAME response. NEVER say "goodbye" without calling end_call. NEVER mirror the caller's goodbye. NEVER continue the conversation after the caller confirms. The closing phrase and the end_call MUST happen together, without waiting for another turn.`;
@@ -2858,17 +2870,7 @@ wss.on("connection", (twilioWs) => {
                 `🚨 FINAL CRITICAL RULE — READ THIS LAST 🚨\n` +
                 `══════════════════════════════════════════════════════\n` +
                 `BOOKING PATH (strict order — no exceptions):\n` +
-                `  1. Caller says a time works ("9am is fine")\n` +
-                `  2. You ask for first name (if not captured)\n` +
-                `  3. You ask for last name (if not captured)\n` +
-                `  4. You say a short filler in the caller's language (the equivalent of "one moment, let me book that for you")\n` +
-                `  5. You CALL THE book_appointment TOOL — this is non-negotiable\n` +
-                `  6. You WAIT for the tool result\n` +
-                `  7. You read back the booking details (name, date, time, practitioner) from the tool result\n` +
-                `  8. You ask "Is everything correct?" — NEVER promise a text, email, or any follow-up notification\n` +
-                `  9. You call end_call AFTER the caller acknowledges\n\n` +
-                `BETWEEN step 4 and step 7, you MUST be SILENT — do not speak any words while the tool is executing. Wait for the tool result before opening your mouth again. The tool call takes 1-3 seconds; the caller will hear your filler phrase during this time.\n\n` +
-                `YOU MUST NOT speak the words "you're all set", "I've booked", "appointment is confirmed", or anything that implies success BEFORE step 6 (tool result) arrives. If you speak these words without a prior successful book_appointment result, THE CALL HAS FAILED and the caller has NO actual appointment.\n\n` +
+                bookingPathSteps(needs.lastName, otherNeeds) +
                 `If book_appointment returns an error, do NOT pretend the booking succeeded. Tell the caller — in their language — that you're having trouble completing the booking and will take their details so someone can call them back. Then call schedule_callback.\n` +
                 `\nINCOMPLETE BOOKING: If you started taking booking details but book_appointment NEVER returned a successful result, do NOT end the call as if it worked. Tell the caller honestly you couldn't finish it this time, then take a callback with schedule_callback (or connect them to the team if a transfer is available and the office is open). Only call end_call AFTER that fallback returns success.\n` +
                 `\nDON'T HANG UP ON "YES": After you ask "Is there anything else I can help you with?", a "yes" / "yeah" / "ok" / "sure" / "please" or ANY unclear reply means the caller wants MORE help — say the equivalent of "Of course — what else can I help you with?" and do NOT call end_call. Only give a farewell and call end_call when the caller CLEARLY declines: "no" / "no thanks" / "that's all" / "that's everything" / "I'm good" / "goodbye" / "bye". NEVER end the call on a bare "yes" or "ok" right after asking "anything else?".\n` +
@@ -3279,7 +3281,15 @@ wss.on("connection", (twilioWs) => {
                   const availabilityRejectRe = /no longer available|already booked|currently blocked|not available for this service|fully booked|no available slot|unavailable at this time/i;
 
                   let bookLoopDirective = "";
-                  if (session && toolCall.name === "book_appointment") {
+                  // SCRUM-617: "can't book this yet — this business also needs …" asks the caller
+                  // for the business's required details: never escalated to "stop asking, book
+                  // with what you have" (placeholders would pass) — paged when it keeps happening.
+                  // (the booking handler's refusal: src/lib/calendar/tool-handlers.ts)
+                  const missingDetails = session && toolCall.name === "book_appointment" && /^Can't book this yet: this business's bookings also need /.test(message);
+                  if (missingDetails && ++session.missingDetailsRefusals === 3) {
+                    console.error(`[ALERT:error] [BookingFields] a booking was refused 3 times for missing required details — the caller may be stuck (callSid=${session.callSid}, org=${session.organizationId})`);
+                  }
+                  if (session && toolCall.name === "book_appointment" && !missingDetails) {
                     const lastAudit = session.toolCallAudit[session.toolCallAudit.length - 1] || {};
                     const succeeded = (typeof result === "object" && typeof result.success === "boolean")
                       ? result.success
@@ -3317,7 +3327,13 @@ wss.on("connection", (twilioWs) => {
                   // SCRUM-514: keyed by lib/booking-key, which folds the datetime
                   // to a UTC instant and drops the surname — the model respelling
                   // it mid-call used to slip straight past this guard.
-                  if (session && toolCall.name === "book_appointment" && (message.includes("confirmed") || message.includes("booked") || message.includes("confirmation"))) {
+                  // SCRUM-617: and only a booking the handler said succeeded, when it says — a
+                  // refusal that names what's still needed is no booking (its retry was refused
+                  // as "already booked", with nothing in the diary).
+                  const handlerSaidBooked = (typeof result === "object" && result !== null && typeof result.success === "boolean")
+                    ? result.success === true
+                    : (message.includes("confirmed") || message.includes("booked") || message.includes("confirmation"));
+                  if (session && toolCall.name === "book_appointment" && handlerSaidBooked) {
                     if (!session.confirmedBookings) session.confirmedBookings = new Map();
                     const bookKey = bookingKey(toolCall.args);
                     const codeMatch = message.match(/\b(\d{6})\b/);
@@ -3399,7 +3415,7 @@ wss.on("connection", (twilioWs) => {
 
                   // Apply cache delta for writes — guard against cleanup race
                   if (session && session.scheduleSnapshot) {
-                    if (toolCall.name === "book_appointment" && (message.includes("confirmed") || message.includes("booked") || message.includes("confirmation"))) {
+                    if (toolCall.name === "book_appointment" && handlerSaidBooked) {
                       scheduleCache.applyDelta(session.organizationId, "book", {
                         appointment: {
                           id: "pending-" + Date.now(),
@@ -4876,7 +4892,10 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
           const bookedWords = resultMessage.includes("confirmed") || resultMessage.includes("booked") || resultMessage.includes("confirmation");
           // (gate review 3) and a success that booked nothing — Cliniko's "Before I
           // check availability, what type of appointment…?" — is not a booking either.
-          const bookedOk = session.bookingGuards ? toolResult?.success === true && bookedWords : bookedWords;
+          // SCRUM-617: on classic too, the handler's own success when it gives one.
+          const bookedOk = session.bookingGuards
+            ? toolResult?.success === true && bookedWords
+            : typeof toolResult?.success === "boolean" ? toolResult.success === true : bookedWords;
           if (fnName === "book_appointment" && bookedOk) {
             if (!session.confirmedBookings) session.confirmedBookings = new Map();
             const bookKey = bookingKey(fnArgs);

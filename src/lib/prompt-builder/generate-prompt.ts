@@ -281,7 +281,7 @@ function buildFieldCollectionSection(fields: CollectionField[]): string {
   if (required.length > 0) {
     section += "Required information:\n";
     for (const field of required) {
-      section += `- ${field.label}`;
+      section += `- ${field.label}${fieldDescription(field)}`;
       const verifyNote = getVerificationInstruction(field.verification, field.label);
       if (verifyNote) {
         section += `\n  ${verifyNote}`;
@@ -293,7 +293,7 @@ function buildFieldCollectionSection(fields: CollectionField[]): string {
   if (optional.length > 0) {
     section += "\nOptional (collect if relevant):\n";
     for (const field of optional) {
-      section += `- ${field.label}`;
+      section += `- ${field.label}${fieldDescription(field)}`;
       const verifyNote = getVerificationInstruction(field.verification, field.label);
       if (verifyNote) {
         section += `\n  ${verifyNote}`;
@@ -311,9 +311,18 @@ function buildFieldCollectionSection(fields: CollectionField[]): string {
  * confirmed — the caller's own number counts (caller ID), read back rather than asked for.
  * The same text as voice-server/lib/prompt-builder.js.
  */
+/**
+ * SCRUM-617: a field's description — its choices ("Routine, Urgent, or Emergency") — said
+ * with it, flattened as voice-server/lib/prompt-builder.js's sanitizeForPrompt does.
+ */
+function fieldDescription(field: CollectionField): string {
+  const text = (field.description ?? "").replace(/[\x00-\x1f\x7f]/g, "").replace(/\n/g, " ").replace(/\s{2,}/g, " ").trim().slice(0, 200);
+  return text ? ` (${text})` : "";
+}
+
 function bookingCollectionRules(fields: CollectionField[]): string {
   const phone = fields.find((f) => f.id === "phone_number" && f.required);
-  let rules = "\nBefore you book, have every required item above — use what the caller already told you (like why they're calling) instead of asking again. book_appointment takes the name in first_name and last_name and every other item in details.\n";
+  let rules = "\nBefore you book, have every required item above — use what the caller already told you (like why they're calling) instead of asking again; if they have none (no insurer, say), \"none\" is an answer. book_appointment takes the name in first_name and last_name and every other item in details.\n";
   if (phone) {
     rules += `${phone.label}: the number they're calling from counts — read it back and ask if it's the best one to reach them; take a different one if they give it.\n`;
   }

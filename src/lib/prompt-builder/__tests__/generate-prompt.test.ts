@@ -430,7 +430,7 @@ describe("buildSchedulingSection availability examples", () => {
 
 // SCRUM-617: the same booking rule as voice-server/lib/prompt-builder.js (tests/booking-fields-tool.test.js).
 describe("DATA COLLECTION says what a booking needs (SCRUM-617)", () => {
-  const RULE = "Before you book, have every required item above — use what the caller already told you (like why they're calling) instead of asking again. book_appointment takes the name in first_name and last_name and every other item in details.";
+  const RULE = "Before you book, have every required item above — use what the caller already told you (like why they're calling) instead of asking again; if they have none (no insurer, say), \"none\" is an answer. book_appointment takes the name in first_name and last_name and every other item in details.";
   const PHONE = "Phone Number: the number they're calling from counts — read it back and ask if it's the best one to reach them; take a different one if they give it.";
   const build = (fields: CollectionField[]) => buildPromptFromConfig({ ...getDefaultConfig("home_services"), fields }, { businessName: "Copperline Plumbing", industry: "home_services" } as never);
 
@@ -451,3 +451,22 @@ describe("DATA COLLECTION says what a booking needs (SCRUM-617)", () => {
   });
 });
 
+// Uses the file's top-level imports (buildPromptFromConfig, getDefaultConfig, CollectionField).
+describe("SCRUM-617 test lens: the booking rule comes after the fields it's about (as the voice server's test pins)", () => {
+  it("M17: 'every required item above' is below the required list", () => {
+    const p = buildPromptFromConfig(
+      {
+        ...getDefaultConfig("home_services"),
+        fields: [
+          { id: "first_name", label: "First Name", type: "text", required: true, verification: "repeat-confirm" } as CollectionField,
+          { id: "reason_for_calling", label: "Reason for Calling", type: "text", required: true, verification: "none" } as CollectionField,
+        ],
+      },
+      { businessName: "Copperline Plumbing", industry: "home_services" } as never
+    );
+    const rule = p.indexOf("Before you book, have every required item above");
+    expect(rule).toBeGreaterThan(-1);
+    expect(rule).toBeGreaterThan(p.indexOf("- Reason for Calling"));
+    expect(p.indexOf("- Reason for Calling")).toBeGreaterThan(p.indexOf("Required information:"));
+  });
+});

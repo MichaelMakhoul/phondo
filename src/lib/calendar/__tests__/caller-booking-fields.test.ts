@@ -8,6 +8,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // required field is in, names them all at once, and saves them in the job's note.
 
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: vi.fn() }));
+// SCRUM-617: a fields read fault pages — the rest of Sentry stays real (uninitialised: no-ops).
+vi.mock("@sentry/nextjs", async (importOriginal) => ({ ...(await importOriginal<object>()), captureMessage: vi.fn() }));
 vi.mock("@/lib/security/rate-limiter", () => ({ rateLimitDistributed: vi.fn(async () => ({ allowed: true })) }));
 vi.mock("@/lib/notifications/notification-service", () => ({ sendAppointmentNotification: vi.fn(async () => {}) }));
 vi.mock("@/lib/sms/caller-sms", () => ({ sendAppointmentConfirmationSMS: vi.fn(async () => ({ sent: true })), sendCancellationSMS: vi.fn() }));
@@ -102,8 +104,8 @@ describe("a caller's booking follows the business's own required fields (SCRUM-6
     const r = await handleBookAppointment(ORG, ARGS, { callId: CALL });
     expect(r.success).toBe(false);
     expect(r.message).toBe(
-      "Not booked yet: this business's bookings also need the address and the reason for calling. " +
-        "Ask the caller for them in one question — use anything they've already told you (like why they're calling) instead of asking again — " +
+      "Can't book this yet: this business's bookings also need the address and the reason for calling. " +
+        'Ask the caller for them in one question — use anything they\'ve already told you (like why they\'re calling) instead of asking again; if they have none (no insurer, say), "none" is an answer — ' +
         'then call book_appointment again with them in details ("Address: …; Reason for Calling: …").'
     );
     expect(r.data).toEqual({ missing_fields: [{ id: "address", label: "Address" }, { id: "reason_for_calling", label: "Reason for Calling" }] });
@@ -200,3 +202,169 @@ describe("a caller's booking follows the business's own required fields (SCRUM-6
     expect(r).toMatchObject({ success: false, message: 'I couldn\'t read the details. Pass them as "Label: value; Label: value", using the labels in DATA COLLECTION, then call book_appointment again.' });
   });
 });
+// Uses the file's top-level fixtures (ORG, ARGS, CALL, COPPERLINE_FIELDS, withFields, inserts,
+// fakeAdmin, createAdminClient, handleBookAppointment).
+describe("SCRUM-617 test lens: what the caller's details carry, and the edges", () => {
+  it("M01: the name given again in details under the business's own labels stays out of the note — it has its own parameters", async () => {
+    withFields(COPPERLINE_FIELDS);
+    const r = await handleBookAppointment(ORG, { ...ARGS, details: "First Name: Jane; Last Name: Smith; Address: 12 Smith St; Reason for Calling: leak" }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(inserts[0].notes).toBe("Address: 12 Smith St\nReason for Calling: leak");
+  });
+
+  it("M02: a name or number under a key the business has no field for (Name, Surname, Phone) stays out of the note too", async () => {
+    withFields(COPPERLINE_FIELDS);
+    const r = await handleBookAppointment(ORG, { ...ARGS, details: "Name: Jane Smith; Surname: Smith; Phone: 0412 345 678; Address: 12 Smith St; Reason for Calling: leak" }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(inserts[0].notes).toBe("Address: 12 Smith St\nReason for Calling: leak");
+  });
+
+  it("M03: an email passed under its DATA COLLECTION label (\"Email Address: …\") counts — booked, saved as the booking's email, not as a note", async () => {
+    withFields([{ id: "first_name", label: "First Name", required: true }, { id: "email_address", label: "Email Address", required: true }]);
+    const r = await handleBookAppointment(ORG, { ...ARGS, details: "Email Address: jane@example.com" }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(inserts[0]).toMatchObject({ attendee_email: "jane@example.com" });
+    expect(inserts[0].notes ?? null).toBeNull();
+  });
+
+  it("M04: the email parameter wins over an email in details (details only fill an EMPTY parameter)", async () => {
+    withFields([{ id: "first_name", label: "First Name", required: true }, { id: "email_address", label: "Email Address", required: true }]);
+    const r = await handleBookAppointment(ORG, { ...ARGS, email: "jane@example.com", details: "Email: someone.else@example.com" }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(inserts[0]).toMatchObject({ attendee_email: "jane@example.com" });
+  });
+
+  it("M06: a field given twice keeps its first non-blank value", async () => {
+    withFields(COPPERLINE_FIELDS);
+    const r = await handleBookAppointment(ORG, { ...ARGS, details: "Address: 12 Smith St; Reason for Calling: leak; address: 14 Jones Rd" }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(inserts[0].notes).toBe("Address: 12 Smith St\nReason for Calling: leak");
+  });
+
+  it("M10: a fields-read fault never refuses on the details — even ones it can't read, it books (the check is off)", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(createAdminClient).mockReturnValue({
+      from: (table: string) => {
+        const client = fakeAdmin().from(table);
+        if (table === "assistants") client.maybeSingle = async () => ({ data: null, error: { code: "57014" } });
+        return client;
+      },
+    } as never);
+    const r = await handleBookAppointment(ORG, { ...ARGS, details: "12 Smith St" }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(inserts).toHaveLength(1);
+    errSpy.mockRestore();
+  });
+
+  it("M11: a note plus details of exactly the diary's 500 characters fit — booked whole", async () => {
+    withFields(COPPERLINE_FIELDS);
+    // 454 + "\n" + "Address: 12 Smith St" (20) + "\n" + "Reason for Calling: leak" (24) = 500
+    const r = await handleBookAppointment(ORG, { ...ARGS, notes: "n".repeat(454), details: "Address: 12 Smith St; Reason for Calling: leak" }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(inserts[0].notes).toHaveLength(500);
+    expect(inserts[0].notes.endsWith("\nAddress: 12 Smith St\nReason for Calling: leak")).toBe(true);
+  });
+
+  it("M12: an email AND another field missing — the email goes in email, the rest in details, said exactly", async () => {
+    withFields([{ id: "first_name", label: "First Name", required: true }, { id: "email_address", label: "Email Address", required: true }, { id: "address", label: "Address", required: true }]);
+    const r = await handleBookAppointment(ORG, ARGS, { callId: CALL });
+    expect(r.success).toBe(false);
+    expect(r.message).toBe(
+      "Can't book this yet: this business's bookings also need the caller's email address and the address. " +
+        'Ask the caller for them in one question — use anything they\'ve already told you (like why they\'re calling) instead of asking again; if they have none (no insurer, say), "none" is an answer — ' +
+        'then call book_appointment again with the email in email and the rest in details ("Address: …").'
+    );
+    expect(r.data).toEqual({ missing_fields: [{ id: "email_address", label: "Email Address" }, { id: "address", label: "Address" }] });
+    expect(inserts).toEqual([]);
+  });
+
+  it("M18: a label's punctuation doesn't matter — \"Child’s Age\" (curly apostrophe) and \"Emergency Y/N\" are the business's \"Child's Age\" and \"Emergency (Y/N)\"", async () => {
+    withFields([
+      { id: "first_name", label: "First Name", required: true },
+      { id: "child_age", label: "Child's Age", required: true },
+      { id: "emergency", label: "Emergency (Y/N)", required: true },
+    ]);
+    const r = await handleBookAppointment(ORG, { ...ARGS, details: "Child’s Age: 7; Emergency Y/N: no" }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(inserts[0].notes).toBe("Child's Age: 7\nEmergency (Y/N): no");
+  });
+});
+
+// SCRUM-617 review round 1 (silent + code lenses).
+describe("SCRUM-617 review round 1: refusals, the last name, faults, and the edges", () => {
+  it("a refusal never reads as a booking: no 'booked', 'confirmed' or 'confirmation' in any of them (the voice server's older pipelines read those words as one)", async () => {
+    withFields([...COPPERLINE_FIELDS, { id: "urgency_level", label: "Urgency Level", required: true, description: "Routine, Urgent, or Emergency" }]);
+    const refusals = [
+      await handleBookAppointment(ORG, ARGS, { callId: CALL }),
+      await handleBookAppointment(ORG, { ...ARGS, details: `Address: ${"x".repeat(320)}` }, { callId: CALL }),
+      await handleBookAppointment(ORG, { ...ARGS, details: `Address: ${"x".repeat(700)}` }, { callId: CALL }),
+      await handleBookAppointment(ORG, { ...ARGS, details: "12 Smith St" }, { callId: CALL }),
+    ];
+    for (const r of refusals) {
+      expect(r.success).toBe(false);
+      expect(r.message).not.toMatch(/booked|confirmed|confirmation/);
+    }
+    expect(refusals[0].message).toContain("the urgency level (Routine, Urgent, or Emergency)");
+    expect(inserts).toEqual([]);
+  });
+
+  it("a caller missing the last name AND the other details hears it all in one refusal, not two", async () => {
+    withFields(COPPERLINE_FIELDS);
+    const { last_name: _none, ...firstOnly } = ARGS;
+    const r = await handleBookAppointment(ORG, firstOnly, { callId: CALL });
+    expect(r.message).toMatch(/^Can't book this yet: this business's bookings also need the caller's last name, the address and the reason for calling\./);
+    expect(r.message).toContain('again with the last name in last_name and the rest in details ("Address: …; Reason for Calling: …")');
+    expect(r.data).toEqual({ missing_fields: [{ id: "last_name", label: "Last Name" }, { id: "address", label: "Address" }, { id: "reason_for_calling", label: "Reason for Calling" }] });
+  });
+
+  it("a detail too long for the booking is refused, naming it — never cut and booked", async () => {
+    withFields(COPPERLINE_FIELDS);
+    const r = await handleBookAppointment(ORG, { ...ARGS, details: `Address: ${"x".repeat(320)}; Reason for Calling: leak` }, { callId: CALL });
+    expect(r).toMatchObject({ success: false, message: "The address is too long for the booking. Keep it to a few words, then call book_appointment again." });
+    expect(inserts).toEqual([]);
+  });
+
+  it("a custom required field that is an email ('Email') is filled by the email parameter — or a detail — never asked for forever", async () => {
+    withFields([{ id: "first_name", label: "First Name", required: true }, { id: "custom_1730000000000", label: "Email", required: true }]);
+    const byParam = await handleBookAppointment(ORG, { ...ARGS, email: "jane@example.com" }, { callId: CALL });
+    expect(byParam.success).toBe(true);
+    const byDetail = await handleBookAppointment(ORG, { ...ARGS, details: "Email: sam@example.com" }, { callId: CALL });
+    expect(byDetail.success).toBe(true);
+    expect(inserts[1]).toMatchObject({ attendee_email: "sam@example.com" });
+  });
+
+  it("'Email: not given' with an optional email is no email — booked, not refused as a bad address", async () => {
+    withFields(COPPERLINE_FIELDS);
+    const r = await handleBookAppointment(ORG, { ...ARGS, details: "Email: not given; Address: 12 Smith St; Reason for Calling: leak" }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(String(inserts[0].attendee_email ?? "")).not.toMatch(/not\s*given/i); // the placeholder isn't saved as the email
+  });
+
+  it("details passed as an object or a list (a model may, for a string parameter) are read, not thrown on", async () => {
+    withFields(COPPERLINE_FIELDS);
+    const asObject = await handleBookAppointment(ORG, { ...ARGS, details: { Address: "12 Smith St", "Reason for Calling": "leak" } as unknown as string }, { callId: CALL });
+    expect(asObject.success).toBe(true);
+    expect(inserts[0].notes).toBe("Address: 12 Smith St\nReason for Calling: leak");
+    const asList = await handleBookAppointment(ORG, { ...ARGS, details: ["Address: 9 Hill Rd", "Reason for Calling: tap"] as unknown as string }, { callId: CALL });
+    expect(asList.success).toBe(true);
+    const odd = await handleBookAppointment(ORG, { ...ARGS, details: { toString: 1 } as unknown as string }, { callId: CALL });
+    expect(odd.success).toBe(false); // no details at all: the address and reason are still asked for
+  });
+
+  it("a fields read fault books — paged, not just logged — and the caller's details still reach the note", async () => {
+    const Sentry = await import("@sentry/nextjs");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(createAdminClient).mockReturnValue({
+      from: (table: string) => {
+        const client = fakeAdmin().from(table);
+        if (table === "assistants") client.maybeSingle = async () => ({ data: null, error: { code: "57014" } });
+        return client;
+      },
+    } as never);
+    const r = await handleBookAppointment(ORG, { ...ARGS, details: "Address: 12 Smith St" }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(inserts[0].notes).toBe("Address: 12 Smith St");
+    expect(Sentry.captureMessage).toHaveBeenCalledWith("Booking: caller fields read failed — required fields not applied", expect.objectContaining({ level: "warning", extra: { organizationId: ORG, code: "57014" } }));
+  });
+});
+

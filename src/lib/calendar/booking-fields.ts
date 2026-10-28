@@ -14,12 +14,16 @@
 
 import { sanitizeCustomerText } from "@/lib/owner-assistant/sanitize";
 
-/** The one `prompt_config` row both booking paths read, in a fixed order. */
-export function bookingFieldsQuery(supabase: any, organizationId: string): PromiseLike<{ data: { prompt_config?: unknown } | null; error: { code?: string; message?: string } | null }> {
-  return supabase
-    .from("assistants")
-    .select("prompt_config")
-    .eq("organization_id", organizationId)
+/**
+ * The one `prompt_config` row both booking paths read, in a fixed order. SCRUM-617: a
+ * caller's booking reads the assistant that answered the call (`assistantId`, from the
+ * voice server's trusted envelope — still org-scoped): on a plan with several lines, each
+ * line's own required fields apply. Without one (the owner's bookings), the oldest.
+ */
+export function bookingFieldsQuery(supabase: any, organizationId: string, assistantId?: string): PromiseLike<{ data: { prompt_config?: unknown } | null; error: { code?: string; message?: string } | null }> {
+  let query = supabase.from("assistants").select("prompt_config").eq("organization_id", organizationId);
+  if (assistantId) query = query.eq("id", assistantId);
+  return query
     .order("created_at", { ascending: true })
     .order("id", { ascending: true }) // assistants seeded in one statement share created_at
     .limit(1)
@@ -101,6 +105,25 @@ export function parseBookingDetails(raw: unknown): Array<{ key: string; value: s
 
 /** The name and number keys a caller's details may carry: their own parameters hold them. */
 const CALLER_OWN_KEYS = new Set(["firstname", "fullname", "name", "lastname", "surname", "phone", "phonenumber"]);
+/** A field (by its id or label key) that IS an email, whatever its id — the email parameter fills it. */
+const isEmailKey = (k: string) => k === "email" || k === "emailaddress";
+
+/**
+ * The model's details as text: a string as given; an object (`{"Address": "…"}`) or a list
+ * of strings, which a model may pass for a string parameter, as "Label: value" parts; any
+ * other type is no details (never a throw).
+ */
+function detailsText(raw: unknown): string | undefined {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) return raw.filter((v): v is string => typeof v === "string").join("; ");
+  if (raw && typeof raw === "object") {
+    return Object.entries(raw as Record<string, unknown>)
+      .filter((e): e is [string, string] => typeof e[1] === "string")
+      .map(([k, v]) => `${k}: ${v}`)
+      .join("; ");
+  }
+  return undefined;
+}
 
 /**
  * SCRUM-617: what a CALLER's booking still needs from this business's required fields,
@@ -113,9 +136,9 @@ const CALLER_OWN_KEYS = new Set(["firstname", "fullname", "name", "lastname", "s
  */
 export function callerBookingDetails(
   fields: BookingField[],
-  given: { email?: string | null; details?: unknown }
-): { problem: "too_long" | "unreadable" } | { missing: BookingField[]; lines: string[]; email: string | null } {
-  const parsed = parseBookingDetails(given.details);
+  given: { lastName?: string | null; email?: string | null; details?: unknown }
+): { problem: "too_long" | "unreadable" } | { problem: "value_too_long"; label: string } | { missing: BookingField[]; lines: string[]; email: string | null } {
+  const parsed = parseBookingDetails(detailsText(given.details));
   if (parsed === "too_long" || parsed === "unreadable") return { problem: parsed };
   const byKey = new Map<string, BookingField>();
   for (const f of fields) {
@@ -126,14 +149,17 @@ export function callerBookingDetails(
   const others: string[] = [];
   let email = typeof given.email === "string" && given.email.trim() ? given.email.trim() : null;
   for (const { key, value } of parsed) {
+    // Never cut a detail the business asked for: too long is refused, as on the owner's path.
+    if (value.length > DETAIL_VALUE_MAX) return { problem: "value_too_long", label: byKey.get(fieldKey(key))?.label ?? sanitizeCustomerText(key, 40) ?? "detail" };
     const v = sanitizeCustomerText(value, DETAIL_VALUE_MAX);
     if (!v) continue; // a blank value is no value
     const k = fieldKey(key);
-    if (k === "email" || k === "emailaddress") {
-      email ??= v.replace(/\s+/g, "");
-      continue;
-    }
     const field = byKey.get(k);
+    if (isEmailKey(k)) {
+      // Only something that looks like an address counts ("Email: not given" isn't one).
+      if (v.includes("@")) email ??= v.replace(/\s+/g, "");
+      if (!field || BOOKING_OWN_FIELD_IDS.has(field.id)) continue;
+    }
     if (field && !BOOKING_OWN_FIELD_IDS.has(field.id)) {
       if (!values.has(field.id)) values.set(field.id, v);
       continue;
@@ -142,9 +168,16 @@ export function callerBookingDetails(
     const label = sanitizeCustomerText(key, 40);
     if (label) others.push(`${label}: ${v}`);
   }
-  const missing = fields.filter((f) =>
-    f.required && (f.id === "email_address" ? email === null : !BOOKING_OWN_FIELD_IDS.has(f.id) && !values.has(f.id))
-  );
+  const lastName = typeof given.lastName === "string" && given.lastName.trim() ? given.lastName.trim() : null;
+  const missing = fields.filter((f) => {
+    if (!f.required) return false;
+    if (f.id === "last_name") return lastName === null;
+    if (f.id === "email_address") return email === null;
+    if (BOOKING_OWN_FIELD_IDS.has(f.id)) return false;
+    // A custom field that is an email ("Email", "Email Address"): the email parameter fills it too.
+    if (isEmailKey(fieldKey(f.label)) || isEmailKey(fieldKey(f.id))) return email === null && !values.has(f.id);
+    return !values.has(f.id);
+  });
   const lines = [...fields.filter((f) => values.has(f.id)).map((f) => `${f.label}: ${values.get(f.id)}`), ...others];
   return { missing, lines, email };
 }

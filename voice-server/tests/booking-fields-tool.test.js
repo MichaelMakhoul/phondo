@@ -36,7 +36,7 @@ describe("book_appointment follows the business's own fields (SCRUM-617)", () =>
 describe("DATA COLLECTION says what a booking needs (SCRUM-617)", () => {
   const organization = { name: "Copperline Plumbing", industry: "home_services", timezone: "Australia/Sydney", businessHours: {}, defaultAppointmentDuration: 60, country: "AU" };
   const prompt = (fields) => buildSystemPrompt({ language: "en", promptConfig: { tone: "friendly", fields, behaviors: {} } }, organization, "", {});
-  const RULE = "Before you book, have every required item above — use what the caller already told you (like why they're calling) instead of asking again. book_appointment takes the name in first_name and last_name and every other item in details.";
+  const RULE = "Before you book, have every required item above — use what the caller already told you (like why they're calling) instead of asking again; if they have none (no insurer, say), \"none\" is an answer. book_appointment takes the name in first_name and last_name and every other item in details.";
   const PHONE = "Phone Number: the number they're calling from counts — read it back and ask if it's the best one to reach them; take a different one if they give it.";
 
   it("the rule follows the field list; a required phone number gets its caller-ID line", () => {
