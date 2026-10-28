@@ -127,8 +127,8 @@ const isEmailKey = (k: string) => k === "email" || k === "emailaddress";
  * — for a required email it satisfies the field and saves nothing.
  */
 const NONE_RE = /^(?:none|no|nope|n\/?a|nil|nothing|not applicable|no email|(?:i |they |he |she )?(?:do ?n'?o?t|does ?n'?o?t) have (?:one|any|an? email))\.?$/i;
-/** A key the model copied with its description ("Urgency Level (Routine, Urgent, or Emergency)") is the field. */
-const keyOf = (key: string) => fieldKey(key.replace(/\s*\([^)]*\)\s*$/, ""));
+/** A key the model copied with its description ("Urgency Level (Routine, Urgent, or Emergency)") without it. */
+const withoutDescription = (key: string) => fieldKey(key.replace(/\s*\([^)]*\)\s*$/, ""));
 
 /**
  * The model's details as text: a string as given; an object (`{"Address": "…"}`) or a list
@@ -174,6 +174,9 @@ export function callerBookingDetails(
   const givenEmail = typeof given.email === "string" && given.email.trim() ? given.email.trim() : null;
   let emailNone = givenEmail !== null && NONE_RE.test(givenEmail);
   let email = emailNone ? null : givenEmail;
+  // The key as given first — a label that itself ends in brackets ("Emergency (Y/N)", "Budget
+  // (AUD)") is matched whole — then without a description the model copied onto it.
+  const keyOf = (key: string) => (byKey.has(fieldKey(key)) ? fieldKey(key) : withoutDescription(key));
   for (const { key, value } of parsed) {
     // Never cut a detail the business asked for: too long is refused, as on the owner's path
     // (on a fault, left out).

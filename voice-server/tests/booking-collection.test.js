@@ -128,3 +128,17 @@ describe("SCRUM-617 test lens round 2 (DEFECT): a success that booked nothing is
     assert.equal(ledgerAfter({ success: true, message: "I've booked your appointment for Wednesday at 10 AM. Your confirmation code is 123456." }), 1);
   });
 });
+
+// SCRUM-617 review round 3 (silent lens): classic and the fast path give the same way out, from the third refusal.
+describe("classic and the fast path: the third missing-details refusal pages and tells the model the way out (SCRUM-617)", () => {
+  const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  it("the shared tool loop counts the handler's missing-details refusals before pushing the result", () => {
+    const at = server.indexOf('if (fnName === "book_appointment" && /^Can\'t book this yet: this business\'s bookings also need /.test(resultMessage)) {');
+    assert.ok(at > 0);
+    const block = server.slice(at, server.indexOf("session.messages.push({", at));
+    assert.match(block, /if \(\+\+session\.missingDetailsRefusals === 3\) \{\n\s*console\.error\(`\[ALERT:error\] \[BookingFields\]/);
+    assert.match(block, /if \(session\.missingDetailsRefusals >= 3\) \{\n\s*resultMessage \+= ` \(SYSTEM — booking attempt/);
+    assert.ok(server.indexOf("content: resultMessage,", at) > at, "then the result (with the way out) is what the model reads");
+  });
+});
+

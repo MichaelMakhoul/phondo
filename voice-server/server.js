@@ -5049,6 +5049,17 @@ async function handleUserSpeech(session, twilioWs, transcript, inputTypeAtFlush)
             return;
           }
 
+          // SCRUM-617: the booking handler's "this business also needs …" refusal asks the caller
+          // for the business's required details. From the third in a call: paged once, and the
+          // model told the way out ("none", or a callback) — as on Gemini.
+          if (fnName === "book_appointment" && /^Can't book this yet: this business's bookings also need /.test(resultMessage)) {
+            if (++session.missingDetailsRefusals === 3) {
+              console.error(`[ALERT:error] [BookingFields] a booking was refused 3 times for missing required details — the caller may be stuck (callSid=${session.callSid}, org=${session.organizationId})`);
+            }
+            if (session.missingDetailsRefusals >= 3) {
+              resultMessage += ` (SYSTEM — booking attempt ${session.missingDetailsRefusals} refused for missing details. Don't keep asking the same thing: if the caller has none of something, pass "none" for it; if they can't or won't give it, offer to take their details for a callback with schedule_callback instead.)`;
+            }
+          }
           session.messages.push({
             role: "tool",
             tool_call_id: toolCall.id,

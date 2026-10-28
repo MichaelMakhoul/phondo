@@ -470,3 +470,20 @@ describe("SCRUM-617 test lens round 2: the edges of round 1", () => {
     expect(inserts).toEqual([]);
   });
 });
+
+// SCRUM-617 review round 3 (code + silent lenses): stripping a copied description broke labels that
+// themselves end in brackets — the vet preset "Emergency (Y/N)" could never be filled.
+describe("SCRUM-617 review round 3: a label that ends in brackets is matched whole", () => {
+  it("'Emergency (Y/N)' (the vet preset) and 'Budget (AUD)' fill as given — and a copied description still matches its field", async () => {
+    withFields([
+      { id: "first_name", label: "First Name", required: true },
+      { id: "emergency_yn", label: "Emergency (Y/N)", required: true },
+      { id: "budget", label: "Budget (AUD)", required: true },
+      { id: "urgency_level", label: "Urgency Level", required: true, description: "Routine, Urgent, or Emergency" },
+    ]);
+    const r = await handleBookAppointment(ORG, { ...ARGS, details: "Emergency (Y/N): Yes; Budget (AUD): 500; Urgency Level (Routine, Urgent, or Emergency): Urgent" }, { callId: CALL });
+    expect(r.success).toBe(true);
+    expect(inserts[0].notes).toBe("Emergency (Y/N): Yes\nBudget (AUD): 500\nUrgency Level: Urgent");
+  });
+});
+
