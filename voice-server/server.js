@@ -7904,7 +7904,7 @@ testWss.on("connection", (ws, req) => {
           }
           // SCRUM-618: the owner talking over the reply stops it, as on Gemini.
           if (session?.ownerMode && ownerWebBargeIn(session, ws, transcript)) {
-            forgetOwnerReadBacks(session); // a read-back cut off wasn't heard: any "yes" gets a fresh one
+            forgetOwnerReadBacks(session, session.webBargeInSeq); // a read-back cut off wasn't heard: any "yes" gets a fresh one
             console.log(`[OwnerWeb] Barge-in: the owner spoke over the reply — playback stopped (callSid=${session.callSid})`);
           }
           if (!isFinal) return;
@@ -8344,7 +8344,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
   } finally {
     // SCRUM-618: a read-back this turn armed AFTER the owner talked over it was never sent —
     // forgotten too, so no "yes" can confirm it.
-    if (bargedIn()) forgetOwnerReadBacks(session);
+    if (bargedIn()) forgetOwnerReadBacks(session, turnSeq); // the same barge-in: counted once
     session.isProcessing = false;
     session.drainPending((text) => handleTestUserSpeech(session, ws, text));
   }

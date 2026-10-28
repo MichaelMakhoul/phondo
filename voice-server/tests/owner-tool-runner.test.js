@@ -2221,6 +2221,32 @@ describe("a read-back the owner cut off confirms nothing (SCRUM-618)", () => {
     assert.equal(s.ownerConfirmRefusals.size, 0);
   });
 
+  // Silent lens (round 4): with the refusal record cleared, a lasting cause (echo barging in on
+  // every read-back) would refuse every yes unseen — the cut-offs are counted, and paged at the third.
+  it("read-backs cut off by three barge-ins page once; one barge-in counts once, whichever site forgets; nothing pending counts nothing", () => {
+    const errors = [];
+    const realError = console.error;
+    console.error = (...a) => errors.push(a.join(" "));
+    try {
+      const s = makeSession();
+      const arm = () => { s.ownerPendingConfirmations = new Map([["k", { at: 1, seq: 0 }]]); };
+      arm(); assert.equal(forgetOwnerReadBacks(s, 1), true);
+      arm(); forgetOwnerReadBacks(s, 1); // the same barge-in, the turn's own end
+      assert.equal(s.ownerReadBacksCut, 1);
+      assert.equal(forgetOwnerReadBacks(s, 2), false, "nothing pending");
+      assert.equal(s.ownerReadBacksCut, 1);
+      arm(); forgetOwnerReadBacks(s, 3);
+      assert.deepEqual(errors, []);
+      arm(); forgetOwnerReadBacks(s, 4);
+      assert.equal(errors.length, 1);
+      assert.match(errors[0], /^\[ALERT:error\] \[OwnerTools\] 3 read-backs cut off by the owner talking over them in one session/);
+      arm(); forgetOwnerReadBacks(s, 5);
+      assert.equal(errors.length, 1, "paged once");
+    } finally {
+      console.error = realError;
+    }
+  });
+
   it("forgetOwnerReadBacks on a session with none is a no-op", () => {
     const s = makeSession();
     forgetOwnerReadBacks(s);
