@@ -1725,6 +1725,13 @@ describe("SCRUM-599: booking, blocking and marking done go through the same gate
       await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, details } }, d.deps));
       assert.equal(s.ownerPendingConfirmations?.size ?? 0, 0, `${details}: nothing armed (no pairs, or a field twice — PR B refuses it, and a sorted key could match the other order)`);
     }
+    // A non-string email or details is not "none" (security lens): it can't share the key of a booking read back without one.
+    for (const odd of [{ details: ["service address=99 Other Rd"] }, { customer_email: ["x@example.com"] }]) {
+      const s = makeSession();
+      const d = makeDeps(prB);
+      await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, ...odd } }, d.deps));
+      assert.equal(s.ownerPendingConfirmations?.size ?? 0, 0, JSON.stringify(odd));
+    }
   });
 
   it("a yes to one booking never makes another: a different time, person, number, service or note goes on unconfirmed", async () => {

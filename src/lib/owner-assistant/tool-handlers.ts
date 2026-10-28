@@ -1407,7 +1407,7 @@ export async function handleOwnerBookAppointment(
   const fields = await bookingFields(supabase, organizationId);
   if (fields === "error") return errorResult(TROUBLE);
   const parsed = parseBookingDetails(args.details);
-  if (parsed === "too_long") return invalidDetails(`That's too much detail for one booking — keep each detail short (details are limited to ${DETAILS_MAX} characters in all).`);
+  if (parsed === "too_long") return invalidDetails(`That's too much detail for one booking — keep each detail short (about ${wordsOver(DETAILS_MAX)} words in all).`);
   if (parsed === "unreadable") return invalidDetails(`I couldn't read the details. Pass them as "field=value; field=value", using this business's field names${fields.length ? `: ${listWords(fields.filter((f) => !BOOKING_OWN_FIELD_IDS.has(f.id)).map((f) => f.label))}` : ""}.`);
   const byKey = new Map<string, BookingField>();
   for (const f of fields) {
@@ -1472,9 +1472,9 @@ export async function handleOwnerBookAppointment(
     return {
       success: false,
       message:
-        `Not booked yet: this business's bookings also need ${listWords(named)}. Pass anything the owner has already said without asking again, and ask for the rest in one question ("I'll also need ${listWords(named)}"). ` +
+        `Not booked yet: this business's bookings also need ${listWords(named)}. Pass anything the owner has already said without asking again, and ask for the rest in one question ("I'll also need ${listWords(named)}" — leaving out anything they already told you). ` +
         `Then call again with everything — the surname in customer_name, the email in customer_email, the rest in details ("field=value; field=value") — each once, not in the note as well. ` +
-        `If the owner doesn't have one, say their settings require it for every booking, and that they can make ${listWords(missing.map((f) => f.label))} optional in Assistants → Caller Data Collection.`,
+        `If the owner doesn't have one, say their settings require it for every booking, and that they can make that field optional in Assistants → Caller Data Collection (for example ${missing[0].label}).`,
       data: bookData({ outcome: "invalid_details", customer_notified: false, missing_fields: missing.map((f) => ({ id: f.id, label: f.label, ...(f.hint ? { hint: f.hint } : {}) })) }),
     };
   }

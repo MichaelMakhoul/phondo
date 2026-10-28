@@ -292,7 +292,7 @@ function confirmationKey(name, args) {
   const optionalWords = (v) => (v === undefined || v === null || (typeof v === "string" && v.trim() === "") ? "" : words(v));
   /** @param {unknown} v a phone number, digits only, an AU +61 number written as 0… */
   /** An email however it's cased or spaced; "" when none. */
-  const optionalEmail = (v) => (typeof v === "string" && v.trim() ? v.replace(/\s+/g, "").toLowerCase() : "");
+  const optionalEmail = (v) => (v === undefined || v === null || (typeof v === "string" && v.trim() === "") ? "" : typeof v === "string" ? v.replace(/\s+/g, "").toLowerCase() : null);
   /**
    * "field=value; field=value" → one JSON list of [field, words] pairs sorted by field
    * (a colon after the field works too, as PR B reads it). Unreadable → null (never
@@ -300,7 +300,8 @@ function confirmationKey(name, args) {
    * sorted the two could match a string PR B reads the other way round.
    */
   const detailsKey = (v) => {
-    if (typeof v !== "string" || !v.trim()) return "";
+    if (v === undefined || v === null || (typeof v === "string" && v.trim() === "")) return "";
+    if (typeof v !== "string") return null; // not what PR B reads as "none" — never confirmable
     const pairs = [];
     const seen = new Set();
     for (const part of v.split(";")) {

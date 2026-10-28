@@ -943,8 +943,8 @@ describe("SCRUM-602: owner bookings follow each business's own required details"
       configured(NAME_FIELDS(true));
       const r = await handleOwnerBookAppointment(ORG, bookArgs("Jane", confirmed ? { confirmed, notify_customer: "none" } : {}), ctx);
       expect(r.data, String(confirmed)).toMatchObject({ outcome: "invalid_details", missing_fields: [{ id: "last_name", label: "Last Name" }] });
-      expect(r.message).toContain(`Not booked yet: this business's bookings also need Jane's last name. Pass anything the owner has already said without asking again, and ask for the rest in one question ("I'll also need Jane's last name").`);
-      expect(r.message).toContain("they can make Last Name optional in Assistants → Caller Data Collection");
+      expect(r.message).toContain(`Not booked yet: this business's bookings also need Jane's last name. Pass anything the owner has already said without asking again, and ask for the rest in one question ("I'll also need Jane's last name" — leaving out anything they already told you).`);
+      expect(r.message).toContain("they can make that field optional in Assistants → Caller Data Collection (for example Last Name).");
       expect(handleBookAppointment).not.toHaveBeenCalled();
     }
   });
@@ -994,7 +994,7 @@ describe("SCRUM-602: owner bookings follow each business's own required details"
     configured(TRADIE);
     const asked = await handleOwnerBookAppointment(ORG, bookArgs("Jane"), ctx);
     expect(asked.message).toContain("this business's bookings also need the service address, the problem description and the urgency level.");
-    expect(asked.message).toContain("they can make Service Address, Problem Description and Urgency Level optional in Assistants → Caller Data Collection");
+    expect(asked.message).toContain("they can make that field optional in Assistants → Caller Data Collection (for example Service Address).");
     expect((asked.data as Record<string, unknown>).missing_fields).toEqual([
       { id: "service_address", label: "Service Address" },
       { id: "problem_description", label: "Problem Description" },
@@ -1072,7 +1072,7 @@ describe("SCRUM-602: owner bookings follow each business's own required details"
     configured(TRADIE);
     db.queues.organizations = [AU_ORG];
     const long = await handleOwnerBookAppointment(ORG, bookArgs("Jane", { details: `service address=${"x".repeat(700)}` }), ctx);
-    expect(long.message).toContain("That's too much detail for one booking");
+    expect(long.message).toBe("That's too much detail for one booking — keep each detail short (about 100 words in all).");
     // The job's note is the owner's note plus the details: over the diary's 500 characters it is refused, not trimmed.
     configured(TRADIE);
     db.queues.organizations = [AU_ORG];
