@@ -1,3 +1,4 @@
+import { bookingFieldsQuery } from "@/lib/calendar/booking-fields";
 import crypto from "crypto";
 import * as Sentry from "@sentry/nextjs";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -1063,16 +1064,12 @@ export async function handleBookAppointment(
     };
   }
 
-  // Check if business requires both first and last name
+  // Check if business requires both first and last name — the same row, in the same
+  // order, as the owner assistant's pre-read-back check (SCRUM-602, bookingFieldsQuery).
   const supabaseForFields = createAdminClient();
-  const { data: assistant } = await (supabaseForFields as any)
-    .from("assistants")
-    .select("prompt_config")
-    .eq("organization_id", organizationId)
-    .limit(1)
-    .single();
+  const { data: assistant } = await bookingFieldsQuery(supabaseForFields, organizationId);
 
-  const fields = assistant?.prompt_config?.fields || [];
+  const fields = ((assistant as any)?.prompt_config?.fields || []) as any[];
   const firstNameField = fields.find((f: any) => f.id === "first_name");
   const lastNameField = fields.find((f: any) => f.id === "last_name");
   // Also check legacy full_name for backwards compat

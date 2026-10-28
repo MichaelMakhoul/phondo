@@ -1725,6 +1725,16 @@ describe("SCRUM-599: booking, blocking and marking done go through the same gate
       await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, details } }, d.deps));
       assert.equal(s.ownerPendingConfirmations?.size ?? 0, 0, `${details}: nothing armed (no pairs, or a field twice — PR B refuses it, and a sorted key could match the other order)`);
     }
+    // Line breaks and tabs are spaces, as PR B reads them (silent lens): a string PR B accepted is never left unconfirmable.
+    {
+      const s = makeSession();
+      const d = makeDeps(prB);
+      await captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, details: "service address=12 Smith St; urgency level=today" } }, d.deps));
+      assistantTurn(s);
+      ownerSpeaks(s);
+      await settled(() => captureConsole(() => runOwnerToolCall(s, { name: "owner_book_appointment", args: { ...BOOK, details: "service address=12 Smith St;\nurgency\tlevel=today\r\n", confirmed: true, notify_customer: "none" } }, d.deps)));
+      assert.equal(d.calls.at(-1).args.confirmed, true, "the same details across line breaks confirm");
+    }
     // A non-string email or details is not "none" (security lens): it can't share the key of a booking read back without one.
     for (const odd of [{ details: ["service address=99 Other Rd"] }, { customer_email: ["x@example.com"] }]) {
       const s = makeSession();

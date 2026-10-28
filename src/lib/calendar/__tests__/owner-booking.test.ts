@@ -61,7 +61,7 @@ function fakeAdmin() {
             : table === "assistants"
               ? { data: assistantRow, error: null }
               : { data: null, error: null };
-      b.maybeSingle = async () => ({ data: null, error: null });
+      b.maybeSingle = async () => (table === "assistants" ? { data: assistantRow, error: null } : { data: null, error: null });
       b.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
         Promise.resolve(faults[table] ? { data: null, error: faults[table] } : { data: lists[table] ?? [], error: null }).then(resolve, reject);
       return b;

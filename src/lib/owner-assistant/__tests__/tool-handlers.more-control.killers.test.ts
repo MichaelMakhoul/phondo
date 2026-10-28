@@ -480,6 +480,7 @@ describe("test lens round 3 — a repeated booking over the PostgREST-like fake 
           select(c: string) { cols = c; return b; },
           eq(k: string, v: unknown) { preds.push((r) => r[k] === v); return b; },
           in(k: string, vs: unknown[]) { preds.push((r) => vs.includes(r[k])); return b; },
+          order() { return b; }, // SCRUM-602: the business's fields are read in a fixed order
           limit(n: number) { limit = n; return b; },
           single() { const out = rows(); return Promise.resolve(out.length === 1 ? { data: out[0], error: null } : { data: null, error: { code: "PGRST116" } }); },
           maybeSingle() { return Promise.resolve({ data: rows()[0] ?? null, error: null }); },
@@ -497,7 +498,7 @@ describe("test lens round 3 — a repeated booking over the PostgREST-like fake 
 describe("test lens round 3 — a repeat with other details, one field at a time; and its audit row when the read or write fails", () => {
   const EARLIER_R3 = { id: NEW_ID, attendee_first_name: "Jane", attendee_name: "Jane Smith", attendee_phone: "+61412345678", confirmation_code: "654321", service_type_id: null, notes: "Hot water" };
   const SERVICE_ID = "66666666-7777-4888-9999-aaaaaaaaaaaa";
-  const KEPT = "It keeps the service and note it was booked with — the new ones weren't added";
+  const KEPT = "It keeps the service, note and contact details it was booked with — the new ones weren't added";
 
   it("B04 + B05: only the service differs, or only the note — either way the owner hears the booking kept its own", async () => {
     db.queues.service_types = [{ data: { id: SERVICE_ID, name: "Blocked drain" }, error: null }];

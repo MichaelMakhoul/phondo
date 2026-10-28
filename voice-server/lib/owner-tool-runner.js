@@ -304,7 +304,9 @@ function confirmationKey(name, args) {
     if (typeof v !== "string") return null; // not what PR B reads as "none" — never confirmable
     const pairs = [];
     const seen = new Set();
-    for (const part of v.split(";")) {
+    // Line breaks and tabs are spaces, as PR B reads them (its regex runs on sanitised
+    // text; this one must not stop at a newline and null a string PR B accepted).
+    for (const part of v.normalize("NFKC").replace(/\s+/g, " ").split(";")) {
       if (!part.trim()) continue;
       const m = /^\s*([^=:]+?)\s*[=:]\s*(.*)$/.exec(part);
       if (!m) return null;

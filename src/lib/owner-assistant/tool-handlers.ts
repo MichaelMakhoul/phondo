@@ -31,6 +31,8 @@ import { isServiceTypeQuestion } from "@/lib/calendar/service-type-question";
 import { diffAppointmentFields, recordAppointmentEvent } from "@/lib/appointments/events";
 import { rateLimitDistributed } from "@/lib/security/rate-limiter";
 import { isValidEmail, isValidPhoneNumber, isValidUUID } from "@/lib/security/validation";
+import { bookingFieldsQuery } from "@/lib/calendar/booking-fields";
+import { hasNonLatinLetters } from "@/lib/calendar/latin-name";
 import { runAfterResponse } from "@/lib/utils/after-response";
 import { invalidateVoiceScheduleCache } from "@/lib/voice-cache/invalidate";
 import { pageSentry } from "@/lib/observability/page-sentry";
@@ -1223,12 +1225,12 @@ function listWords(items: string[]): string {
  * number; a read fault is a fault, never "nothing required".
  */
 async function bookingFields(supabase: any, organizationId: string): Promise<BookingField[] | "error"> {
-  const { data, error } = await supabase.from("assistants").select("prompt_config").eq("organization_id", organizationId).limit(1).maybeSingle();
+  const { data, error } = await bookingFieldsQuery(supabase, organizationId);
   if (error) {
     console.error("[owner-assistant] booking fields read failed:", { organizationId, code: error.code });
     return "error";
   }
-  const raw = data?.prompt_config?.fields;
+  const raw = (data?.prompt_config as { fields?: unknown } | null | undefined)?.fields;
   if (!Array.isArray(raw)) return [];
   const fields: BookingField[] = [];
   for (const f of raw) {
@@ -1415,6 +1417,10 @@ export async function handleOwnerBookAppointment(
     byKey.set(fieldKey(f.label), f);
   }
   const details: Array<{ field: BookingField; value: string }> = [];
+  const fieldsSeen = new Set<string>();
+  // Any name given twice — as the gate's key sees it (surname = last name, email address
+  // = email), blank, ignored or not — is refused here too: the gate can never confirm it.
+  const keysSeen = new Set<string>();
   let surnameGiven: string | null = null;
   let surnameSeen = false;
   const emailParam = typeof args.customer_email === "string" && args.customer_email.trim() ? sanitizeCustomerText(args.customer_email, 120) : null;
@@ -1422,6 +1428,9 @@ export async function handleOwnerBookAppointment(
   let emailSeen = emailParam !== null;
   for (const { key, value } of parsed) {
     const k = fieldKey(key);
+    const canonical = k === "surname" ? "lastname" : k === "emailaddress" ? "email" : k;
+    if (keysSeen.has(canonical)) return invalidDetails(`"${byKey.get(k)?.label ?? sanitizeCustomerText(key, 40)}" is given twice in the details — pass each detail once.`);
+    keysSeen.add(canonical);
     if (value.length > DETAIL_VALUE_MAX) {
       return invalidDetails(`The ${sanitizeCustomerText(key, 40)?.toLowerCase() ?? "detail"} is too long for a booking detail — about ${wordsOver(value.length - DETAIL_VALUE_MAX)} words over. Ask the owner for a shorter version, then call again.`);
     }
@@ -1446,16 +1455,20 @@ export async function handleOwnerBookAppointment(
       const known = fields.filter((f) => !BOOKING_OWN_FIELD_IDS.has(f.id)).map((f) => f.label);
       return invalidDetails(`I don't know a "${sanitizeCustomerText(key, 40)}" detail for this business. ${known.length ? `Its fields are: ${listWords(known)}. Anything else goes in the note.` : "It has no extra fields — put anything else in the note."}`);
     }
-    // The same field twice — by id, by label, or one of each — is refused rather than
-    // picked by position: the gate's key can't tell which one the read-back said.
-    if (details.some((d) => d.field.id === field.id)) return invalidDetails(`"${field.label}" is given twice in the details — pass each detail once.`);
+    // The same field twice — by id, by label, or one of each, blank or not — is refused
+    // rather than picked by position: the gate's key can't tell which one the read-back
+    // said (and it refuses any repeat, so accepting one here would loop the read-back).
+    if (fieldsSeen.has(field.id)) return invalidDetails(`"${field.label}" is given twice in the details — pass each detail once.`);
+    fieldsSeen.add(field.id);
     if (!v) continue; // a blank value is no value
     details.push({ field, value: v });
   }
+  details.sort((a, b) => fields.indexOf(a.field) - fields.indexOf(b.field)); // the business's own order, whatever the model's
   const nameParts = customerSaid.split(" ");
   const givenName = nameParts[0];
   const surname = nameParts.slice(1).join(" ") || surnameGiven || "";
   const customer = surname ? (sanitizeCustomerText(`${givenName} ${surname}`, NAME_MAX) ?? customerSaid) : customerSaid;
+  if (hasNonLatinLetters(customer)) return invalidDetails(`The diary keeps names in English letters. Ask the owner how ${customer} is spelled in English letters, then call again.`);
   const email = emailGiven ? emailGiven.replace(/\s+/g, "") : null;
   if (email && !isValidEmail(email)) return invalidDetails(`That email address doesn't look right ("${email}"). Ask the owner to spell it out, then call again.`);
   const covered = (f: BookingField): boolean => {
@@ -1561,12 +1574,12 @@ export async function handleOwnerBookAppointment(
     });
     const withWhom = earlier.practitioner ? ` with ${earlier.practitioner}` : "";
     const who = earlier.customer ?? customer;
-    const detailsKept = (serviceTypeId ?? null) !== earlier.serviceTypeId || diaryNotes !== earlier.notes;
+    const detailsKept = (serviceTypeId ?? null) !== earlier.serviceTypeId || diaryNotes !== earlier.notes || (email ?? null) !== earlier.email;
     return {
       success: true,
       message:
         `${who} is already booked for ${when}${withWhom} — that's the booking from a moment ago.` +
-        (detailsKept ? " It keeps the service and note it was booked with — the new ones weren't added; they can be changed in Appointments." : "") +
+        (detailsKept ? " It keeps the service, note and contact details it was booked with — the new ones weren't added; they can be changed in Appointments." : "") +
         (contact
           ? contactOutcomeSentence(contact, who, "booked")
           : ` I couldn't check whether ${who} was texted about it — check the booking in Appointments before texting them yourself.`),
@@ -1699,11 +1712,15 @@ interface SameCallBooking {
   serviceTypeId: string | null;
   service: string | null;
   notes: string | null;
+  /** The booking's email, when a real one was saved (never the diary's placeholder). */
+  email: string | null;
   practitioner: string | null;
 }
 
 const SAME_CALL_COLS =
-  "id, attendee_first_name, attendee_name, attendee_phone, confirmation_code, service_type_id, notes, service_types(name), practitioners(name)";
+  "id, attendee_first_name, attendee_name, attendee_phone, attendee_email, confirmation_code, service_type_id, notes, service_types(name), practitioners(name)";
+/** The booking path's stand-in when no email was given — not a customer's address. */
+const PLACEHOLDER_EMAIL = /^booking-[0-9a-f-]+@noreply\.phondo\.ai$/i;
 const SAME_CALL_READ_FAULT = "I couldn't check the diary just now — please check Appointments before trying again.";
 
 /**
@@ -1726,6 +1743,7 @@ function toSameCallBooking(row: any): SameCallBooking {
     serviceTypeId: typeof row.service_type_id === "string" ? row.service_type_id : null,
     service: sanitizeCustomerText(row.service_types?.name, NAME_MAX),
     notes: typeof row.notes === "string" && row.notes !== "" ? row.notes : null,
+    email: typeof row.attendee_email === "string" && row.attendee_email !== "" && !PLACEHOLDER_EMAIL.test(row.attendee_email) ? row.attendee_email : null,
     practitioner: sanitizeCustomerText(row.practitioners?.name, NAME_MAX),
   };
 }
