@@ -943,8 +943,10 @@ export interface PlanUsageAlertData {
   callsLimit: number;
   /** The plan's display name ("Starter"). */
   planName: string;
-  /** When the billing period ends (the count starts again then). */
+  /** When the billing period ends (the count starts again then) — or, on a trial, when the trial ends. */
   periodEnd: Date;
+  /** On a free trial: the email says when the trial ends, not that the count starts again. */
+  trial?: boolean;
 }
 
 /**
@@ -966,6 +968,7 @@ export async function sendPlanUsageAlertNotification(data: PlanUsageAlertData): 
     callsLimit: data.callsLimit,
     planName: data.planName,
     periodEnd: data.periodEnd.toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric", timeZone: "Australia/Sydney" }),
+    trial: data.trial === true,
   };
   const email = await getOrganizationOwnerEmail(data.organizationId);
   if (!email) {
@@ -1979,19 +1982,13 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       <p><strong>Consider calling them back.</strong></p>
       <p><a href="${escapeHtml(d.dashboardLink || (process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai") + "/calls")}">View the full call</a></p>
     `,
-    // SCRUM-586 — owner-line PIN lockout alert. Keep the copy true to the lock
-    // rule: 5 tries per 15 minutes (cleared by a correct PIN) plus 20 per
-    // 24 hours, and saving a new PIN unlocks at once — so never describe the
-    // lock as a flat 15 minutes. No promise of a text to the caller either
-    // (customer SMS is paused, SCRUM-264). localTime arrives already written in
-    // the org's zone ("Thursday 15 October at 3:04 pm"), hence "on <time>".
     // SCRUM-608 — the plan-usage heads-up. Scalars, escaped by the caller of this map.
     "plan-usage-alert": (d) => {
       const base = escapeHtml((process.env.NEXT_PUBLIC_APP_URL || "https://phondo.ai").replace(/\/$/, ""));
       return `
       <h2 style="color: #b45309;">You've used ${d.pct}% of your plan's calls</h2>
       <p>Your receptionist has handled <strong>${d.callsUsed} calls</strong> this billing period on the ${d.planName} plan, which includes ${d.callsLimit}. That counts customer calls and your own chats with your assistant.</p>
-      <p><strong>Nothing has been cut off</strong> — your receptionist keeps answering every call. The count starts again on ${d.periodEnd}.</p>
+      <p><strong>Nothing has been cut off</strong> — your receptionist keeps answering every call. ${d.trial === true ? `Your trial ends on ${d.periodEnd}.` : `The count starts again on ${d.periodEnd}.`}</p>
       <p>If you're this busy every month, a bigger plan gives you more calls for less per call: <a href="${base}/billing">see plans</a>.</p>
       ${String(d.level) === "150" ? "<p>We've let the Phondo team know too — reply to this email if you'd like a hand choosing.</p>" : ""}
     `;
@@ -2001,6 +1998,12 @@ function generateEmailHtml(template: string, data: Record<string, any>): string 
       <p>Org <code>${d.organizationId}</code> has used <strong>${d.callsUsed} of ${d.callsLimit}</strong> calls this period on the ${d.planName} plan (customer calls plus owner-assistant chats). Its period ends ${d.periodEnd}.</p>
       <p>Nothing is cut off. The owner has been emailed with an upgrade link.</p>
     `,
+    // SCRUM-586 — owner-line PIN lockout alert. Keep the copy true to the lock
+    // rule: 5 tries per 15 minutes (cleared by a correct PIN) plus 20 per
+    // 24 hours, and saving a new PIN unlocks at once — so never describe the
+    // lock as a flat 15 minutes. No promise of a text to the caller either
+    // (customer SMS is paused, SCRUM-264). localTime arrives already written in
+    // the org's zone ("Thursday 15 October at 3:04 pm"), hence "on <time>".
     "owner-pin-locked": (d) => `
       <h2 style="color: #dc2626;">Your assistant line PIN is locked</h2>
       <p>Someone rang your assistant line from <strong>${d.callerPhoneMasked}</strong> on ${d.localTime} and entered the wrong PIN too many times, so the owner line is locked.</p>

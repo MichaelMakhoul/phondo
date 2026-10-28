@@ -50,59 +50,96 @@ async function release(supabase: any, organizationId: string, periodKey: string)
 
 async function confirm(supabase: any, organizationId: string, periodKey: string): Promise<void> {
   const { error } = await supabase.from("cron_send_ledger").update({ delivered_at: new Date().toISOString() }).match({ job_name: PLAN_USAGE_ALERT_JOB, period_key: periodKey, organization_id: organizationId });
-  if (error) console.error("[PlanUsageAlert] delivery confirmation failed:", { organizationId, periodKey, code: error.code });
+  if (error) {
+    console.error("[PlanUsageAlert] delivery confirmation failed — reconciliation will flag a delivered send:", { organizationId, periodKey, code: error.code });
+    Sentry.captureMessage(`Plan usage alert delivered_at confirmation failed for org ${organizationId} (${periodKey})`, "warning");
+  }
+}
+
+/**
+ * This billing period's counted calls, from the calls themselves (`usage_counted`, the
+ * same flip that bills them — customer calls and owner chats alike). Not `calls_used`:
+ * Stripe moves the period up to an hour (or, on a failed charge, days) before the payment
+ * webhook resets that counter, and keyed on the NEW period with LAST period's count the
+ * alert would fire on stale numbers and spend the new period's slots (silent lens).
+ * null when the count can't be read.
+ */
+async function countedCallsSince(supabase: any, organizationId: string, since: Date): Promise<number | null> {
+  const { count, error } = await supabase
+    .from("calls")
+    .select("id", { count: "exact", head: true })
+    .eq("organization_id", organizationId)
+    .eq("usage_counted", true)
+    .gte("created_at", since.toISOString());
+  if (error || typeof count !== "number") {
+    console.error("[PlanUsageAlert] counting this period's calls failed — skipping:", { organizationId, code: error?.code });
+    return null;
+  }
+  return count;
 }
 
 /**
  * After a call's usage was counted: email the owner (and at 150% the team) the first
  * time this billing period the business passes 125% or 150% of its plan's calls.
- * Never throws — it runs after the response; every fault is logged.
+ * Never throws — it runs after the response; every fault is logged. (A call counted
+ * without a call row — the rare no-callId path — doesn't trigger it; the next counted
+ * call reads the whole period and catches up.)
  * @returns the level emailed, or null when nothing was sent
  */
 export async function checkPlanUsageAlert(organizationId: string): Promise<PlanUsageAlertLevel | null> {
   try {
     const sub = await getSubscriptionInfo(organizationId);
     if (!sub || sub.callsLimit <= 0) return null; // no subscription, or unlimited (agency plans)
+    // A lapsed or past-due account hears from billing already; this is for paying and trial accounts.
+    if (sub.status !== "active" && sub.status !== "trialing") return null;
     if (Number.isNaN(sub.currentPeriodStart.getTime())) {
       console.warn("[PlanUsageAlert] subscription has no billing period start — skipping:", { organizationId });
       return null;
     }
-    const ratio = sub.callsUsed / sub.callsLimit;
-    const crossed = LEVELS.find((l) => ratio >= l.ratio);
+    const supabase = createAdminClient();
+    const used = await countedCallsSince(supabase, organizationId, sub.currentPeriodStart);
+    if (used === null) return null;
+    const crossed = LEVELS.find((l) => used / sub.callsLimit >= l.ratio);
     if (!crossed) return null;
 
-    const supabase = createAdminClient();
     const key = planUsagePeriodKey(crossed.level, sub.currentPeriodStart);
-    const claimed = await claim(supabase, organizationId, key);
-    if (claimed !== "claimed") return null;
+    if ((await claim(supabase, organizationId, key)) !== "claimed") return null;
     // Crossing 150% straight past 125% (a plan change, a burst): the 125% email is
-    // spent too, so it never arrives after the more urgent one.
-    if (crossed.level === 150) await claim(supabase, organizationId, planUsagePeriodKey(125, sub.currentPeriodStart));
+    // spent too, so it never arrives after the more urgent one — confirmed or released
+    // with this send, so the ledger never shows it as a crashed send.
+    const extra = crossed.level === 150 ? planUsagePeriodKey(125, sub.currentPeriodStart) : null;
+    const keys = extra && (await claim(supabase, organizationId, extra)) === "claimed" ? [key, extra] : [key];
 
     let result;
     try {
       result = await sendPlanUsageAlertNotification({
         organizationId,
         level: crossed.level,
-        callsUsed: sub.callsUsed,
+        callsUsed: used,
         callsLimit: sub.callsLimit,
         planName: PLANS[sub.plan]?.name ?? String(sub.plan),
         periodEnd: sub.currentPeriodEnd,
+        trial: sub.status === "trialing",
       });
     } catch (err) {
-      const delivered = err instanceof NotificationDeliveryError && err.deliveredCount > 0;
-      if (delivered) {
-        await confirm(supabase, organizationId, key); // something reached an inbox — never re-send
+      const failure = err instanceof NotificationDeliveryError ? err : null;
+      const delivered = (failure?.deliveredCount ?? 0) > 0;
+      // No address to send to (no owner email, and no team one): retrying on every
+      // counted call would only repeat this — the period's alert is spent.
+      const noAddress = failure?.permanent === true && failure.permanentCause === "org-config";
+      if (delivered || noAddress) {
+        if (delivered) for (const k of keys) await confirm(supabase, organizationId, k);
       } else {
-        await release(supabase, organizationId, key); // nothing went out — the next counted call retries
+        for (const k of keys) await release(supabase, organizationId, k); // nothing went out — the next counted call retries
       }
-      console.error("[PlanUsageAlert] send failed:", { organizationId, level: crossed.level, delivered, error: err instanceof Error ? err.message : String(err) });
+      // Never the error's text: a missing-credential error carries the address it was for.
+      console.error("[PlanUsageAlert] send failed:", { organizationId, level: crossed.level, delivered, permanent: failure?.permanent ?? null, permanentCause: failure?.permanentCause ?? null });
       return null;
     }
-    if (result === "sent") await confirm(supabase, organizationId, key);
+    if (result === "sent") for (const k of keys) await confirm(supabase, organizationId, k);
     return result === "sent" ? crossed.level : null;
   } catch (err) {
-    console.error("[PlanUsageAlert] check failed:", { organizationId, error: err instanceof Error ? err.message : String(err) });
+    console.error("[PlanUsageAlert] check failed:", { organizationId, error: err instanceof Error ? err.name : "unknown" });
     return null;
   }
 }

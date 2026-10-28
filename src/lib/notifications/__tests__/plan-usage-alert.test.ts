@@ -99,6 +99,13 @@ describe("sendPlanUsageAlertNotification (SCRUM-608)", () => {
     expect(sent()[0].html).not.toContain("<b>Starter</b>");
   });
 
+  it("on a trial, it says when the trial ends — not that the count starts again", async () => {
+    await sendPlanUsageAlertNotification({ ...base, level: 125, callsUsed: 188, trial: true });
+    const text = words(sent()[0].html);
+    expect(text).toContain("Nothing has been cut off — your receptionist keeps answering every call. Your trial ends on 21 November 2026.");
+    expect(text).not.toContain("The count starts again");
+  });
+
   it("the demo org is skipped (no members to tell)", async () => {
     expect(await sendPlanUsageAlertNotification({ ...base, organizationId: DEMO_ORG_ID, level: 150, callsUsed: 230 })).toBe("skipped");
     expect(resendSend).not.toHaveBeenCalled();
