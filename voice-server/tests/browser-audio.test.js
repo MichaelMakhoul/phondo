@@ -173,6 +173,25 @@ describe("generateHoldAudio in a browser's wideband format", () => {
     assert.ok(Math.abs(db) < 1, `24 kHz vs 8 kHz: ${db.toFixed(2)} dB`);
   });
 
+  it("the hiss fades at the same pace at 24 kHz as at 8 kHz: its decay is per second, not per sample", () => {
+    // Math.random() = 0.75 for one second (the hiss climbs to its clamp), then 0.5 (no new noise): what's left fades.
+    const fadeAfter10ms = (rate) => {
+      const saved = Math.random;
+      let n = 0;
+      Math.random = () => (n++ < rate ? 0.75 : 0.5);
+      try {
+        const s = samplesLE(generateHoldAudio(2000, "neutral", { encoding: "linear16", sampleRate: rate }));
+        return s[rate + rate / 100] / s[rate - 1];
+      } finally {
+        Math.random = saved;
+      }
+    };
+    const at8k = fadeAfter10ms(8000);
+    const at24k = fadeAfter10ms(24000);
+    assert.ok(at8k > 0.8 && at8k < 0.9, `8 kHz: ${at8k}`);
+    assert.ok(Math.abs(at24k - at8k) < 0.01, `24 kHz fades like 8 kHz: ${at24k} vs ${at8k}`);
+  });
+
   it("PCM at a rate that isn't a whole number is refused, never guessed", () => {
     assert.throws(() => generateHoldAudio(2000, "neutral", { encoding: "linear16", sampleRate: 24000.5 }), /whole-number sampleRate/);
     assert.throws(() => generateHoldAudio(2000, "neutral", { encoding: "linear16" }), /whole-number sampleRate/);

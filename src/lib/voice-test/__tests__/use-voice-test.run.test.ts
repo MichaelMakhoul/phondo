@@ -5,8 +5,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createPcm16PlaybackDecoder } from "@/lib/voice-test/playback-format";
 import { createMulawPlaybackDecoder } from "@/lib/voice-test/mulaw";
 
+// Every value the hook hands a state setter, in order (read lazily: vi.mock is hoisted).
+const stateSets: unknown[] = [];
 vi.mock("react", () => ({
-  useState: (init: unknown) => [typeof init === "function" ? (init as () => unknown)() : init, () => {}],
+  useState: (init: unknown) => [typeof init === "function" ? (init as () => unknown)() : init, (next: unknown) => { stateSets.push(next); }],
   useRef: (current: unknown) => ({ current }),
   useCallback: (fn: unknown) => fn,
   useEffect: (fn: () => unknown) => {
@@ -145,6 +147,7 @@ async function startSession(rate = 48000) {
 }
 
 beforeEach(() => {
+  stateSets.length = 0;
   bookingsChanged.mockClear();
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -192,6 +195,9 @@ describe("useVoiceTest, run for real: the server's audio format", () => {
     expect(ws.sent).toContainEqual(JSON.stringify({ type: "client_error", reason: "unplayable_audio_format" }));
     expect(ws.onmessage).toBeNull(); // the socket is let go: no more audio reaches a decoder
     expect(ctx.state).toBe("closed");
+    const statuses = stateSets.filter((v) => typeof v === "string" && ["idle", "connecting", "active", "ended", "error"].includes(v));
+    expect(statuses.at(-1)).toBe("error"); // left on the error, never flipped to "ended"
+    expect(stateSets).toContain("Your browser couldn't play your assistant's voice. Please reload the page and try again.");
   });
 
   it("a context too slow for wideband never asks for it", async () => {
@@ -217,9 +223,12 @@ describe("useVoiceTest, run for real: the page's volume", () => {
     expect(ctx.sources.at(-1)!.connectedTo).toBe(gain);
     hook.setVolume(1.7);
     expect(gain.gain.targets).toEqual([1]);
+    hook.setVolume(0.5);
+    expect(gain.gain.targets).toEqual([1, 0.25]); // half way glides to its square, live too
+    expect(stateSets.at(-1)).toBe(0.5); // the slider shows where it was put, not the gain
     hook.stop();
     hook.setVolume(0.2); // after the session: nothing left to glide
-    expect(gain.gain.targets).toEqual([1]);
+    expect(gain.gain.targets).toEqual([1, 0.25]);
     await hook.start();
     expect(FakeCtx.all.at(-1)!.gains[0].gain.value).toBeCloseTo(0.04, 10);
   });

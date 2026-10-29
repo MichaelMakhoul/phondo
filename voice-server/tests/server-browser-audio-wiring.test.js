@@ -175,8 +175,10 @@ describe("synthesizeForBrowser: the bubble's host failing once moves the session
 
   it("the default host failing too: the error goes to the caller (the turn's own handling), and the one page says the owner hears nothing", async () => {
     const errors = [];
-    const speak = makeSynthesizeForBrowser(async (key, text, options) => { throw new Error(options.host ? "Deepgram TTS error 503" : "Deepgram TTS error 500"); }, errors);
+    let calls = 0; // a third call would succeed: a second retry (or a loop) fails here at once
+    const speak = makeSynthesizeForBrowser(async (key, text, options) => { if (++calls > 2) return Buffer.alloc(10); throw new Error(options.host ? "Deepgram TTS error 503" : "Deepgram TTS error 500"); }, errors);
     await assert.rejects(speak(wideband(), "Hi."), /Deepgram TTS error 500/);
+    assert.equal(calls, 2, "one retry on the default host, never two");
     assert.equal(errors.length, 1);
     assert.match(errors[0], /^\[ALERT:error\] \[OwnerWeb\] Speech failed on api\.au\.deepgram\.com and on the default host — the owner hears nothing \(callSid=web_owner_1, org=org-1\): Deepgram TTS error 503 \/ Deepgram TTS error 500$/);
   });
@@ -275,11 +277,15 @@ describe("what the bubble shows and says of a reply (run for real)", () => {
     assert.equal(testSpeechText(owner, "**Choose who does a job."), "Choose who does a job.");
     assert.equal(testSpeechText(owner, "** The diary assigns that."), "The diary assigns that.");
     assert.equal(testSpeechText(owner, "**"), "", "nothing left to say: no audio");
+    assert.equal(testSpeechText(owner, "*** Tomorrow is full."), "Tomorrow is full.", "a bold-italic split leaves no asterisk either");
     assert.equal(testShownText(owner, "Choose ** who does it."), "Choose who does it.", "and no double space where it was");
   });
 
-  it("a single asterisk stays: customers' notes carry gate and key-safe codes", () => {
+  it("a single asterisk stays: a gate code in a customer's note (\"*4521#\") is shown and said as written", () => {
     assert.equal(testShownText(owner, "The gate code is *4521#."), "The gate code is *4521#.");
+    // Known, kept on purpose: two single asterisks pair as emphasis (stripMarkdown, shared
+    // with the phone line). Changing that is a decision, not an accident.
+    assert.equal(testShownText(owner, "Gate *4521#, key safe *77#."), "Gate 4521#, key safe 77#.");
   });
 
   it("speech is still spelled as on the phone line", () => {

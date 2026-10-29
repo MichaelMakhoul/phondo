@@ -500,11 +500,36 @@ describe("handleTestUserSpeech in the bubble's wideband audio (SCRUM-619, run fo
     ]);
   });
 
-  it("a reply that was only markdown: nothing is said or shown, and the history keeps it as it came (never an empty turn)", async () => {
+  it("the Sydney host failing mid-reply: that sentence is said again from the default host, and so is the rest — every sentence is heard", async () => {
+    let synths = 0;
+    const h = makeLoop({
+      turns: [{ sentences: ["Booked Jane for Thursday at 2 pm.", "Anything else?"] }],
+      onSynth: () => { if (synths++ === 0) throw new Error("Deepgram TTS error 503: unavailable"); },
+    });
+    const s = widebandSession();
+    await h.handleTestUserSpeech(s, h.ws, "Book Jane in");
+    const options = h.calls.filter((c) => c[0] === "ttsOptions").map((c) => c[1]);
+    assert.deepEqual(options.map((o) => o.host ?? "default"), ["api.au.deepgram.com", "default", "default"]);
+    assert.ok(options.every((o) => o.encoding === "linear16" && o.sampleRate === 24000), "in the format the page was told");
+    assert.deepEqual(h.ws.sent.filter((m) => typeof m === "string"), ["<audio 8000>", "<audio 8000>"], "both sentences reached the page");
+    assert.equal(h.calls.filter((c) => c[0] === "noteAssistantSpeech").length, 2, "heard — so a read-back can be confirmed");
+    assert.equal(s.ttsHost, null);
+  });
+
+  it("the model call fails while the Sydney host is down: the fallback line is still heard, from the default host", async () => {
+    let synths = 0;
+    const h = makeLoop({ turns: [{ throws: "model down" }], onSynth: () => { if (synths++ === 0) throw new Error("Deepgram TTS error 503"); } });
+    await h.handleTestUserSpeech(widebandSession(), h.ws, "Hi");
+    assert.deepEqual(h.calls.filter((c) => c[0] === "ttsOptions").map((c) => c[1].host ?? "default"), ["api.au.deepgram.com", "default"]);
+    assert.deepEqual(h.ws.sent.filter((m) => typeof m === "string"), ["<audio 8000>"]);
+  });
+
+  it("a reply that was only markdown: nothing is said, its transcript carries no text (the page drops blank lines), and the history keeps it as it came (never an empty turn)", async () => {
     const h = makeLoop({ turns: [{ sentences: ["**"] }] });
     const s = widebandSession();
     await h.handleTestUserSpeech(s, h.ws, "Hi");
     assert.ok(!h.calls.some((c) => c[0] === "tts"), "nothing to say");
+    assert.deepEqual(h.ws.sent.filter((m) => m && m.type === "transcript" && m.role === "assistant").map((m) => m.content), [""]);
     assert.equal(s.messages.at(-1).content, "**");
   });
 
