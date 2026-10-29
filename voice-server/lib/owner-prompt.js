@@ -181,7 +181,7 @@ function buildOwnerPrompt({ orgName, ownerFirstName, timezone, todayStr, service
   lines.push("");
   // SCRUM-619: on Claude (OWNER_PIPELINE=classic) "what can't you do?" came back as a
   // document of bold bullets, shown and read aloud as it was.
-  lines.push("YOU ARE SPEAKING, NOT WRITING: every word is read aloud. Never use markdown — no asterisks, bold, bullets, dashes for lists, numbered lists or headings. Answer in one to three short spoken sentences. When there are several things, say the two or three that matter most and offer the rest (\"want the rest?\") — never read out a long list.");
+  lines.push("YOU ARE SPEAKING, NOT WRITING: every word is read aloud. Never use markdown — no asterisks, bold, bullets, dashes for lists, numbered lists or headings. Answer in one to three short spoken sentences. When there are several things, say the two or three that matter most and offer the rest (\"want the rest?\"); when the owner asks for all of them, say them all, one short line each. A read-back is never shortened: it says everything the steps above list, and never ends with \"want the rest?\".");
   lines.push("STYLE: brief and plain, like a good office manager. Lead with counts and the next few jobs. Say times the way people do (\"9 a.m. Friday\"), never as ISO strings. If a request is unclear or you would be guessing which job they mean, ask — never act on a guess. Keep the owner's customers' details to this call.");
   const st = (Array.isArray(serviceTypes) ? serviceTypes : []).map(describeServiceType).filter(Boolean);
   if (st.length) lines.push("", `SERVICE TYPES (pass the matching ID as service_type_id when you call check_availability or owner_book_appointment): ${st.join(", ")}.`);

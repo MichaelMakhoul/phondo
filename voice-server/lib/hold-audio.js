@@ -79,13 +79,18 @@ const INDUSTRY_DEFAULTS = {
  * Brown noise: integrate white noise — each sample is prev + small random delta.
  * Sounds like a soft, deep hiss / distant waterfall.
  */
-function generateBrownNoise(count, volume) {
+function generateBrownNoise(count, volume, rate = SAMPLE_RATE) {
   const samples = new Float64Array(count);
   let last = 0;
+  // SCRUM-619: the step and decay are per sample, so a faster rate would put more of the
+  // hiss in the voice's band (4.5 dB at 24 kHz): scaled to sound as at 8 kHz.
+  const ratio = SAMPLE_RATE / rate;
+  const step = 0.02 * Math.sqrt(ratio);
+  const decay = 0.998 ** ratio;
 
   for (let i = 0; i < count; i++) {
-    const white = (Math.random() * 2 - 1) * 0.02;
-    last = (last + white) * 0.998; // slight decay to prevent drift
+    const white = (Math.random() * 2 - 1) * step;
+    last = (last + white) * decay; // slight decay to prevent drift
     // Clamp
     if (last > 1) last = 1;
     if (last < -1) last = -1;
@@ -149,14 +154,16 @@ function generateHoldAudio(durationMs, preset = "neutral", format) {
   // SCRUM-619: a browser session that was told wideband plays 16-bit PCM at its rate
   // (lib/browser-audio.js); everything else gets the phone's mulaw.
   const linear16 = format?.encoding === "linear16";
-  const rate = linear16 && Number.isInteger(format.sampleRate) ? format.sampleRate : SAMPLE_RATE;
+  // PCM at a wrong rate would play too fast or too slow: never guess one.
+  if (linear16 && !Number.isInteger(format.sampleRate)) throw new Error("generateHoldAudio: linear16 needs a whole-number sampleRate");
+  const rate = linear16 ? format.sampleRate : SAMPLE_RATE;
   const totalSamples = Math.floor((durationMs / 1000) * rate);
   const buf = Buffer.alloc(linear16 ? totalSamples * 2 : totalSamples);
 
   // Generate noise base
   const noise = config.noiseType === "pink"
     ? generatePinkNoise(totalSamples, config.volume)
-    : generateBrownNoise(totalSamples, config.volume);
+    : generateBrownNoise(totalSamples, config.volume, rate);
 
   // Apply fade-in over first 50ms to avoid click
   const fadeInSamples = Math.floor(0.05 * rate);

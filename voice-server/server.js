@@ -2512,7 +2512,7 @@ wss.on("connection", (twilioWs) => {
           let callerContext = "";
           // SCRUM-587: no returning-caller hint on owner calls (owner tools return names).
           if (callerPhone && !session.ownerMode) {
-            callerContext = `\n\nCALLER CONTEXT:\nThe caller's phone number is ${phoneForPrompt}.${spokenCallerPhone ? ` When you say it to the caller, say it the local way: ${spokenCallerPhone}.` : ""} If they say "use the number I'm calling from" or "it's the same number", use this number. Do NOT ask them to repeat it.`;
+            callerContext = `\n\nCALLER CONTEXT:\nThe caller's phone number is ${phoneForPrompt}. If they say "use the number I'm calling from" or "it's the same number", use this number. Do NOT ask them to repeat it.${spokenCallerPhone ? ` When you say it out loud, say it the local way: ${spokenCallerPhone}; in a tool call, pass it as ${phoneForPrompt}.` : ""}`;
 
             // SCRUM-414: returning-caller signal ONLY — never inject the name or
             // appointment history into the prompt (caller ID is spoofable, so
@@ -7938,6 +7938,7 @@ testWss.on("connection", (ws, req) => {
           session.browserAudio = BROWSER_WIDEBAND;
           session.ttsHost = FAST_DEEPGRAM_HOST;
           if (ws.readyState === WebSocket.OPEN) ws.send(audioFormatMessage(BROWSER_WIDEBAND));
+          console.log(`[OwnerWeb] Wideband audio: ${BROWSER_WIDEBAND.sampleRate} Hz PCM from ${FAST_DEEPGRAM_HOST} (callSid=${session.callSid})`);
         }
 
       // Open Deepgram STT
@@ -8025,7 +8026,7 @@ testWss.on("connection", (ws, req) => {
           context.organization.name
         );
         try {
-          const disclosureAudio = await synthesizeSpeech(DEEPGRAM_API_KEY, disclosureText, browserTtsOptions(session));
+          const disclosureAudio = await synthesizeForBrowser(session, disclosureText);
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: disclosureText, isFinal: true }));
             ws.send(JSON.stringify({ type: "speaking", speaking: true }));
@@ -8049,7 +8050,7 @@ testWss.on("connection", (ws, req) => {
         afterHoursConfig,
       });
       try {
-        const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, greeting, browserTtsOptions(session));
+        const audioBuffer = await synthesizeForBrowser(session, greeting);
         // Send greeting transcript
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
@@ -8068,7 +8069,7 @@ testWss.on("connection", (ws, req) => {
           session.recordingDisclosurePlayed = true;
         }
       } catch (err) {
-        console.error("[TestTTS] Failed to send greeting:", err);
+        console.error(`[TestTTS] Failed to send greeting (callSid=${session.callSid}):`, err);
       }
       session.addMessage("assistant", greeting);
       const testGreetingInputType = detectExpectedInput(greeting);
@@ -8189,7 +8190,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
             if (bargedIn()) return; // SCRUM-618: the owner spoke over the reply — the rest isn't said
             const text = testSpeechText(session, sentence);
             if (!text) return;
-            const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, text, browserTtsOptions(session));
+            const audioBuffer = await synthesizeForBrowser(session, text);
             if (bargedIn()) return;
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: "speaking", speaking: true }));
@@ -8201,7 +8202,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
             if (session?.ownerMode) noteAssistantSpeech(session);
           }).catch((err) => {
             session.isSpeaking = false;
-            console.error("[TestStreamTTS] Error sending sentence:", err.message);
+            console.error(`[TestStreamTTS] Error sending sentence (callSid=${session?.callSid}):`, err.message);
           });
         },
       });
@@ -8295,7 +8296,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
           if (!reply) {
             reply = getErrorMsg(session.language, "goodbye");
             try {
-              const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, testSpeechText(session, reply), browserTtsOptions(session));
+              const audioBuffer = await synthesizeForBrowser(session, testSpeechText(session, reply));
               turnAudioBytes += audioBuffer.length;
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: "speaking", speaking: true }));
@@ -8323,7 +8324,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
       // last tool's own words.
       if (session.ownerMode) reply = ownerToolLoopReply(session, lastOwnerTool);
       console.warn(`[TestPipeline] Tool call loop exhausted after ${maxIterations} iterations (assistantId=${session.assistantId})`);
-      const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, testSpeechText(session, reply), browserTtsOptions(session));
+      const audioBuffer = await synthesizeForBrowser(session, testSpeechText(session, reply));
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "speaking", speaking: true }));
         ws.send(audioBuffer);
@@ -8334,11 +8335,11 @@ async function handleTestUserSpeech(session, ws, transcript) {
 
     // SCRUM-619: the bubble's history holds what was said (no markdown), so the model
     // doesn't take its own earlier formatting as the style to keep.
-    session.addMessage("assistant", testShownText(session, reply));
+    session.addMessage("assistant", testShownText(session, reply) || reply);
     session.ownerTurnFailureStreak = 0; // SCRUM-596: a turn that answered ends a failure streak
 
     // SCRUM-596: the session ends once the goodbye's audio has had time to play
-    // (8 kHz μ-law: 8 bytes a millisecond).
+    // (at the session's own rate — SCRUM-619, lib/browser-audio.js).
     if (endCall) {
       const graceMs = Math.min(15_000, browserAudioMs(session, turnAudioBytes) + 500);
       setTimeout(() => {
@@ -8379,7 +8380,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
         // SCRUM-618 (as SF5): after an owner tool ran, never "could you repeat that?" — after a
         // change it invites a duplicate request. The last tool's own words instead.
         const fallback = session.ownerMode && lastOwnerTool ? ownerToolLoopReply(session, lastOwnerTool) : getErrorMsg(session?.language, "troubleRepeat");
-        const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, testSpeechText(session, fallback), browserTtsOptions(session));
+        const audioBuffer = await synthesizeForBrowser(session, testSpeechText(session, fallback));
         ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: fallback, isFinal: true }));
         ws.send(audioBuffer);
       }
@@ -8407,11 +8408,33 @@ function testSpeechText(session, text) {
 /**
  * SCRUM-619: what the bubble shows of a reply — its words without markdown. A bold
  * split across two streamed sentences leaves a lone "**" in each, which stripMarkdown
- * (pairs only) keeps, and Aura read out. Customer test calls are unchanged.
+ * (pairs only) keeps, and Aura read out. A single "*" stays: customers' notes carry
+ * gate and key-safe codes ("*4521#"). Customer test calls are unchanged.
  */
 function testShownText(session, text) {
   if (!session?.ownerMode) return text;
-  return stripMarkdown(String(text ?? "")).replace(/\*+/g, "").replace(/[ \t]{2,}/g, " ").trim();
+  return stripMarkdown(String(text ?? "")).replace(/\*{2,}/g, "").replace(/[ \t]{2,}/g, " ").trim();
+}
+
+/**
+ * SCRUM-619: a browser session's speech, in the format its page was told. The bubble's
+ * own host (Sydney) failing once moves the rest of the session to the default host, in
+ * that same format — paged once, so a silent bubble (whose read-backs could then never
+ * be confirmed: nothing was heard) never goes unseen.
+ * @param {any} session
+ * @param {string} text
+ * @returns {Promise<Buffer>}
+ */
+async function synthesizeForBrowser(session, text) {
+  try {
+    return await synthesizeSpeech(DEEPGRAM_API_KEY, text, browserTtsOptions(session));
+  } catch (err) {
+    const host = session?.ttsHost;
+    if (!host) throw err;
+    session.ttsHost = null;
+    console.error(`[ALERT:error] [OwnerWeb] Speech failed on ${host} — the rest of this session uses the default host (callSid=${session.callSid}, org=${session.organizationId}): ${err?.message || err}`);
+    return synthesizeSpeech(DEEPGRAM_API_KEY, text, browserTtsOptions(session));
+  }
 }
 
 // Warm the Gemini Live path on boot so the FIRST real call doesn't eat a cold

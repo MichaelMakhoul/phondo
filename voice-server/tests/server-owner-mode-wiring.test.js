@@ -454,7 +454,7 @@ describe("SCRUM-619: the caller's number as it's said, run for real", () => {
   it("a customer call: the prompt gives the caller's number the local way to say it back (the demo line read out +61)", async () => {
     const r = await assemblePrompts({ owner: false });
     assert.ok(
-      r.classicPrompt.includes("The caller's phone number is +61400000001. When you say it to the caller, say it the local way: 0400 000 001. If they say"),
+      r.classicPrompt.includes("Do NOT ask them to repeat it. When you say it out loud, say it the local way: 0400 000 001; in a tool call, pass it as +61400000001."),
       r.classicPrompt.slice(0, 400)
     );
   });
@@ -463,12 +463,13 @@ describe("SCRUM-619: the caller's number as it's said, run for real", () => {
     const r = await assemblePrompts({ owner: false, tweakSession: (s) => { s.piiRedactionEnabled = true; } });
     const context = r.classicPrompt.slice(0, r.classicPrompt.indexOf("RETURNING CALLER HINT"));
     assert.ok(context.includes("The caller's phone number is "), context);
-    assert.ok(!context.includes("+61400000001") && !context.includes("0400 000 001") && !context.includes("say it the local way"), context);
+    assert.ok(!context.includes("+61400000001") && !context.includes("0400 000 001") && !context.includes("say it the local way") && !context.includes("in a tool call"), context);
   });
 
   it("a number with no local form (not AU or US) is given as it is, with no spoken form", async () => {
     const r = await assemblePrompts({ owner: false, tweakSession: (s) => { s.callerPhone = "+442071234567"; } });
     assert.ok(r.classicPrompt.includes("The caller's phone number is +442071234567. If they say"), r.classicPrompt.slice(0, 400));
+    assert.ok(!r.classicPrompt.includes("say it the local way"), r.classicPrompt.slice(0, 400));
   });
 });
 

@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { createRequire } from "node:module";
+import path from "node:path";
 import { StreamingUpsampler } from "../mulaw";
 import {
   WIDEBAND_SAMPLE_RATE,
@@ -7,7 +9,11 @@ import {
   parsePlaybackFormat,
   playbackQuery,
 } from "../playback-format";
-import { clampVolume } from "../volume";
+import { clampVolume, volumeGain } from "../volume";
+
+// The server's side of the contract, loaded as the voice server runs it.
+const require = createRequire(import.meta.url);
+const { BROWSER_WIDEBAND, audioFormatMessage } = require(path.resolve(process.cwd(), "voice-server/lib/browser-audio.js"));
 
 // SCRUM-619: the owner's bubble plays wideband 16-bit PCM once the server announces it
 // ("audio_format"), and only a page that asked for it on the socket URL is told.
@@ -109,6 +115,29 @@ describe("createPlaybackDecoder", () => {
     // 1200 bytes: 600 PCM samples at 24 kHz vs 1200 μ-law samples at 8 kHz — different lengths at 48 kHz.
     expect(pcm.length).toBeLessThan(asMulaw.length);
     expect(Array.from(pcm)).toEqual(Array.from(createPcm16PlaybackDecoder(24000, 48000).decode(pcmBytes(SAMPLES))));
+  });
+});
+
+describe("the server's announcement and the page's ask (one contract)", () => {
+  it("the page plays exactly what the server announces, and asks for it by the server's name", () => {
+    expect(parsePlaybackFormat(JSON.parse(audioFormatMessage(BROWSER_WIDEBAND)))).toEqual({
+      encoding: BROWSER_WIDEBAND.encoding,
+      sampleRate: BROWSER_WIDEBAND.sampleRate,
+    });
+    expect(WIDEBAND_SAMPLE_RATE).toBe(BROWSER_WIDEBAND.sampleRate);
+    expect(playbackQuery(48000)).toBe(`&playback=${BROWSER_WIDEBAND.encoding}`);
+  });
+});
+
+describe("volumeGain", () => {
+  it.each([
+    [1, 1],
+    [0.5, 0.25],
+    [0, 0],
+    [2, 1],
+    [-1, 0],
+  ])("slider %d plays at gain %d (its square: equal steps sound equal)", (volume, gain) => {
+    expect(volumeGain(volume)).toBe(gain);
   });
 });
 

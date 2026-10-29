@@ -1,6 +1,18 @@
-// SCRUM-619: a number read back to a caller is said the way people say it. The
-// receptionist read the caller's own number back as "+61 414 141 883" (28 Oct demo-line
-// call) — the prompt gave it only in E.164.
+// How a phone number is said. SCRUM-619: the receptionist read a caller's own number back
+// as "+61 414 141 883" (28 Oct demo-line call) — the prompt gave it only in E.164.
+
+/**
+ * "02 5701 5064" / "0412 345 678": an AU number the way people say it, or null.
+ * (From lib/notify-call-prompt.js, which still uses it.)
+ * @param {unknown} e164
+ * @returns {string|null}
+ */
+function spokenAuNumber(e164) {
+  const m = typeof e164 === "string" ? /^\+61([23478])(\d{8})$/.exec(e164) : null;
+  if (!m) return null;
+  const [, lead, rest] = m;
+  return lead === "4" ? `04${rest.slice(0, 2)} ${rest.slice(2, 5)} ${rest.slice(5)}` : `0${lead} ${rest.slice(0, 4)} ${rest.slice(4)}`;
+}
 
 /**
  * The national form of an Australian or US number, as it's said — or null.
@@ -8,14 +20,11 @@
  * @returns {string | null}
  */
 function spokenPhoneNumber(e164) {
-  const s = typeof e164 === "string" ? e164.trim() : "";
-  let m = /^\+61(4\d{2})(\d{3})(\d{3})$/.exec(s);
-  if (m) return `0${m[1]} ${m[2]} ${m[3]}`; // a mobile: 0414 141 883
-  m = /^\+61([2378])(\d{4})(\d{4})$/.exec(s);
-  if (m) return `0${m[1]} ${m[2]} ${m[3]}`; // a landline: 02 9555 1234
-  m = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(s);
-  if (m) return `(${m[1]}) ${m[2]}-${m[3]}`; // US: (415) 555-1234
-  return null;
+  const s = typeof e164 === "string" ? e164.trim() : e164;
+  const au = spokenAuNumber(s);
+  if (au) return au;
+  const us = typeof s === "string" ? /^\+1(\d{3})(\d{3})(\d{4})$/.exec(s) : null;
+  return us ? `(${us[1]}) ${us[2]}-${us[3]}` : null; // US: (415) 555-1234
 }
 
-module.exports = { spokenPhoneNumber };
+module.exports = { spokenAuNumber, spokenPhoneNumber };

@@ -1,9 +1,9 @@
-// SCRUM-619: a browser session (the owner's bubble, and dashboard test calls on the
-// classic pipeline) is not a phone line. It was sent the phone's audio — 8 kHz mulaw,
-// boosted +6 dB with a soft limiter for Twilio (lib/aura-gain.js) — which sounded muffled
-// on a laptop and loud and squashed on a phone. Browser sessions get Aura at 24 kHz
-// 16-bit PCM at its own level instead, announced to the page first ("audio_format"),
-// which then decodes it (src/lib/voice-test/playback-format.ts). Gemini sessions are
+// SCRUM-619: the owner's bubble is not a phone line. It was sent the phone's audio —
+// 8 kHz mulaw, boosted +6 dB with a soft limiter for Twilio (lib/aura-gain.js) — which
+// sounded muffled on a laptop and loud and squashed on a phone. On the classic pipeline,
+// when its page asks (src/lib/voice-test/playback-format.ts), it gets Aura at 24 kHz
+// 16-bit PCM at its own level instead, announced to the page first ("audio_format").
+// Customer test calls (they preview the phone), Gemini sessions and older pages are
 // unchanged: their audio is mulaw and nothing is announced.
 
 /** @typedef {{ encoding: "linear16", sampleRate: number, bytesPerMs: number }} BrowserAudioFormat */

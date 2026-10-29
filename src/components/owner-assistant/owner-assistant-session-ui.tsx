@@ -113,8 +113,10 @@ export function OwnerAssistantControls({ session, compact = false }: OwnerAssist
               max={100}
               step={5}
               thumbLabel="Assistant volume"
+              className="py-3"
             />
           </div>
+          {volume === 0 && <p className="text-xs text-muted-foreground">Sound is off. Replies still show below.</p>}
         </>
       )}
 

@@ -57,13 +57,15 @@ describe("useVoiceTest: the server's audio format and the page's volume", () => 
     expect(at).toBeGreaterThan(-1);
     const body = hookSource.slice(at, hookSource.indexOf("break;", at));
     expect(body).toMatch(/const format = parsePlaybackFormat\(msg\);/);
-    expect(body).toMatch(/if \(format && formatCtx\) \{\s*playbackDecoderRef\.current = createPlaybackDecoder\(format, formatCtx\.sampleRate\);\s*\} else \{\s*console\.warn\(/);
+    expect(body).toMatch(/if \(format && formatCtx\) \{\s*playbackDecoderRef\.current = createPlaybackDecoder\(format, formatCtx\.sampleRate\);\s*\} else \{/);
+    // A format it can't play ends the session where the owner sees it — never noise.
+    expect(body).toMatch(/\} else \{\s*(\/\/[^\n]*\n\s*)*console\.error\([^;]*\);\s*setError\("Your browser couldn't play your assistant's voice\. Please reload the page and try again\."\);\s*updateStatus\("error"\);\s*cleanup\(\);\s*\}/);
     expect(hookSource).toMatch(/playbackDecoderRef\.current = createMulawPlaybackDecoder\(ctx\.sampleRate\);/);
   });
 
   it("plays every chunk through one gain stage that starts at the chosen volume", () => {
     expect(functionBody("enqueueAudio")).toMatch(/source\.connect\(gainNodeRef\.current \?\? ctx\.destination\);/);
-    expect(hookSource).toMatch(/const gain = ctx\.createGain\(\);\s*gain\.gain\.value = volumeRef\.current;\s*gain\.connect\(ctx\.destination\);\s*gainNodeRef\.current = gain;/);
+    expect(hookSource).toMatch(/const gain = ctx\.createGain\(\);\s*gain\.gain\.value = volumeGain\(volumeRef\.current\);\s*gain\.connect\(ctx\.destination\);\s*gainNodeRef\.current = gain;/);
     expect(hookSource).toMatch(/gainNodeRef\.current = null;\s*if \(audioContextRef\.current && audioContextRef\.current\.state !== "closed"\)/);
   });
 
@@ -71,7 +73,7 @@ describe("useVoiceTest: the server's audio format and the page's volume", () => 
     const at = hookSource.indexOf("const setVolume = useCallback(");
     const body = hookSource.slice(at, hookSource.indexOf("}, []);", at));
     expect(body).toMatch(/const value = clampVolume\(next\);\s*volumeRef\.current = value;\s*setVolumeState\(value\);/);
-    expect(body).toMatch(/if \(gain\) gain\.gain\.setTargetAtTime\(value, gain\.context\.currentTime, 0\.015\);/);
+    expect(body).toMatch(/if \(gain\) gain\.gain\.setTargetAtTime\(volumeGain\(value\), gain\.context\.currentTime, 0\.015\);/);
     expect(hookSource).toMatch(/return \{[^}]*\bvolume,\s*setVolume,\s*\};/);
   });
 });

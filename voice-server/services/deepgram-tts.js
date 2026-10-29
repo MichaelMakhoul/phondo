@@ -25,7 +25,11 @@ async function synthesizeSpeech(apiKey, text, options) {
   const voice = options?.voice || DEFAULT_VOICE;
   const host = options?.host || DEFAULT_HOST;
   const encoding = options?.encoding === "linear16" ? "linear16" : "mulaw";
-  const sampleRate = encoding === "linear16" && Number.isInteger(options?.sampleRate) ? options.sampleRate : 8000;
+  // PCM at a wrong rate would play too fast or too slow: never guess one.
+  if (encoding === "linear16" && !Number.isInteger(options?.sampleRate)) {
+    throw new Error("synthesizeSpeech: linear16 needs a whole-number sampleRate");
+  }
+  const sampleRate = encoding === "linear16" ? Number(options?.sampleRate) : 8000;
 
   const url =
     `https://${host}/v1/speak?` +

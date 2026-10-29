@@ -9,7 +9,7 @@ const {
   browserTtsOptions,
   browserAudioMs,
 } = require("../lib/browser-audio");
-const { spokenPhoneNumber } = require("../lib/spoken-phone");
+const { spokenAuNumber, spokenPhoneNumber } = require("../lib/spoken-phone");
 const { generateHoldAudio } = require("../lib/hold-audio");
 const { encodeMulawSample } = require("../lib/audio-converter");
 
@@ -76,6 +76,11 @@ describe("spokenPhoneNumber", () => {
     assert.equal(spokenPhoneNumber("+14155551234"), "(415) 555-1234");
   });
 
+  it("one AU formatter: the outbound-call prompt's is this one", () => {
+    assert.equal(require("../lib/notify-call-prompt").spokenAuNumber, spokenAuNumber);
+    assert.equal(spokenAuNumber("+61257015064"), "02 5701 5064");
+  });
+
   it("anything else has no spoken form: other countries, national or short numbers, wrong lengths, non-strings", () => {
     for (const value of [
       "+442071234567",
@@ -114,6 +119,63 @@ describe("generateHoldAudio in a browser's wideband format", () => {
 
   it("a silent preset stays silent in either format", () => {
     assert.equal(generateHoldAudio(2000, "silent", BROWSER_WIDEBAND), null);
+  });
+
+  /** Runs fn with Math.random() pinned, so the noise is deterministic. */
+  function withRandom(value, fn) {
+    const saved = Math.random;
+    Math.random = () => value;
+    try {
+      return fn();
+    } finally {
+      Math.random = saved;
+    }
+  }
+  const samplesLE = (buf) => Array.from({ length: buf.length / 2 }, (_, i) => buf.readInt16LE(i * 2));
+
+  it("is little-endian PCM at the phone hold's level: no sample louder than the preset's volume (neutral 0.035)", () => {
+    const s = samplesLE(generateHoldAudio(2000, "neutral", BROWSER_WIDEBAND));
+    const limit = Math.ceil(0.035 * 32767);
+    const loudest = s.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+    assert.ok(loudest <= limit, `loudest sample ${loudest} > ${limit}: not little-endian at the hold's level`);
+  });
+
+  it("fades in over 50 ms (1200 samples at 24 kHz): half level at 25 ms, full after", () => {
+    // Math.random() = 0.75: the brown noise climbs to its clamp within a few ms and stays there.
+    const s = withRandom(0.75, () => samplesLE(generateHoldAudio(2000, "neutral", BROWSER_WIDEBAND)));
+    const full = Math.floor(0.035 * 32767);
+    assert.equal(s[2000], full, "full level once the fade is over");
+    assert.ok(Math.abs(s[600] - full / 2) <= 2, `at 25 ms the hold is at half level: ${s[600]} vs ${full / 2}`);
+  });
+
+  it("a calm (dental) hold keeps its 70 Hz warmth at 24 kHz: 140 zero crossings a second", () => {
+    // Math.random() = 0.5: no noise at all, so what's left is the warmth tone.
+    const s = withRandom(0.5, () => samplesLE(generateHoldAudio(2000, "calm", BROWSER_WIDEBAND)));
+    let crossings = 0;
+    for (let i = 24001; i < 48000; i++) if (s[i - 1] < 0 !== s[i] < 0) crossings++;
+    assert.ok(Math.abs(crossings - 140) <= 2, `${crossings} zero crossings in the second second (70 Hz → 140)`);
+  });
+
+  it("the hiss sits where it did at 8 kHz: the same level in the voice's band, not 4.5 dB louder", () => {
+    // Brown noise's level in the band is its step's power times the rate: measured as the
+    // first difference's power (each step) times the samples a second, averaged over runs.
+    const bandPower = (rate) => {
+      let total = 0;
+      for (let run = 0; run < 8; run++) {
+        const s = samplesLE(generateHoldAudio(2000, "neutral", { encoding: "linear16", sampleRate: rate }));
+        let sum = 0;
+        for (let i = rate / 10; i < s.length; i++) sum += (s[i] - s[i - 1]) ** 2;
+        total += (sum / (s.length - rate / 10)) * rate;
+      }
+      return total / 8;
+    };
+    const db = 10 * Math.log10(bandPower(24000) / bandPower(8000));
+    assert.ok(Math.abs(db) < 1, `24 kHz vs 8 kHz: ${db.toFixed(2)} dB`);
+  });
+
+  it("PCM at a rate that isn't a whole number is refused, never guessed", () => {
+    assert.throws(() => generateHoldAudio(2000, "neutral", { encoding: "linear16", sampleRate: 24000.5 }), /whole-number sampleRate/);
+    assert.throws(() => generateHoldAudio(2000, "neutral", { encoding: "linear16" }), /whole-number sampleRate/);
   });
 });
 
@@ -170,15 +232,19 @@ describe("synthesizeSpeech's format (services/deepgram-tts.js)", () => {
     assert.deepEqual(await synthesizeSpeech("KEY", "Hi.", { voice: "aura-2-theia-en", boost: false }), BODY);
   });
 
-  it("an unknown encoding is the phone's mulaw; linear16 without a whole-number rate is 8 kHz", async () => {
+  it("an unknown encoding is the phone's mulaw", async () => {
     const urls = stubFetch();
     const { synthesizeSpeech } = require("../services/deepgram-tts");
     await synthesizeSpeech("KEY", "Hi.", { encoding: /** @type {any} */ ("opus"), sampleRate: 48000 });
-    await synthesizeSpeech("KEY", "Hi.", { encoding: "linear16", sampleRate: 24000.5 });
-    assert.deepEqual(urls.map((u) => [u.searchParams.get("encoding"), u.searchParams.get("sample_rate")]), [
-      ["mulaw", "8000"],
-      ["linear16", "8000"],
-    ]);
+    assert.deepEqual(urls.map((u) => [u.searchParams.get("encoding"), u.searchParams.get("sample_rate")]), [["mulaw", "8000"]]);
+  });
+
+  it("linear16 without a whole-number rate is refused before any request (PCM at a guessed rate plays at the wrong speed)", async () => {
+    const urls = stubFetch();
+    const { synthesizeSpeech } = require("../services/deepgram-tts");
+    await assert.rejects(synthesizeSpeech("KEY", "Hi.", { encoding: "linear16", sampleRate: 24000.5 }), /whole-number sampleRate/);
+    await assert.rejects(synthesizeSpeech("KEY", "Hi.", { encoding: "linear16" }), /whole-number sampleRate/);
+    assert.equal(urls.length, 0);
   });
 
   it("the host option still picks the API host (the bubble's Sydney host)", async () => {

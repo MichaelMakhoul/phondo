@@ -135,6 +135,7 @@ describe("writeVolume", () => {
     expect(storage.setItem).toHaveBeenCalledWith(VOLUME_STORAGE_KEY, "0.35");
     expect(readVolume(storage)).toBe(0.35);
     writeVolume(storage, 2);
+    expect(storage.setItem).toHaveBeenLastCalledWith(VOLUME_STORAGE_KEY, "1");
     expect(readVolume(storage)).toBe(1);
   });
 

@@ -249,7 +249,9 @@ describe("buildOwnerPrompt — the rest of the rules the model is held to", () =
   it("SCRUM-619: says it is speaking, not writing — no markdown, a few short sentences, never a long list — before the style", () => {
     assert.ok(p.includes("YOU ARE SPEAKING, NOT WRITING: every word is read aloud. Never use markdown — no asterisks, bold, bullets, dashes for lists, numbered lists or headings."));
     assert.ok(p.includes("Answer in one to three short spoken sentences."));
-    assert.ok(p.includes('say the two or three that matter most and offer the rest ("want the rest?") — never read out a long list.'));
+    assert.ok(p.includes('say the two or three that matter most and offer the rest ("want the rest?"); when the owner asks for all of them, say them all, one short line each.'));
+    assert.ok(p.includes('A read-back is never shortened: it says everything the steps above list, and never ends with "want the rest?".'));
+    assert.ok(p.indexOf("A read-back is never shortened") > p.lastIndexOf("Then wait for a clear yes."), "after the read-back steps it refers to");
     assert.ok(p.indexOf("YOU ARE SPEAKING, NOT WRITING") < p.indexOf("STYLE: brief and plain"));
   });
   it("sets the voice style and never acts on a guess", () => {

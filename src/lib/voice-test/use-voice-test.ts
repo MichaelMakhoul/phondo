@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { createMulawPlaybackDecoder } from "./mulaw";
 import { createPlaybackDecoder, parsePlaybackFormat, playbackQuery, type PlaybackDecoder } from "./playback-format";
-import { clampVolume } from "./volume";
+import { clampVolume, volumeGain } from "./volume";
 import { claimVoiceSession, releaseVoiceSession, type VoiceSessionHandle } from "./session-registry";
 import { announceBookingsChanged } from "./events";
 import {
@@ -181,7 +181,7 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
       // SCRUM-619: the assistant's voice goes through one gain stage, the page's own
       // volume control, which works however the device routes the session's audio.
       const gain = ctx.createGain();
-      gain.gain.value = volumeRef.current;
+      gain.gain.value = volumeGain(volumeRef.current);
       gain.connect(ctx.destination);
       gainNodeRef.current = gain;
 
@@ -249,7 +249,7 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
 
       ws.onmessage = (event: MessageEvent) => {
         if (event.data instanceof ArrayBuffer) {
-          // Binary audio: the assistant's voice as 8 kHz mulaw.
+          // Binary audio: the assistant's voice — 8 kHz mulaw unless the server announced another format.
           const playbackCtx = audioContextRef.current;
           const decoder = playbackDecoderRef.current;
           if (!playbackCtx || !decoder || event.data.byteLength === 0) return;
@@ -287,7 +287,11 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
             if (format && formatCtx) {
               playbackDecoderRef.current = createPlaybackDecoder(format, formatCtx.sampleRate);
             } else {
-              console.warn("[VoiceTest] Unplayable audio format announced — kept the current one:", msg?.encoding);
+              // Never play audio in a format we can't decode: it would come out as noise.
+              console.error("[VoiceTest] Unplayable audio format announced:", msg?.encoding, msg?.sampleRate);
+              setError("Your browser couldn't play your assistant's voice. Please reload the page and try again.");
+              updateStatus("error");
+              cleanup();
             }
             break;
           }
@@ -506,7 +510,7 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
     setVolumeState(value);
     const gain = gainNodeRef.current;
     // A short glide, so dragging the slider doesn't click.
-    if (gain) gain.gain.setTargetAtTime(value, gain.context.currentTime, 0.015);
+    if (gain) gain.gain.setTargetAtTime(volumeGain(value), gain.context.currentTime, 0.015);
   }, []);
 
   return {

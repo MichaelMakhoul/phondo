@@ -51,6 +51,8 @@ export function writePanelState(storage: Pick<Storage, "setItem"> | null, state:
 }
 
 /** The page that renders the full panel inline, from the same session. */
+export const ASSISTANT_LINE_PATH = "/assistant-line";
+
 /** SCRUM-619: the assistant's volume on this device (0 to 1), like the panel state. */
 export const VOLUME_STORAGE_KEY = "phondo:owner-assistant-volume";
 
@@ -77,8 +79,6 @@ export function writeVolume(storage: Pick<Storage, "setItem"> | null, volume: nu
     return false;
   }
 }
-
-export const ASSISTANT_LINE_PATH = "/assistant-line";
 
 /** A session the owner is in right now (connecting or talking): never hidden or cut off. */
 export function isSessionLive(status: VoiceTestStatus | null | undefined): boolean {

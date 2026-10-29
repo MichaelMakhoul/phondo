@@ -479,6 +479,35 @@ describe("handleTestUserSpeech in the bubble's wideband audio (SCRUM-619, run fo
     assert.equal(h.timers[0], 1500, "one second of wideband audio + half a second");
   });
 
+  it("end_call: the goodbye is shown and kept without markdown", async () => {
+    const h = makeLoop({
+      turns: [{ sentences: ["**Done** — bye for now."], toolCalls: [{ name: "end_call" }] }],
+      ownerResults: [{ message: "Ending the call.", __endCall: true }],
+    });
+    const s = widebandSession();
+    await h.handleTestUserSpeech(s, h.ws, "That's all");
+    await new Promise((r) => setImmediate(r));
+    const shown = h.ws.sent.filter((m) => m && m.type === "transcript" && m.role === "assistant").map((m) => m.content);
+    assert.deepEqual(shown, ["Done — bye for now."]);
+    assert.equal(s.messages.at(-1).content, "Done — bye for now.");
+  });
+
+  it("the model call fails: the owner's fallback line is spoken in the session's wideband format", async () => {
+    const h = makeLoop({ turns: [{ throws: "model down" }] });
+    await h.handleTestUserSpeech(widebandSession(), h.ws, "Hi");
+    assert.deepEqual(h.calls.filter((c) => c[0] === "ttsOptions").map((c) => c[1]), [
+      { voice: "aura-2-theia-en", host: "api.au.deepgram.com", encoding: "linear16", sampleRate: 24000, boost: false },
+    ]);
+  });
+
+  it("a reply that was only markdown: nothing is said or shown, and the history keeps it as it came (never an empty turn)", async () => {
+    const h = makeLoop({ turns: [{ sentences: ["**"] }] });
+    const s = widebandSession();
+    await h.handleTestUserSpeech(s, h.ws, "Hi");
+    assert.ok(!h.calls.some((c) => c[0] === "tts"), "nothing to say");
+    assert.equal(s.messages.at(-1).content, "**");
+  });
+
   it("a session that wasn't told wideband speaks as before: its voice only", async () => {
     const h = makeLoop({ turns: [{ sentences: ["One."] }] });
     const s = ownerWebSession();
