@@ -133,7 +133,7 @@ describe("OwnerAssistantProvider (client)", () => {
 
   it("reads the remembered panel state only after mount, and only through the guarded helpers", () => {
     expect(providerCode).toMatch(/useState<PanelState \| null>\(null\)/);
-    expect(providerCode).toMatch(/useEffect\(\(\) => \{\s*setPanelState\(readPanelState\(getBrowserStorage\(\)\)\);\s*\}, \[\]\);/);
+    expect(providerCode).toMatch(/useEffect\(\(\) => \{\s*setPanelState\(readPanelState\(getBrowserStorage\(\)\)\);/);
     expect(providerCode).toMatch(/writePanelState\(getBrowserStorage\(\), next\);/);
     // Every storage access goes through bubble-state.ts's try/catch.
     expect(providerCode).not.toMatch(/localStorage|sessionStorage/);
@@ -277,10 +277,34 @@ describe("client files never read the server-only flag (it is always false in th
   });
 });
 
+describe("SCRUM-619: the assistant's own volume", () => {
+  it("the provider restores the owner's volume after mount and saves each change, through the guarded helpers", () => {
+    expect(providerCode).toMatch(
+      /const savedVolume = readVolume\(getBrowserStorage\(\)\);\s*if \(savedVolume !== null\) applyVolume\(savedVolume\);\s*\}, \[applyVolume\]\);/
+    );
+    expect(providerCode).toMatch(/const setVolume = useCallback\(\s*\(next: number\) => \{\s*applyVolume\(next\);\s*writeVolume\(getBrowserStorage\(\), next\);\s*\},\s*\[applyVolume\],?\s*\);/);
+    expect(providerCode).toMatch(/setVolume: applyVolume \} =\s*useVoiceTest\(/);
+  });
+
+  it("the live session shows a labelled volume slider, 0 to 100 in steps of 5, that sets the volume", () => {
+    const active = sessionUiCode.slice(sessionUiCode.indexOf('status === "active"'), sessionUiCode.indexOf('status === "ended"'));
+    expect(active).toMatch(/<Slider\s+value=\{\[Math\.round\(volume \* 100\)\]\}\s+onValueChange=\{\(value\) => setVolume\(\(value\[0\] \?\? 100\) \/ 100\)\}\s+min=\{0\}\s+max=\{100\}\s+step=\{5\}\s+thumbLabel="Assistant volume"\s+className="py-3"\s*\/>/);
+    expect(active).toMatch(/volume === 0 \? \(\s*<VolumeX/);
+    // At 0 the assistant is silent on purpose (a quiet desk) — said, so it never looks broken.
+    expect(active).toMatch(/\{volume === 0 && <p className="text-xs text-muted-foreground">Sound is off\. Replies still show below\.<\/p>\}/);
+  });
+
+  it("the slider's accessible name is on its thumb (role=slider), and the prop never reaches the root's DOM", () => {
+    const slider = code(read("src/components/ui/slider.tsx"));
+    expect(slider).toMatch(/\(\{ className, thumbLabel, \.\.\.props \}, ref\) =>/);
+    expect(slider).toMatch(/<SliderPrimitive\.Thumb\s+aria-label=\{thumbLabel\}/);
+  });
+});
+
 describe("SCRUM-597: no assistant this render", () => {
   it("the provider passes the assistant id through (null when the layout found none) and exposes it", () => {
     expect(providerCode).toMatch(/assistantId: string \| null;/);
-    expect(providerCode).toMatch(/session: \{ status, isMuted, transcript, error, isAssistantSpeaking, start, stop, toggleMute, reset \},\s*assistantId,/);
+    expect(providerCode).toMatch(/session: \{ status, isMuted, transcript, error, isAssistantSpeaking, start, stop, toggleMute, reset, volume, setVolume \},\s*assistantId,/);
   });
   it("the bubble hides without an assistant — unless a session is live, which is never cut off", () => {
     const guard = bubbleCode.indexOf("if (!assistant.assistantId && !isSessionLive(assistant.session.status)) return null;");

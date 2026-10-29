@@ -1,6 +1,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const { noteOwnerWebAudio, ownerWebBargeIn } = require("../lib/owner-web-barge-in");
+const { BROWSER_WIDEBAND } = require("../lib/browser-audio");
 
 // SCRUM-618: the owner talking over the assistant in the bubble stops it on the
 // classic pipeline, as Gemini's barge-in did. The reply plays in real time
@@ -20,6 +21,12 @@ describe("noteOwnerWebAudio", () => {
     noteOwnerWebAudio(s, 8_000, 2, 10_000);
     assert.equal(s.webAudioUntil, 11_000, "after the queue has played out, from now");
     assert.equal(s.webAudioTurn, 2, "and whose audio is playing");
+  });
+
+  it("SCRUM-619: wideband audio is timed at its own rate (48 bytes a millisecond), not the phone's", () => {
+    const s = { browserAudio: BROWSER_WIDEBAND };
+    noteOwnerWebAudio(s, 96_000, 1, 1_000);
+    assert.equal(s.webAudioUntil, 3_000, "two seconds of wideband, not twelve");
   });
 });
 
