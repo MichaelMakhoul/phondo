@@ -1,7 +1,9 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { createMulawPlaybackDecoder, type MulawPlaybackDecoder } from "./mulaw";
+import { createMulawPlaybackDecoder } from "./mulaw";
+import { createPlaybackDecoder, parsePlaybackFormat, playbackQuery, type PlaybackDecoder } from "./playback-format";
+import { clampVolume } from "./volume";
 import { claimVoiceSession, releaseVoiceSession, type VoiceSessionHandle } from "./session-registry";
 import { announceBookingsChanged } from "./events";
 import {
@@ -32,6 +34,10 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
   const [transcript, setTranscript] = useState<TranscriptMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isAssistantSpeaking, setIsAssistantSpeaking] = useState(false);
+  // SCRUM-619: the assistant's volume on this page, 0 to 1 (its gain stage below).
+  const [volume, setVolumeState] = useState(1);
+  const volumeRef = useRef(1);
+  const gainNodeRef = useRef<GainNode | null>(null);
 
   // Ref tracks latest status for use in WebSocket callbacks (avoids stale closures)
   const statusRef = useRef<VoiceTestStatus>("idle");
@@ -64,7 +70,8 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
   // One decoder per call: its upsampler carries filter state from chunk to
   // chunk, so chunks must reach it in arrival order (the socket delivers
   // ArrayBuffers synchronously for exactly that reason).
-  const playbackDecoderRef = useRef<MulawPlaybackDecoder | null>(null);
+  // SCRUM-619: μ-law until the server announces another format ("audio_format").
+  const playbackDecoderRef = useRef<PlaybackDecoder | null>(null);
 
   const enqueueAudio = useCallback((buffer: AudioBuffer) => {
     const ctx = audioContextRef.current;
@@ -81,7 +88,7 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
-    source.connect(ctx.destination);
+    source.connect(gainNodeRef.current ?? ctx.destination);
     source.start(nextStartTimeRef.current);
     nextStartTimeRef.current += buffer.duration;
 
@@ -171,6 +178,12 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
       audioContextRef.current = ctx;
       // Browsers may not honour the requested rate, so build for the real one.
       playbackDecoderRef.current = createMulawPlaybackDecoder(ctx.sampleRate);
+      // SCRUM-619: the assistant's voice goes through one gain stage, the page's own
+      // volume control, which works however the device routes the session's audio.
+      const gain = ctx.createGain();
+      gain.gain.value = volumeRef.current;
+      gain.connect(ctx.destination);
+      gainNodeRef.current = gain;
 
       await ctx.audioWorklet.addModule("/audio-worklets/mulaw-encoder-processor.js");
       if (superseded()) return; // cleanup() already closed the context and the mic
@@ -194,7 +207,8 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
       // Worklet doesn't produce output — it sends data via port
 
       // 4. Connect WebSocket
-      const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(token)}`);
+      // SCRUM-619: playbackQuery asks for wideband audio when this context can play it.
+      const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(token)}${playbackQuery(ctx.sampleRate)}`);
       // ArrayBuffer, not Blob: Blob reads are async and could hand chunks to
       // the stateful decoder out of order, or land after a barge-in flush.
       ws.binaryType = "arraybuffer";
@@ -265,6 +279,18 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
             // Barge-in: the caller interrupted, so drop any audio buffered ahead.
             flushPlayback();
             break;
+
+          case "audio_format": {
+            // SCRUM-619: how the server's audio is encoded, said before any of it.
+            const format = parsePlaybackFormat(msg);
+            const formatCtx = audioContextRef.current;
+            if (format && formatCtx) {
+              playbackDecoderRef.current = createPlaybackDecoder(format, formatCtx.sampleRate);
+            } else {
+              console.warn("[VoiceTest] Unplayable audio format announced — kept the current one:", msg?.encoding);
+            }
+            break;
+          }
 
           case "bookings_changed":
             // SCRUM-597: the owner's assistant changed a booking — refresh what's on screen.
@@ -417,7 +443,8 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
       sourceNodeRef.current = null;
     }
 
-    // Close audio context
+    // Close audio context (the gain stage goes with it)
+    gainNodeRef.current = null;
     if (audioContextRef.current && audioContextRef.current.state !== "closed") {
       audioContextRef.current.close().catch(() => {});
       audioContextRef.current = null;
@@ -472,6 +499,16 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
     return () => window.removeEventListener("pagehide", teardown);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // SCRUM-619: the assistant's volume, live on the playing session and kept for the next.
+  const setVolume = useCallback((next: number) => {
+    const value = clampVolume(next);
+    volumeRef.current = value;
+    setVolumeState(value);
+    const gain = gainNodeRef.current;
+    // A short glide, so dragging the slider doesn't click.
+    if (gain) gain.gain.setTargetAtTime(value, gain.context.currentTime, 0.015);
+  }, []);
+
   return {
     status,
     isMuted,
@@ -482,5 +519,7 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
     stop,
     toggleMute,
     reset,
+    volume,
+    setVolume,
   };
 }

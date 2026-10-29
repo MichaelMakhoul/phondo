@@ -45,6 +45,37 @@ describe("useVoiceTest: browser playback of the assistant's voice", () => {
   });
 });
 
+// SCRUM-619: the owner's bubble plays wideband PCM once the server announces it, and
+// the assistant's voice goes through the page's own volume control.
+describe("useVoiceTest: the server's audio format and the page's volume", () => {
+  it("asks for wideband on the socket URL only through playbackQuery (by the context's real rate)", () => {
+    expect(hookSource).toMatch(/new WebSocket\(`\$\{wsUrl\}\?token=\$\{encodeURIComponent\(token\)\}\$\{playbackQuery\(ctx\.sampleRate\)\}`\)/);
+  });
+
+  it("starts on μ-law and swaps the decoder when the server announces a format it can play — never on one it can't", () => {
+    const at = hookSource.indexOf('case "audio_format":');
+    expect(at).toBeGreaterThan(-1);
+    const body = hookSource.slice(at, hookSource.indexOf("break;", at));
+    expect(body).toMatch(/const format = parsePlaybackFormat\(msg\);/);
+    expect(body).toMatch(/if \(format && formatCtx\) \{\s*playbackDecoderRef\.current = createPlaybackDecoder\(format, formatCtx\.sampleRate\);\s*\} else \{\s*console\.warn\(/);
+    expect(hookSource).toMatch(/playbackDecoderRef\.current = createMulawPlaybackDecoder\(ctx\.sampleRate\);/);
+  });
+
+  it("plays every chunk through one gain stage that starts at the chosen volume", () => {
+    expect(functionBody("enqueueAudio")).toMatch(/source\.connect\(gainNodeRef\.current \?\? ctx\.destination\);/);
+    expect(hookSource).toMatch(/const gain = ctx\.createGain\(\);\s*gain\.gain\.value = volumeRef\.current;\s*gain\.connect\(ctx\.destination\);\s*gainNodeRef\.current = gain;/);
+    expect(hookSource).toMatch(/gainNodeRef\.current = null;\s*if \(audioContextRef\.current && audioContextRef\.current\.state !== "closed"\)/);
+  });
+
+  it("setVolume keeps the volume between 0 and 1, glides the live gain to it, and keeps it for the next session", () => {
+    const at = hookSource.indexOf("const setVolume = useCallback(");
+    const body = hookSource.slice(at, hookSource.indexOf("}, []);", at));
+    expect(body).toMatch(/const value = clampVolume\(next\);\s*volumeRef\.current = value;\s*setVolumeState\(value\);/);
+    expect(body).toMatch(/if \(gain\) gain\.gain\.setTargetAtTime\(value, gain\.context\.currentTime, 0\.015\);/);
+    expect(hookSource).toMatch(/return \{[^}]*\bvolume,\s*setVolume,\s*\};/);
+  });
+});
+
 // SCRUM-597: one live session per tab, and the bookings-changed relay.
 describe("useVoiceTest: one live session per tab, and bookings_changed", () => {
   const hook = readFileSync(join(process.cwd(), "src/lib/voice-test/use-voice-test.ts"), "utf-8");

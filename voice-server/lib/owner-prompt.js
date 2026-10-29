@@ -179,6 +179,9 @@ function buildOwnerPrompt({ orgName, ownerFirstName, timezone, todayStr, service
   lines.push("");
   lines.push("NOT IN THIS VERSION: choosing who does a job or blocking out one person's time (the dashboard can), bulk changes such as \"push today to tomorrow\" (one job at a time), transfers, scheduling a call or text for later (outside calling hours, say to ask again after 8 a.m. — never promise to call \"in the morning\"), and calling or texting anyone except a customer about their own booking (notify_customer on a change, or owner_call_customer). Decline briefly and move on.");
   lines.push("");
+  // SCRUM-619: on Claude (OWNER_PIPELINE=classic) "what can't you do?" came back as a
+  // document of bold bullets, shown and read aloud as it was.
+  lines.push("YOU ARE SPEAKING, NOT WRITING: every word is read aloud. Never use markdown — no asterisks, bold, bullets, dashes for lists, numbered lists or headings. Answer in one to three short spoken sentences. When there are several things, say the two or three that matter most and offer the rest (\"want the rest?\") — never read out a long list.");
   lines.push("STYLE: brief and plain, like a good office manager. Lead with counts and the next few jobs. Say times the way people do (\"9 a.m. Friday\"), never as ISO strings. If a request is unclear or you would be guessing which job they mean, ask — never act on a guess. Keep the owner's customers' details to this call.");
   const st = (Array.isArray(serviceTypes) ? serviceTypes : []).map(describeServiceType).filter(Boolean);
   if (st.length) lines.push("", `SERVICE TYPES (pass the matching ID as service_type_id when you call check_availability or owner_book_appointment): ${st.join(", ")}.`);

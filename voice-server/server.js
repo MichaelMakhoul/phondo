@@ -33,6 +33,8 @@ const { createSessionWithFailover, isFailoverEnabled } = require("./services/gem
 const { resolveTestPipeline, KNOWN_TEST_PIPELINES, resolveOwnerPipeline, resolveCallPipeline, fastPathKeysPresent } = require("./lib/pipeline-routing"); // SCRUM-378 per-number test override; SCRUM-587 OWNER_PIPELINE; SCRUM-594 DEMO_LINE_PIPELINE
 const { describeGateway: describeAnthropicGateway, gatewayProblem } = require("./lib/anthropic-gateway"); // SCRUM-594: ANTHROPIC_GATEWAY
 const { noteOwnerWebAudio, ownerWebBargeIn } = require("./lib/owner-web-barge-in"); // SCRUM-618: the owner talking over the bubble's reply
+const { BROWSER_WIDEBAND, audioFormatMessage, browserTtsOptions, browserAudioMs } = require("./lib/browser-audio"); // SCRUM-619: a browser isn't a phone
+const { spokenPhoneNumber } = require("./lib/spoken-phone"); // SCRUM-619: numbers read back as people say them
 const { bookingNeeds, listWords: listNeeds, bookingPathSteps } = require("./lib/booking-collection"); // SCRUM-617: what THIS business's bookings need
 const { checkEndCallGuard } = require("./lib/end-call-guard"); // SCRUM-594: the SCRUM-373 end_call guard for the classic pipeline
 const { checkBookingGuards, fastCancelGate, checkCallerDone, withBookedName, noteNameCorrection, forgetCancelledBooking, noteBookingGuardCap, CANCEL_KEPT_NUDGE } = require("./lib/booking-guards"); // SCRUM-594 PHASE 2: the fast path's booking guards
@@ -2505,10 +2507,12 @@ wss.on("connection", (twilioWs) => {
               );
           // Append caller context — phone number + client history
           const phoneForPrompt = session.piiRedactionEnabled ? maskPhone(callerPhone) : callerPhone;
+          // SCRUM-619: the demo line read a caller's number back as "+61 414 141 883".
+          const spokenCallerPhone = session.piiRedactionEnabled ? null : spokenPhoneNumber(callerPhone);
           let callerContext = "";
           // SCRUM-587: no returning-caller hint on owner calls (owner tools return names).
           if (callerPhone && !session.ownerMode) {
-            callerContext = `\n\nCALLER CONTEXT:\nThe caller's phone number is ${phoneForPrompt}. If they say "use the number I'm calling from" or "it's the same number", use this number. Do NOT ask them to repeat it.`;
+            callerContext = `\n\nCALLER CONTEXT:\nThe caller's phone number is ${phoneForPrompt}.${spokenCallerPhone ? ` When you say it to the caller, say it the local way: ${spokenCallerPhone}.` : ""} If they say "use the number I'm calling from" or "it's the same number", use this number. Do NOT ask them to repeat it.`;
 
             // SCRUM-414: returning-caller signal ONLY — never inject the name or
             // appointment history into the prompt (caller ID is spoofable, so
@@ -5421,7 +5425,8 @@ function sendClear(session, twilioWs) {
  */
 function startHoldAudio(session, ws, mode) {
   // Generate 2 seconds of hold audio to loop
-  const holdBuf = generateHoldAudio(2000, session.holdPreset || "neutral");
+  // SCRUM-619: a browser that was told wideband gets hold audio in it too (any other format would play as noise).
+  const holdBuf = generateHoldAudio(2000, session.holdPreset || "neutral", mode === "browser" ? session.browserAudio : undefined);
   if (!holdBuf) return { stop: () => {} }; // silent preset
 
   let stopped = false;
@@ -7353,6 +7358,9 @@ testWss.on("connection", (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const token = url.searchParams.get("token");
   const tokenData = verifyTestCallToken(token);
+  // SCRUM-619: the page says it can play wideband audio (lib/browser-audio.js); a page
+  // from before it doesn't, and keeps getting the phone's mulaw.
+  const pagePlaysWideband = url.searchParams.get("playback") === BROWSER_WIDEBAND.encoding;
 
   if (!tokenData || !tokenData.assistantId || !tokenData.organizationId) {
     ws.close(4003, "Invalid or expired token");
@@ -7922,6 +7930,15 @@ testWss.on("connection", (ws, req) => {
       } else {
         // ── Classic pipeline (Deepgram STT + OpenAI + Deepgram TTS) ──
         console.log("[TestClassic] Using classic pipeline for test call");
+        // SCRUM-619: the bubble isn't a phone line. When the page can play it, the owner hears
+        // wideband audio at Aura's own level from the Sydney host, announced before any audio
+        // (greeting, hold) — not the phone's boosted 8 kHz mulaw from the US host. Customer test
+        // calls keep the phone's sound: they preview what callers hear.
+        if (session.ownerMode && pagePlaysWideband) {
+          session.browserAudio = BROWSER_WIDEBAND;
+          session.ttsHost = FAST_DEEPGRAM_HOST;
+          if (ws.readyState === WebSocket.OPEN) ws.send(audioFormatMessage(BROWSER_WIDEBAND));
+        }
 
       // Open Deepgram STT
       session.deepgramWs = openDeepgramStream(DEEPGRAM_API_KEY, {
@@ -8008,9 +8025,7 @@ testWss.on("connection", (ws, req) => {
           context.organization.name
         );
         try {
-          const disclosureAudio = await synthesizeSpeech(DEEPGRAM_API_KEY, disclosureText, {
-            voice: session.deepgramVoice,
-          });
+          const disclosureAudio = await synthesizeSpeech(DEEPGRAM_API_KEY, disclosureText, browserTtsOptions(session));
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: disclosureText, isFinal: true }));
             ws.send(JSON.stringify({ type: "speaking", speaking: true }));
@@ -8034,9 +8049,7 @@ testWss.on("connection", (ws, req) => {
         afterHoursConfig,
       });
       try {
-        const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, greeting, {
-          voice: session.deepgramVoice,
-        });
+        const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, greeting, browserTtsOptions(session));
         // Send greeting transcript
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
@@ -8176,9 +8189,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
             if (bargedIn()) return; // SCRUM-618: the owner spoke over the reply — the rest isn't said
             const text = testSpeechText(session, sentence);
             if (!text) return;
-            const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, text, {
-              voice: session?.deepgramVoice,
-            });
+            const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, text, browserTtsOptions(session));
             if (bargedIn()) return;
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: "speaking", speaking: true }));
@@ -8207,7 +8218,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
           ws.send(JSON.stringify({
             type: "transcript",
             role: "assistant",
-            content: reply,
+            content: testShownText(session, reply),
             isFinal: true,
           }));
         }
@@ -8284,7 +8295,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
           if (!reply) {
             reply = getErrorMsg(session.language, "goodbye");
             try {
-              const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, testSpeechText(session, reply), { voice: session?.deepgramVoice });
+              const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, testSpeechText(session, reply), browserTtsOptions(session));
               turnAudioBytes += audioBuffer.length;
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ type: "speaking", speaking: true }));
@@ -8296,7 +8307,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
           }
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "speaking", speaking: false }));
-            ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: reply, isFinal: true }));
+            ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: testShownText(session, reply), isFinal: true }));
           }
           break;
         }
@@ -8312,22 +8323,24 @@ async function handleTestUserSpeech(session, ws, transcript) {
       // last tool's own words.
       if (session.ownerMode) reply = ownerToolLoopReply(session, lastOwnerTool);
       console.warn(`[TestPipeline] Tool call loop exhausted after ${maxIterations} iterations (assistantId=${session.assistantId})`);
-      const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, testSpeechText(session, reply), { voice: session?.deepgramVoice });
+      const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, testSpeechText(session, reply), browserTtsOptions(session));
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "speaking", speaking: true }));
         ws.send(audioBuffer);
         ws.send(JSON.stringify({ type: "speaking", speaking: false }));
-        ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: reply, isFinal: true }));
+        ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: testShownText(session, reply), isFinal: true }));
       }
     }
 
-    session.addMessage("assistant", reply);
+    // SCRUM-619: the bubble's history holds what was said (no markdown), so the model
+    // doesn't take its own earlier formatting as the style to keep.
+    session.addMessage("assistant", testShownText(session, reply));
     session.ownerTurnFailureStreak = 0; // SCRUM-596: a turn that answered ends a failure streak
 
     // SCRUM-596: the session ends once the goodbye's audio has had time to play
     // (8 kHz μ-law: 8 bytes a millisecond).
     if (endCall) {
-      const graceMs = Math.min(15_000, Math.round(turnAudioBytes / 8) + 500);
+      const graceMs = Math.min(15_000, browserAudioMs(session, turnAudioBytes) + 500);
       setTimeout(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "ended", reason: "owner-ended" }));
@@ -8366,9 +8379,7 @@ async function handleTestUserSpeech(session, ws, transcript) {
         // SCRUM-618 (as SF5): after an owner tool ran, never "could you repeat that?" — after a
         // change it invites a duplicate request. The last tool's own words instead.
         const fallback = session.ownerMode && lastOwnerTool ? ownerToolLoopReply(session, lastOwnerTool) : getErrorMsg(session?.language, "troubleRepeat");
-        const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, testSpeechText(session, fallback), {
-          voice: session?.deepgramVoice,
-        });
+        const audioBuffer = await synthesizeSpeech(DEEPGRAM_API_KEY, testSpeechText(session, fallback), browserTtsOptions(session));
         ws.send(JSON.stringify({ type: "transcript", role: "assistant", content: fallback, isFinal: true }));
         ws.send(audioBuffer);
       }
@@ -8390,7 +8401,17 @@ async function handleTestUserSpeech(session, ws, transcript) {
  * calls are unchanged.
  */
 function testSpeechText(session, text) {
-  return session?.ownerMode ? spellLettersForTts(stripMarkdown(text)) : text;
+  return session?.ownerMode ? spellLettersForTts(testShownText(session, text)) : text;
+}
+
+/**
+ * SCRUM-619: what the bubble shows of a reply — its words without markdown. A bold
+ * split across two streamed sentences leaves a lone "**" in each, which stripMarkdown
+ * (pairs only) keeps, and Aura read out. Customer test calls are unchanged.
+ */
+function testShownText(session, text) {
+  if (!session?.ownerMode) return text;
+  return stripMarkdown(String(text ?? "")).replace(/\*+/g, "").replace(/[ \t]{2,}/g, " ").trim();
 }
 
 // Warm the Gemini Live path on boot so the FIRST real call doesn't eat a cold

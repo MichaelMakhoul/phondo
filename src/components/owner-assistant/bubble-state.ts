@@ -5,6 +5,7 @@
  */
 
 import type { VoiceTestStatus } from "@/lib/voice-test";
+import { clampVolume } from "@/lib/voice-test/volume";
 
 /** Whether the floating panel is expanded or folded down to its round button. */
 export type PanelState = "open" | "minimised";
@@ -50,6 +51,33 @@ export function writePanelState(storage: Pick<Storage, "setItem"> | null, state:
 }
 
 /** The page that renders the full panel inline, from the same session. */
+/** SCRUM-619: the assistant's volume on this device (0 to 1), like the panel state. */
+export const VOLUME_STORAGE_KEY = "phondo:owner-assistant-volume";
+
+/** The saved volume, or null when none is saved, it isn't a number, or storage is blocked. */
+export function readVolume(storage: Pick<Storage, "getItem"> | null): number | null {
+  if (!storage) return null;
+  try {
+    const stored = storage.getItem(VOLUME_STORAGE_KEY);
+    if (stored === null || stored.trim() === "") return null;
+    const value = Number(stored);
+    return Number.isFinite(value) ? clampVolume(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Saves the volume; false when storage is unavailable (it still applies to this session). */
+export function writeVolume(storage: Pick<Storage, "setItem"> | null, volume: number): boolean {
+  if (!storage) return false;
+  try {
+    storage.setItem(VOLUME_STORAGE_KEY, String(clampVolume(volume)));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const ASSISTANT_LINE_PATH = "/assistant-line";
 
 /** A session the owner is in right now (connecting or talking): never hidden or cut off. */

@@ -6,18 +6,21 @@
 // handleTestUserSpeech sends no more of it. More than two words, or a stop word,
 // so the speaker's own echo (the browser cancels most of it) can't barge in.
 
+const { browserAudioMs } = require("./browser-audio");
+
 const STOP_WORDS_RE = /^(stop|wait|hold on|no|cancel|nevermind|never mind|excuse me|hello|hey)\b/i;
 
 /**
- * Notes audio sent to the owner's browser: it plays in real time (8 kHz μ-law,
- * 8 bytes a millisecond) after whatever was already queued — and whose turn it is.
- * @param {{ webAudioUntil?: number, webAudioTurn?: number }} session
+ * Notes audio sent to the owner's browser: it plays in real time (the phone's 8 kHz
+ * μ-law, 8 bytes a millisecond, or wideband PCM, 48 — SCRUM-619) after whatever was
+ * already queued — and whose turn it is.
+ * @param {{ webAudioUntil?: number, webAudioTurn?: number, browserAudio?: { bytesPerMs: number } | null }} session
  * @param {number} bytes
  * @param {number} turn - the turn the audio belongs to
  * @param {number} [now]
  */
 function noteOwnerWebAudio(session, bytes, turn, now = Date.now()) {
-  session.webAudioUntil = Math.max(now, session.webAudioUntil || 0) + Math.round(bytes / 8);
+  session.webAudioUntil = Math.max(now, session.webAudioUntil || 0) + browserAudioMs(session, bytes);
   session.webAudioTurn = turn;
 }
 

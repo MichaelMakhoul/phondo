@@ -3,8 +3,9 @@
 import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Slider } from "@/components/ui/slider";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle, Bot, CheckCircle2, Loader2, Mic, MicOff, PhoneOff } from "lucide-react";
+import { AlertCircle, Bot, CheckCircle2, Loader2, Mic, MicOff, PhoneOff, Volume2, VolumeX } from "lucide-react";
 import { VoiceWaveform } from "@/components/ui/voice-waveform";
 import type { TranscriptMessage } from "@/lib/voice-test";
 import { cn } from "@/lib/utils";
@@ -22,7 +23,7 @@ interface OwnerAssistantControlsProps {
 
 /** Start talking, Mute, End and Talk again, for whichever state the session is in. */
 export function OwnerAssistantControls({ session, compact = false }: OwnerAssistantControlsProps) {
-  const { status, isMuted, isAssistantSpeaking, start, stop, toggleMute, reset } = session;
+  const { status, isMuted, isAssistantSpeaking, start, stop, toggleMute, reset, volume, setVolume } = session;
 
   // Reset first: the hook keeps isMuted from a session that died while muted,
   // but the new session's microphone starts live, so the mute button would say
@@ -96,6 +97,23 @@ export function OwnerAssistantControls({ session, compact = false }: OwnerAssist
               <PhoneOff className="mr-2 h-5 w-5" />
               End
             </Button>
+          </div>
+          {/* SCRUM-619: the assistant's own volume — a phone that treats the session as a
+              call can ignore its media volume keys. */}
+          <div className="flex w-full max-w-48 items-center gap-2">
+            {volume === 0 ? (
+              <VolumeX className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            ) : (
+              <Volume2 className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            )}
+            <Slider
+              value={[Math.round(volume * 100)]}
+              onValueChange={(value) => setVolume((value[0] ?? 100) / 100)}
+              min={0}
+              max={100}
+              step={5}
+              thumbLabel="Assistant volume"
+            />
           </div>
         </>
       )}

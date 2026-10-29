@@ -5,7 +5,14 @@ import { useRouter } from "next/navigation";
 import { useVoiceTest } from "@/lib/voice-test";
 import { onBookingsChanged } from "@/lib/voice-test/events";
 import { OWNER_ASSISTANT_TOKEN_URL } from "@/lib/owner-assistant/web";
-import { getBrowserStorage, readPanelState, writePanelState, type PanelState } from "./bubble-state";
+import {
+  getBrowserStorage,
+  readPanelState,
+  readVolume,
+  writePanelState,
+  writeVolume,
+  type PanelState,
+} from "./bubble-state";
 
 /** The one voice session the floating bubble and /assistant-line share. */
 export type OwnerAssistantSession = ReturnType<typeof useVoiceTest>;
@@ -41,7 +48,7 @@ interface OwnerAssistantProviderProps {
  * Nothing here starts a session; only the owner's click does.
  */
 export function OwnerAssistantProvider({ assistantId, children }: OwnerAssistantProviderProps) {
-  const { status, isMuted, transcript, error, isAssistantSpeaking, start, stop, toggleMute, reset } =
+  const { status, isMuted, transcript, error, isAssistantSpeaking, start, stop, toggleMute, reset, volume, setVolume: applyVolume } =
     useVoiceTest({ assistantId: assistantId ?? "", tokenUrl: OWNER_ASSISTANT_TOKEN_URL, trackingSource: "owner_assistant" });
 
   const [panelState, setPanelState] = useState<PanelState | null>(null);
@@ -54,7 +61,18 @@ export function OwnerAssistantProvider({ assistantId, children }: OwnerAssistant
 
   useEffect(() => {
     setPanelState(readPanelState(getBrowserStorage()));
-  }, []);
+    // SCRUM-619: the volume the owner last chose on this device.
+    const savedVolume = readVolume(getBrowserStorage());
+    if (savedVolume !== null) applyVolume(savedVolume);
+  }, [applyVolume]);
+
+  const setVolume = useCallback(
+    (next: number) => {
+      applyVolume(next);
+      writeVolume(getBrowserStorage(), next);
+    },
+    [applyVolume],
+  );
 
   const changePanelState = useCallback((next: PanelState) => {
     setPanelState(next);
@@ -65,13 +83,13 @@ export function OwnerAssistantProvider({ assistantId, children }: OwnerAssistant
 
   const value = useMemo<OwnerAssistantContextValue>(
     () => ({
-      session: { status, isMuted, transcript, error, isAssistantSpeaking, start, stop, toggleMute, reset },
+      session: { status, isMuted, transcript, error, isAssistantSpeaking, start, stop, toggleMute, reset, volume, setVolume },
       assistantId,
       panelState,
       openPanel,
       minimisePanel,
     }),
-    [status, isMuted, transcript, error, isAssistantSpeaking, start, stop, toggleMute, reset, assistantId, panelState, openPanel, minimisePanel],
+    [status, isMuted, transcript, error, isAssistantSpeaking, start, stop, toggleMute, reset, volume, setVolume, assistantId, panelState, openPanel, minimisePanel],
   );
 
   return <OwnerAssistantContext.Provider value={value}>{children}</OwnerAssistantContext.Provider>;

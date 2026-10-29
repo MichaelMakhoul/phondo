@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { BROWSER_WIDEBAND } = require("../lib/browser-audio"); // SCRUM-619
 
 // SCRUM-596: the owner assistant in the dashboard. A verified owner token on
 // /ws/test opens the phone line's owner assistant in the browser. The helpers are
@@ -183,7 +184,7 @@ function makeLoop({ turns, ownerResults = [], ttsBytes = 8000, onSynth = null })
       return { type: "content", content: (t.sentences || []).join(" ") };
     },
     // default: one second of 8 kHz μ-law; what it was asked to say is recorded (SCRUM-618)
-    synthesizeSpeech: async (key, text) => { calls.push(["tts", text]); if (onSynth) onSynth(text); return Buffer.alloc(ttsBytes); },
+    synthesizeSpeech: async (key, text, options) => { calls.push(["tts", text]); calls.push(["ttsOptions", options]); if (onSynth) onSynth(text); return Buffer.alloc(ttsBytes); },
     WebSocket: { OPEN: 1 },
     logTranscript: () => {},
     parseToolArgs: (tc) => JSON.parse(tc.function.arguments || "{}"),
@@ -201,6 +202,9 @@ function makeLoop({ turns, ownerResults = [], ttsBytes = 8000, onSynth = null })
     stripMarkdown: (t) => t.replace(/\*\*/g, ""),
     spellLettersForTts: (t) => t.replace(/\b([A-Z])-(?=[A-Z]\b)/g, "$1 "),
     forgetOwnerReadBacks: () => calls.push(["forgetOwnerReadBacks"]), // SCRUM-618
+    // SCRUM-619: the session's audio format (wideband for the bubble when the page asked).
+    browserTtsOptions: require("../lib/browser-audio").browserTtsOptions,
+    browserAudioMs: require("../lib/browser-audio").browserAudioMs,
     noteOwnerWebAudio: (s, bytes, turn) => { calls.push(["webAudio", bytes, turn]); s.webAudioUntil = (s.webAudioUntil || 0) + bytes / 8; s.webAudioTurn = turn; },
     setTimeout: (fn, ms) => { timers.push(ms); fn(); },
     console: { log() {}, warn() {}, error() {} },
@@ -433,6 +437,54 @@ describe("handleTestUserSpeech on an owner session: what classic now does as Gem
     assert.deepEqual(h.calls.filter((c) => c[0] === "tts").map((c) => c[1]), ["**Hi** there."]);
     assert.equal(s.webTurnSeq, undefined);
     assert.ok(!h.calls.some((c) => c[0] === "webAudio"));
+  });
+});
+
+describe("handleTestUserSpeech in the bubble's wideband audio (SCRUM-619, run for real)", () => {
+  function widebandSession() {
+    const s = ownerWebSession();
+    s.deepgramVoice = "aura-2-theia-en";
+    s.browserAudio = BROWSER_WIDEBAND;
+    s.ttsHost = "api.au.deepgram.com";
+    return s;
+  }
+
+  it("every sentence is spoken wideband from the Sydney host, at Aura's own level", async () => {
+    const h = makeLoop({ turns: [{ sentences: ["One.", "Two."] }] });
+    await h.handleTestUserSpeech(widebandSession(), h.ws, "Hi");
+    const options = h.calls.filter((c) => c[0] === "ttsOptions").map((c) => c[1]);
+    assert.equal(options.length, 2);
+    for (const o of options) {
+      assert.deepEqual(o, { voice: "aura-2-theia-en", host: "api.au.deepgram.com", encoding: "linear16", sampleRate: 24000, boost: false });
+    }
+  });
+
+  it("the bubble shows, and keeps, the reply without its markdown — what was said", async () => {
+    const h = makeLoop({ turns: [{ sentences: ["**Jane** is booked.", "**Bulk changes** aren't."] }] });
+    const s = widebandSession();
+    await h.handleTestUserSpeech(s, h.ws, "What's on?");
+    const shown = h.ws.sent.filter((m) => m && m.type === "transcript" && m.role === "assistant").map((m) => m.content);
+    assert.deepEqual(shown, ["Jane is booked. Bulk changes aren't."]);
+    assert.equal(s.messages.at(-1).content, "Jane is booked. Bulk changes aren't.");
+  });
+
+  it("end_call: the goodbye's wait is timed at wideband's rate (48 bytes a millisecond)", async () => {
+    const h = makeLoop({
+      turns: [{ sentences: ["Bye for now."], toolCalls: [{ name: "end_call" }] }],
+      ownerResults: [{ message: "Ending the call.", __endCall: true }],
+      ttsBytes: 48_000,
+    });
+    await h.handleTestUserSpeech(widebandSession(), h.ws, "That's all");
+    await new Promise((r) => setImmediate(r));
+    assert.equal(h.timers[0], 1500, "one second of wideband audio + half a second");
+  });
+
+  it("a session that wasn't told wideband speaks as before: its voice only", async () => {
+    const h = makeLoop({ turns: [{ sentences: ["One."] }] });
+    const s = ownerWebSession();
+    s.deepgramVoice = "aura-2-theia-en";
+    await h.handleTestUserSpeech(s, h.ws, "Hi");
+    assert.deepEqual(h.calls.find((c) => c[0] === "ttsOptions")[1], { voice: "aura-2-theia-en" });
   });
 });
 
