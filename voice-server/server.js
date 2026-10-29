@@ -5425,8 +5425,15 @@ function sendClear(session, twilioWs) {
  */
 function startHoldAudio(session, ws, mode) {
   // Generate 2 seconds of hold audio to loop
-  // SCRUM-619: a browser that was told wideband gets hold audio in it too (any other format would play as noise).
-  const holdBuf = generateHoldAudio(2000, session.holdPreset || "neutral", mode === "browser" ? session.browserAudio : undefined);
+  // SCRUM-619: a browser that was told wideband gets hold audio in it too (any other format
+  // would play as noise). Hold audio is only a comfort sound: it never takes a turn down.
+  let holdBuf;
+  try {
+    holdBuf = generateHoldAudio(2000, session.holdPreset || "neutral", mode === "browser" ? session.browserAudio : undefined);
+  } catch (err) {
+    console.error(`[ALERT:error] [HoldAudio] No hold audio for this turn (callSid=${session.callSid}): ${err?.message || err}`);
+    return { stop: () => {} };
+  }
   if (!holdBuf) return { stop: () => {} }; // silent preset
 
   let stopped = false;
@@ -7361,6 +7368,7 @@ testWss.on("connection", (ws, req) => {
   // SCRUM-619: the page says it can play wideband audio (lib/browser-audio.js); a page
   // from before it doesn't, and keeps getting the phone's mulaw.
   const pagePlaysWideband = url.searchParams.get("playback") === BROWSER_WIDEBAND.encoding;
+  let pageReportedUnplayable = false; // its client_error is reported once
 
   if (!tokenData || !tokenData.assistantId || !tokenData.organizationId) {
     ws.close(4003, "Invalid or expired token");
@@ -8122,6 +8130,13 @@ testWss.on("connection", (ws, req) => {
             ws.send(JSON.stringify({ type: "ended", reason: "user-ended" }));
           }
           ws.close(1000, "User ended call");
+        } else if (msg.type === "client_error" && msg.reason === "unplayable_audio_format" && !pageReportedUnplayable) {
+          // SCRUM-619: the page was told an audio format it can't play and ended the session
+          // (the owner saw why). Its console reaches no one, so this does; nothing the page
+          // sent is logged.
+          pageReportedUnplayable = true;
+          if (session) session.callFailed = true;
+          console.error(`[ALERT:error] [TestCall] The page couldn't play the announced audio format (callSid=${session?.callSid}, org=${organizationId}, owner=${Boolean(session?.ownerMode)})`);
         }
       } catch (err) {
         console.error("[TestCall] Error handling control message:", err);
@@ -8417,23 +8432,33 @@ function testShownText(session, text) {
 }
 
 /**
- * SCRUM-619: a browser session's speech, in the format its page was told. The bubble's
- * own host (Sydney) failing once moves the rest of the session to the default host, in
- * that same format — paged once, so a silent bubble (whose read-backs could then never
- * be confirmed: nothing was heard) never goes unseen.
+ * SCRUM-619: a browser session's speech, in the format its page was told. A failure on the
+ * bubble's own host (Sydney) moves the rest of the session to the default host, in that
+ * same format: the request is said again there — and so is any other that was already on
+ * its way to Sydney. The session pages once, saying whether the default host saved it, so
+ * a silent bubble (whose read-backs could then never be confirmed: nothing was heard)
+ * never goes unseen.
  * @param {any} session
  * @param {string} text
  * @returns {Promise<Buffer>}
  */
 async function synthesizeForBrowser(session, text) {
+  const options = browserTtsOptions(session); // where THIS request goes
   try {
-    return await synthesizeSpeech(DEEPGRAM_API_KEY, text, browserTtsOptions(session));
+    return await synthesizeSpeech(DEEPGRAM_API_KEY, text, options);
   } catch (err) {
-    const host = session?.ttsHost;
-    if (!host) throw err;
+    if (!options.host) throw err;
+    const first = session.ttsHost === options.host; // the session's one page
     session.ttsHost = null;
-    console.error(`[ALERT:error] [OwnerWeb] Speech failed on ${host} — the rest of this session uses the default host (callSid=${session.callSid}, org=${session.organizationId}): ${err?.message || err}`);
-    return synthesizeSpeech(DEEPGRAM_API_KEY, text, browserTtsOptions(session));
+    const ids = `callSid=${session.callSid}, org=${session.organizationId}`;
+    try {
+      const audio = await synthesizeSpeech(DEEPGRAM_API_KEY, text, browserTtsOptions(session));
+      if (first) console.error(`[ALERT:error] [OwnerWeb] Speech failed on ${options.host} — the rest of this session uses the default host (${ids}): ${err?.message || err}`);
+      return audio;
+    } catch (retryErr) {
+      if (first) console.error(`[ALERT:error] [OwnerWeb] Speech failed on ${options.host} and on the default host — the owner hears nothing (${ids}): ${err?.message || err} / ${retryErr?.message || retryErr}`);
+      throw retryErr;
+    }
   }
 }
 

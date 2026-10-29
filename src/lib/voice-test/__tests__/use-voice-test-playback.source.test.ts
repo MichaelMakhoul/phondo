@@ -59,7 +59,7 @@ describe("useVoiceTest: the server's audio format and the page's volume", () => 
     expect(body).toMatch(/const format = parsePlaybackFormat\(msg\);/);
     expect(body).toMatch(/if \(format && formatCtx\) \{\s*playbackDecoderRef\.current = createPlaybackDecoder\(format, formatCtx\.sampleRate\);\s*\} else \{/);
     // A format it can't play ends the session where the owner sees it — never noise.
-    expect(body).toMatch(/\} else \{\s*(\/\/[^\n]*\n\s*)*console\.error\([^;]*\);\s*setError\("Your browser couldn't play your assistant's voice\. Please reload the page and try again\."\);\s*updateStatus\("error"\);\s*cleanup\(\);\s*\}/);
+    expect(body).toMatch(/\} else \{\s*(\/\/[^\n]*\n\s*)*console\.error\([^;]*\);\s*(\/\/[^\n]*\n\s*)*if \(ws\.readyState === WebSocket\.OPEN\) \{\s*ws\.send\(JSON\.stringify\(\{ type: "client_error", reason: "unplayable_audio_format" \}\)\);\s*\}\s*setError\("Your browser couldn't play your assistant's voice\. Please reload the page and try again\."\);\s*updateStatus\("error"\);\s*cleanup\(\);\s*\}/);
     expect(hookSource).toMatch(/playbackDecoderRef\.current = createMulawPlaybackDecoder\(ctx\.sampleRate\);/);
   });
 

@@ -188,6 +188,8 @@ describe("useVoiceTest, run for real: the server's audio format", () => {
     expect(ws.url).toContain("&playback=linear16");
     receive(json({ type: "audio_format", encoding: "opus", sampleRate: 48000 }));
     expect(console.error).toHaveBeenCalledWith("[VoiceTest] Unplayable audio format announced:", "opus", 48000);
+    // …and the voice server is told, so ops see it (the console reaches no one).
+    expect(ws.sent).toContainEqual(JSON.stringify({ type: "client_error", reason: "unplayable_audio_format" }));
     expect(ws.onmessage).toBeNull(); // the socket is let go: no more audio reaches a decoder
     expect(ctx.state).toBe("closed");
   });

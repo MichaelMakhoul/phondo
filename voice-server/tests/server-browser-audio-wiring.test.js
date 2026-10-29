@@ -47,11 +47,20 @@ describe("/ws/test: wideband only when the page asks, only for the owner's bubbl
     const rest = (classic + turn).replace(helper, "");
     assert.ok((rest.match(/await synthesizeForBrowser\(session, /g) || []).length >= 6);
     assert.equal((rest.match(/synthesizeSpeech\(/g) || []).length, 0, "no browser speech bypasses the session's format and host fallback");
-    assert.equal((helper.match(/synthesizeSpeech\(DEEPGRAM_API_KEY, text, browserTtsOptions\(session\)\)/g) || []).length, 2);
+    assert.match(helper, /const options = browserTtsOptions\(session\);[^\n]*\n\s*try \{\s*return await synthesizeSpeech\(DEEPGRAM_API_KEY, text, options\);/);
+    assert.equal((helper.match(/synthesizeSpeech\(DEEPGRAM_API_KEY, text, browserTtsOptions\(session\)\)/g) || []).length, 1, "the retry, in the format the page was told");
   });
 
   it("the format is announced in exactly one place — the classic owner block (Gemini and customer audio stay mulaw)", () => {
     assert.equal((handler.match(/audioFormatMessage\(/g) || []).length, 1);
+  });
+
+  it("a page that couldn't play the announced format is reported once — fixed text, nothing the page sent — and the session is stored as failed", () => {
+    assert.match(handler, /const pagePlaysWideband = [^\n]*\n\s*let pageReportedUnplayable = false;/);
+    assert.match(
+      handler,
+      /\} else if \(msg\.type === "client_error" && msg\.reason === "unplayable_audio_format" && !pageReportedUnplayable\) \{\s*(\/\/[^\n]*\n\s*)*pageReportedUnplayable = true;\s*if \(session\) session\.callFailed = true;\s*console\.error\(`\[ALERT:error\] \[TestCall\] The page couldn't play the announced audio format \(callSid=\$\{session\?\.callSid\}, org=\$\{organizationId\}, owner=\$\{Boolean\(session\?\.ownerMode\)\}\)`\);\s*\}/
+    );
   });
 
   it("the goodbye waits for its audio at the session's own rate", () => {
@@ -164,11 +173,29 @@ describe("synthesizeForBrowser: the bubble's host failing once moves the session
     assert.equal(errors.length, 1, "paged once");
   });
 
-  it("the default host failing too: the error goes to the caller (the turn's own handling), no second page", async () => {
+  it("the default host failing too: the error goes to the caller (the turn's own handling), and the one page says the owner hears nothing", async () => {
     const errors = [];
-    const speak = makeSynthesizeForBrowser(async () => { throw new Error("Deepgram TTS error 500"); }, errors);
+    const speak = makeSynthesizeForBrowser(async (key, text, options) => { throw new Error(options.host ? "Deepgram TTS error 503" : "Deepgram TTS error 500"); }, errors);
     await assert.rejects(speak(wideband(), "Hi."), /Deepgram TTS error 500/);
     assert.equal(errors.length, 1);
+    assert.match(errors[0], /^\[ALERT:error\] \[OwnerWeb\] Speech failed on api\.au\.deepgram\.com and on the default host — the owner hears nothing \(callSid=web_owner_1, org=org-1\): Deepgram TTS error 503 \/ Deepgram TTS error 500$/);
+  });
+
+  it("two requests already on their way to Sydney when it fails: both are said again on the default host, one page", async () => {
+    const calls = [];
+    const errors = [];
+    const speak = makeSynthesizeForBrowser(async (key, text, options) => {
+      calls.push([text, options.host || "default"]);
+      if (!options.host) return Buffer.alloc(text.length);
+      await new Promise((r) => setTimeout(r, text === "A." ? 5 : 15)); // A fails first, B while A is retried
+      throw new Error("Deepgram TTS error 504: timeout");
+    }, errors);
+    const s = wideband();
+    const [a, b] = await Promise.all([speak(s, "A."), speak(s, "B, longer.")]);
+    assert.equal(a.length, 2);
+    assert.equal(b.length, 10, "the second sentence isn't lost");
+    assert.deepEqual(calls.filter((c) => c[1] === "default").map((c) => c[0]).sort(), ["A.", "B, longer."]);
+    assert.equal(errors.length, 1, "one page for the session");
   });
 
   it("a session with no host of its own (the phone's format) isn't retried", async () => {
@@ -183,7 +210,7 @@ describe("synthesizeForBrowser: the bubble's host failing once moves the session
 
 describe("startHoldAudio: the hold loop in the browser's format (run for real)", () => {
   const code = sliceOf("function startHoldAudio(session, ws, mode) {", "\n}\n") + "\n}\n";
-  function run(session, mode) {
+  function run(session, mode, errors = []) {
     const sent = [];
     const chunked = [];
     const ws = { readyState: 1, send: (x) => sent.push(x) };
@@ -194,7 +221,7 @@ describe("startHoldAudio: the hold loop in the browser's format (run for real)",
       setTimeout: () => 0, // one round of the loop is enough
       clearTimeout: () => {},
       sendClear: () => true, // stop() flushes a phone call's queued hold audio
-      console: { log() {}, warn() {}, error() {} },
+      console: { log() {}, warn() {}, error: (...a) => errors.push(a.join(" ")) },
     };
     const params = Object.keys(scope);
     const { startHoldAudio } = new Function(...params, `${code}\nreturn { startHoldAudio };`)(...params.map((p) => scope[p]));
@@ -211,6 +238,14 @@ describe("startHoldAudio: the hold loop in the browser's format (run for real)",
   it("a browser that wasn't told wideband: the phone's mulaw, as before", () => {
     const { sent } = run({ holdPreset: "neutral" }, "browser");
     assert.equal(sent[0].length, 16_000);
+  });
+
+  it("hold audio that can't be made never takes the turn down: no sound, one alert, a stop that works", () => {
+    const errors = [];
+    const { sent } = run({ holdPreset: "neutral", browserAudio: { encoding: "linear16", sampleRate: 24000.5 }, callSid: "web_owner_1" }, "browser", errors);
+    assert.equal(sent.length, 0);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /^\[ALERT:error\] \[HoldAudio\] No hold audio for this turn \(callSid=web_owner_1\): generateHoldAudio: linear16 needs a whole-number sampleRate$/);
   });
 
   it("a phone call is always mulaw, whatever is on the session", () => {

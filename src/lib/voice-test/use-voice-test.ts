@@ -289,6 +289,10 @@ export function useVoiceTest({ assistantId, tokenUrl, tokenBody, trackingSource 
             } else {
               // Never play audio in a format we can't decode: it would come out as noise.
               console.error("[VoiceTest] Unplayable audio format announced:", msg?.encoding, msg?.sampleRate);
+              // This console reaches no one: the voice server's alerts reach ops.
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "client_error", reason: "unplayable_audio_format" }));
+              }
               setError("Your browser couldn't play your assistant's voice. Please reload the page and try again.");
               updateStatus("error");
               cleanup();
