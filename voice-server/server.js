@@ -5431,7 +5431,7 @@ function startHoldAudio(session, ws, mode) {
   try {
     holdBuf = generateHoldAudio(2000, session.holdPreset || "neutral", mode === "browser" ? session.browserAudio : undefined);
   } catch (err) {
-    console.error(`[ALERT:error] [HoldAudio] No hold audio for this turn (callSid=${session.callSid}): ${err?.message || err}`);
+    console.error(`[ALERT:error] [HoldAudio] No hold audio for this turn (callSid=${session.callSid}): ${err?.message || err}`, err);
     return { stop: () => {} };
   }
   if (!holdBuf) return { stop: () => {} }; // silent preset
@@ -8130,12 +8130,13 @@ testWss.on("connection", (ws, req) => {
             ws.send(JSON.stringify({ type: "ended", reason: "user-ended" }));
           }
           ws.close(1000, "User ended call");
-        } else if (msg.type === "client_error" && msg.reason === "unplayable_audio_format" && !pageReportedUnplayable) {
+        } else if (msg.type === "client_error" && msg.reason === "unplayable_audio_format" && !pageReportedUnplayable && session.browserAudio) {
           // SCRUM-619: the page was told an audio format it can't play and ended the session
           // (the owner saw why). Its console reaches no one, so this does; nothing the page
-          // sent is logged.
+          // sent is logged. Only a session that was told a format can report one, and a real
+          // page reports it before any turn: a session that already ran turns keeps its status.
           pageReportedUnplayable = true;
-          if (session) session.callFailed = true;
+          if (!session.webTurnSeq) session.callFailed = true;
           console.error(`[ALERT:error] [TestCall] The page couldn't play the announced audio format (callSid=${session?.callSid}, org=${organizationId}, owner=${Boolean(session?.ownerMode)})`);
         }
       } catch (err) {

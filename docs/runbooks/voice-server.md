@@ -59,8 +59,9 @@ The process crashed (uncaughtException/unhandledRejection) and Fly restarted it.
   A burst across sessions means Deepgram's AU region is down: check status.deepgram.com.
   The bubble still works, from the US host.
 - `[OwnerWeb] Speech failed on … and on the default host — the owner hears nothing`:
-  Deepgram TTS is down or refusing the key. The owner sees replies as text but hears
-  nothing, and no change can be confirmed. Check the Deepgram key and credit.
+  Deepgram TTS is down or refusing the key. The owner sees most replies as text (not the
+  greeting or the error line) but hears nothing, and no change can be confirmed. Check
+  the Deepgram key and credit.
 - `[TestCall] The page couldn't play the announced audio format`: the page and the voice
   server disagree on the bubble's audio format, which means a deploy skew or a bug. The
   session is stored as failed. Compare the deployed voice-server commit with the live
@@ -574,8 +575,8 @@ Watch for:
   default `api.deepgram.com`, so a call that degrades touches that endpoint too. Claude
   receives the conversation as text only, never audio.
 - The owner assistant bubble (SCRUM-619) speaks through `FAST_DEEPGRAM_HOST` too, as
-  wideband 24 kHz PCM. If that host fails, the rest of that session uses the default
-  `api.deepgram.com`.
+  wideband 24 kHz PCM, when its page asks for it (an AudioContext at 24 kHz or more).
+  Otherwise, or once that host fails, it uses the default `api.deepgram.com`.
 - Do not describe this path as keeping call data inside Australia. Use the approved
   data-residency wording: storage at rest in Sydney, AI processing that may occur outside
   Australia, providers disclosed.

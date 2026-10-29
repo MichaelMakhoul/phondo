@@ -55,11 +55,11 @@ describe("/ws/test: wideband only when the page asks, only for the owner's bubbl
     assert.equal((handler.match(/audioFormatMessage\(/g) || []).length, 1);
   });
 
-  it("a page that couldn't play the announced format is reported once — fixed text, nothing the page sent — and the session is stored as failed", () => {
+  it("a page that couldn't play the announced format is reported once — fixed text, nothing the page sent; only a session told a format can report, and only one that ran no turn is stored as failed", () => {
     assert.match(handler, /const pagePlaysWideband = [^\n]*\n\s*let pageReportedUnplayable = false;/);
     assert.match(
       handler,
-      /\} else if \(msg\.type === "client_error" && msg\.reason === "unplayable_audio_format" && !pageReportedUnplayable\) \{\s*(\/\/[^\n]*\n\s*)*pageReportedUnplayable = true;\s*if \(session\) session\.callFailed = true;\s*console\.error\(`\[ALERT:error\] \[TestCall\] The page couldn't play the announced audio format \(callSid=\$\{session\?\.callSid\}, org=\$\{organizationId\}, owner=\$\{Boolean\(session\?\.ownerMode\)\}\)`\);\s*\}/
+      /\} else if \(msg\.type === "client_error" && msg\.reason === "unplayable_audio_format" && !pageReportedUnplayable && session\.browserAudio\) \{\s*(\/\/[^\n]*\n\s*)*pageReportedUnplayable = true;\s*if \(!session\.webTurnSeq\) session\.callFailed = true;\s*console\.error\(`\[ALERT:error\] \[TestCall\] The page couldn't play the announced audio format \(callSid=\$\{session\?\.callSid\}, org=\$\{organizationId\}, owner=\$\{Boolean\(session\?\.ownerMode\)\}\)`\);\s*\}/
     );
   });
 
@@ -189,7 +189,7 @@ describe("synthesizeForBrowser: the bubble's host failing once moves the session
     const speak = makeSynthesizeForBrowser(async (key, text, options) => {
       calls.push([text, options.host || "default"]);
       if (!options.host) return Buffer.alloc(text.length);
-      await new Promise((r) => setTimeout(r, text === "A." ? 5 : 15)); // A fails first, B while A is retried
+      await new Promise((r) => setTimeout(r, text === "A." ? 5 : 15)); // both are on their way to Sydney; A fails first, then B
       throw new Error("Deepgram TTS error 504: timeout");
     }, errors);
     const s = wideband();
@@ -198,6 +198,19 @@ describe("synthesizeForBrowser: the bubble's host failing once moves the session
     assert.equal(b.length, 10, "the second sentence isn't lost");
     assert.deepEqual(calls.filter((c) => c[1] === "default").map((c) => c[0]).sort(), ["A.", "B, longer."]);
     assert.equal(errors.length, 1, "one page for the session");
+  });
+
+  it("two requests on their way to Sydney, and the default host down too: both fail to their callers, one page saying the owner hears nothing", async () => {
+    const errors = [];
+    const speak = makeSynthesizeForBrowser(async (key, text, options) => {
+      await new Promise((r) => setTimeout(r, text === "A." ? 5 : 15));
+      throw new Error(options.host ? "Deepgram TTS error 504" : "Deepgram TTS error 500");
+    }, errors);
+    const s = wideband();
+    const results = await Promise.allSettled([speak(s, "A."), speak(s, "B.")]);
+    assert.deepEqual(results.map((r) => r.status), ["rejected", "rejected"]);
+    assert.equal(errors.length, 1, "one page for the session");
+    assert.match(errors[0], /and on the default host — the owner hears nothing/);
   });
 
   it("a session with no host of its own (the phone's format) isn't retried", async () => {
@@ -247,7 +260,7 @@ describe("startHoldAudio: the hold loop in the browser's format (run for real)",
     const { sent } = run({ holdPreset: "neutral", browserAudio: { encoding: "linear16", sampleRate: 24000.5 }, callSid: "web_owner_1" }, "browser", errors);
     assert.equal(sent.length, 0);
     assert.equal(errors.length, 1);
-    assert.match(errors[0], /^\[ALERT:error\] \[HoldAudio\] No hold audio for this turn \(callSid=web_owner_1\): generateHoldAudio: linear16 needs a whole-number sampleRate$/);
+    assert.match(errors[0], /^\[ALERT:error\] \[HoldAudio\] No hold audio for this turn \(callSid=web_owner_1\): generateHoldAudio: linear16 needs a whole-number sampleRate /);
   });
 
   it("a phone call is always mulaw, whatever is on the session", () => {
