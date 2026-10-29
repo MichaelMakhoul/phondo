@@ -5,12 +5,14 @@ import {
   DEFAULT_PANEL_STATE,
   PANEL_STATE_STORAGE_KEY,
   TRANSCRIPT_FOLLOW_THRESHOLD_PX,
+  VOLUME_STORAGE_KEY,
   describeBubbleState,
   getBrowserStorage,
   isNearBottom,
   readPanelState,
+  readVolume,
   shouldShowFloatingBubble,
-  writePanelState, isSessionLive } from "../bubble-state";
+  writePanelState, writeVolume, isSessionLive } from "../bubble-state";
 
 // SCRUM-597: the always-on bubble's pure logic. The components that use it can't
 // run in the repo's node vitest env (no DOM, JSX left as "preserve"); their wiring
@@ -93,6 +95,56 @@ describe("writePanelState", () => {
 
   it("reports false when there is no storage", () => {
     expect(writePanelState(null, "open")).toBe(false);
+  });
+});
+
+// SCRUM-619: the assistant's volume on this device, remembered like the panel state.
+describe("readVolume", () => {
+  it("reads its own namespaced key", () => {
+    const storage = memoryStorage({ [VOLUME_STORAGE_KEY]: "0.4" });
+    expect(readVolume(storage)).toBe(0.4);
+    expect(VOLUME_STORAGE_KEY).toBe("phondo:owner-assistant-volume");
+    expect(storage.getItem).toHaveBeenCalledWith(VOLUME_STORAGE_KEY);
+  });
+
+  it.each([
+    ["0", 0],
+    ["1", 1],
+    ["0.25", 0.25],
+    ["7", 1],
+    ["-3", 0],
+  ])("returns %j as %d (kept between 0 and 1)", (stored, volume) => {
+    expect(readVolume(memoryStorage({ [VOLUME_STORAGE_KEY]: stored }))).toBe(volume);
+  });
+
+  it.each(["", "  ", "loud", "NaN", "Infinity", "{}"])("has nothing for a value it didn't write: %j", (value) => {
+    expect(readVolume(memoryStorage({ [VOLUME_STORAGE_KEY]: value }))).toBeNull();
+  });
+
+  it("has nothing when nothing is stored, there is no storage, or reading it throws", () => {
+    expect(readVolume(memoryStorage())).toBeNull();
+    expect(readVolume(null)).toBeNull();
+    expect(readVolume({ getItem: blocked })).toBeNull();
+  });
+});
+
+describe("writeVolume", () => {
+  it("stores the volume, kept between 0 and 1, and round-trips through readVolume", () => {
+    const storage = memoryStorage();
+    expect(writeVolume(storage, 0.35)).toBe(true);
+    expect(storage.setItem).toHaveBeenCalledWith(VOLUME_STORAGE_KEY, "0.35");
+    expect(readVolume(storage)).toBe(0.35);
+    writeVolume(storage, 2);
+    expect(storage.setItem).toHaveBeenLastCalledWith(VOLUME_STORAGE_KEY, "1");
+    expect(readVolume(storage)).toBe(1);
+  });
+
+  it("reports false, without throwing, when storage refuses the write or there is none", () => {
+    const refuse = () => {
+      throw new DOMException("Quota exceeded", "QuotaExceededError");
+    };
+    expect(writeVolume({ setItem: refuse }, 0.5)).toBe(false);
+    expect(writeVolume(null, 0.5)).toBe(false);
   });
 });
 

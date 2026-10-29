@@ -79,13 +79,18 @@ const INDUSTRY_DEFAULTS = {
  * Brown noise: integrate white noise — each sample is prev + small random delta.
  * Sounds like a soft, deep hiss / distant waterfall.
  */
-function generateBrownNoise(count, volume) {
+function generateBrownNoise(count, volume, rate = SAMPLE_RATE) {
   const samples = new Float64Array(count);
   let last = 0;
+  // SCRUM-619: the step and decay are per sample, so a faster rate would put more of the
+  // hiss in the voice's band (4.5 dB at 24 kHz): scaled to sound as at 8 kHz.
+  const ratio = SAMPLE_RATE / rate;
+  const step = 0.02 * Math.sqrt(ratio);
+  const decay = 0.998 ** ratio;
 
   for (let i = 0; i < count; i++) {
-    const white = (Math.random() * 2 - 1) * 0.02;
-    last = (last + white) * 0.998; // slight decay to prevent drift
+    const white = (Math.random() * 2 - 1) * step;
+    last = (last + white) * decay; // slight decay to prevent drift
     // Clamp
     if (last > 1) last = 1;
     if (last < -1) last = -1;
@@ -134,34 +139,41 @@ function generatePinkNoise(count, volume) {
 }
 
 /**
- * Generate a hold audio buffer (mulaw 8kHz).
+ * Generate a hold audio buffer (mulaw 8kHz, or a browser's wideband PCM — SCRUM-619).
  *
  * @param {number} durationMs - How long the buffer should be
  * @param {string} [preset="neutral"] - Preset name or industry name
- * @returns {Buffer|null} mulaw audio buffer, or null if preset is "silent"
+ * @param {{ encoding: string, sampleRate: number } | null} [format] - linear16: 16-bit little-endian PCM at its rate; anything else: mulaw 8 kHz
+ * @returns {Buffer|null} the audio buffer, or null if preset is "silent"
  */
-function generateHoldAudio(durationMs, preset = "neutral") {
+function generateHoldAudio(durationMs, preset = "neutral", format) {
   const resolvedPreset = PRESETS[preset] !== undefined ? preset : (INDUSTRY_DEFAULTS[preset] || "neutral");
   const config = PRESETS[resolvedPreset];
   if (!config) return null;
 
-  const totalSamples = Math.floor((durationMs / 1000) * SAMPLE_RATE);
-  const buf = Buffer.alloc(totalSamples);
+  // SCRUM-619: a browser session that was told wideband plays 16-bit PCM at its rate
+  // (lib/browser-audio.js); everything else gets the phone's mulaw.
+  const linear16 = format?.encoding === "linear16";
+  // PCM at a wrong rate would play too fast or too slow: never guess one.
+  if (linear16 && !Number.isInteger(format.sampleRate)) throw new Error("generateHoldAudio: linear16 needs a whole-number sampleRate");
+  const rate = linear16 ? format.sampleRate : SAMPLE_RATE;
+  const totalSamples = Math.floor((durationMs / 1000) * rate);
+  const buf = Buffer.alloc(linear16 ? totalSamples * 2 : totalSamples);
 
   // Generate noise base
   const noise = config.noiseType === "pink"
     ? generatePinkNoise(totalSamples, config.volume)
-    : generateBrownNoise(totalSamples, config.volume);
+    : generateBrownNoise(totalSamples, config.volume, rate);
 
   // Apply fade-in over first 50ms to avoid click
-  const fadeInSamples = Math.floor(0.05 * SAMPLE_RATE);
+  const fadeInSamples = Math.floor(0.05 * rate);
 
   for (let i = 0; i < totalSamples; i++) {
     let sample = noise[i];
 
     // Add warmth tone (very subtle low-frequency sine)
     if (config.warmthHz > 0 && config.warmthVol > 0) {
-      sample += config.warmthVol * Math.sin(2 * Math.PI * config.warmthHz * i / SAMPLE_RATE);
+      sample += config.warmthVol * Math.sin(2 * Math.PI * config.warmthHz * i / rate);
     }
 
     // Fade in
@@ -169,9 +181,10 @@ function generateHoldAudio(durationMs, preset = "neutral") {
       sample *= i / fadeInSamples;
     }
 
-    // Convert to 16-bit PCM range and encode to mulaw
+    // Convert to 16-bit PCM range and encode to mulaw (or keep it, little-endian)
     const pcm = Math.max(-32767, Math.min(32767, Math.floor(sample * 32767)));
-    buf[i] = linearToMulaw(pcm);
+    if (linear16) buf.writeInt16LE(pcm, i * 2);
+    else buf[i] = linearToMulaw(pcm);
   }
 
   return buf;

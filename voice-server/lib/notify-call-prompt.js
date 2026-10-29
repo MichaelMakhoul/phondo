@@ -18,6 +18,7 @@
  * find_new_time's window is structured (dates and a time of day), worded here.
  */
 const { CALL_OUTCOMES, isNotifyPurpose } = require("./customer-call");
+const { spokenAuNumber } = require("./spoken-phone"); // SCRUM-619: one AU formatter, shared with the receptionist
 
 const DEFAULT_TZ = "Australia/Sydney";
 const NAME_MAX = 60;
@@ -79,17 +80,6 @@ function addressNameOf(fullName) {
   return first;
 }
 
-/**
- * "02 5701 5064" / "0412 345 678": an AU number the way people say it, or null.
- * @param {unknown} e164
- * @returns {string|null}
- */
-function spokenAuNumber(e164) {
-  const m = typeof e164 === "string" ? /^\+61([23478])(\d{8})$/.exec(e164) : null;
-  if (!m) return null;
-  const [, lead, rest] = m;
-  return lead === "4" ? `04${rest.slice(0, 2)} ${rest.slice(2, 5)} ${rest.slice(5)}` : `0${lead} ${rest.slice(0, 4)} ${rest.slice(4)}`;
-}
 
 /** "on 02 5701 5064", or "on this number" when there's no number to say. */
 function backOn(/** @type {unknown} */ callbackNumber) {

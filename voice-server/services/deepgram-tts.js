@@ -11,8 +11,11 @@ const DEFAULT_HOST = "api.deepgram.com";
 /**
  * @param {string} apiKey
  * @param {string} text
- * @param {{ voice?: string, host?: string }} [options] - host: the Deepgram API host, default api.deepgram.com (SCRUM-594: the fast path passes the AU host)
- * @returns {Promise<Buffer>} Raw mulaw audio bytes, at line level (AURA_GAIN_DB)
+ * @param {{ voice?: string, host?: string, encoding?: "mulaw" | "linear16", sampleRate?: number, boost?: boolean }} [options] -
+ *   host: the Deepgram API host, default api.deepgram.com (SCRUM-594: the fast path passes the AU host);
+ *   encoding/sampleRate: mulaw 8 kHz by default (the phone's), linear16 for a browser (SCRUM-619);
+ *   boost: the phone's line-level gain (AURA_GAIN_DB), mulaw only, on by default
+ * @returns {Promise<Buffer>} Raw audio bytes — mulaw at line level by default
  */
 async function synthesizeSpeech(apiKey, text, options) {
   if (!text || !text.trim()) {
@@ -21,12 +24,18 @@ async function synthesizeSpeech(apiKey, text, options) {
 
   const voice = options?.voice || DEFAULT_VOICE;
   const host = options?.host || DEFAULT_HOST;
+  const encoding = options?.encoding === "linear16" ? "linear16" : "mulaw";
+  // PCM at a wrong rate would play too fast or too slow: never guess one.
+  if (encoding === "linear16" && !Number.isInteger(options?.sampleRate)) {
+    throw new Error("synthesizeSpeech: linear16 needs a whole-number sampleRate");
+  }
+  const sampleRate = encoding === "linear16" ? Number(options?.sampleRate) : 8000;
 
   const url =
     `https://${host}/v1/speak?` +
     `model=${voice}` +
-    "&encoding=mulaw" +
-    "&sample_rate=8000" +
+    `&encoding=${encoding}` +
+    `&sample_rate=${sampleRate}` +
     "&container=none" +
     "&mip_opt_out=true"; // SCRUM-595: no training on what the AI says to callers
 
@@ -47,7 +56,9 @@ async function synthesizeSpeech(apiKey, text, options) {
 
   const arrayBuffer = await res.arrayBuffer();
   // SCRUM-594 (phone test F7): Aura comes out quieter than line level (lib/aura-gain.js);
-  // phone test F9: by how much depends on the voice.
+  // phone test F9: by how much depends on the voice. SCRUM-619: that's the phone's — a
+  // browser plays Aura at its own level (the gain table is mulaw's anyway).
+  if (encoding !== "mulaw" || options?.boost === false) return Buffer.from(arrayBuffer);
   return boostAura(Buffer.from(arrayBuffer), voice);
 }
 

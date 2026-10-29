@@ -206,6 +206,7 @@ const { runOwnerToolCall, buildOwnerCallSummary, settleOwnerToolRuns, noteCancel
 const { noteAssistantSpeech, noteAssistantTurnEnd, noteOwnerSpeech } = require("../lib/owner-turn-stamps");
 const { forwardingFallbackEligible } = require("../lib/transfer-eligibility");
 const { maskPhone } = require("../lib/mask-phone");
+const { spokenPhoneNumber } = require("../lib/spoken-phone"); // SCRUM-619
 const { resolveCallPipeline } = require("../lib/pipeline-routing");
 const { checkEndCallGuard } = require("../lib/end-call-guard");
 const toolExecutor = require("../services/tool-executor");
@@ -278,9 +279,10 @@ function fakeSupabase(queries) {
 }
 
 /** start event: prompt → schedule snapshot → (Gemini) prompt assembly, all real server.js text. */
-async function assemblePrompts({ owner, ownerAuth, timezone }) {
+async function assemblePrompts({ owner, ownerAuth, timezone, tweakSession }) {
   const context = makeContext({ timezone });
   const session = makeSession({ owner, ownerAuth });
+  if (tweakSession) tweakSession(session);
   const lines = [];
   const calls = [];
   const historyQueries = [];
@@ -294,6 +296,7 @@ async function assemblePrompts({ owner, ownerAuth, timezone }) {
       buildSystemPrompt: (...a) => { calls.push(["buildSystemPrompt", ...a]); return "CUSTOMER PROMPT"; },
       buildOwnerPrompt,
       maskPhone,
+      spokenPhoneNumber, // SCRUM-619: the caller's number as it's said
       require: (id) => { assert.equal(id, "./lib/supabase"); return { getSupabase: () => fakeSupabase(historyQueries) }; },
       buildReturningCallerHint: () => "\nRETURNING CALLER HINT",
       console: recordingConsole(lines),
@@ -444,6 +447,29 @@ describe("SCRUM-587: the assembled owner prompt, run for real", () => {
       assert.deepEqual(r.allTools.map((t) => t.function.name), ["book_appointment"]);
       assert.deepEqual(r.calls.find((c) => c[0] === "buildLLMOptions").slice(2), [{ includeTransfer: true }]);
     }
+  });
+});
+
+describe("SCRUM-619: the caller's number as it's said, run for real", () => {
+  it("a customer call: the prompt gives the caller's number the local way to say it back (the demo line read out +61)", async () => {
+    const r = await assemblePrompts({ owner: false });
+    assert.ok(
+      r.classicPrompt.includes("Do NOT ask them to repeat it. When you say it out loud, say it the local way: 0400 000 001; in a tool call, pass it as +61400000001."),
+      r.classicPrompt.slice(0, 400)
+    );
+  });
+
+  it("with PII redaction on, the number stays masked and no spoken form is given", async () => {
+    const r = await assemblePrompts({ owner: false, tweakSession: (s) => { s.piiRedactionEnabled = true; } });
+    const context = r.classicPrompt.slice(0, r.classicPrompt.indexOf("RETURNING CALLER HINT"));
+    assert.ok(context.includes("The caller's phone number is "), context);
+    assert.ok(!context.includes("+61400000001") && !context.includes("0400 000 001") && !context.includes("say it the local way") && !context.includes("in a tool call"), context);
+  });
+
+  it("a number with no local form (not AU or US) is given as it is, with no spoken form", async () => {
+    const r = await assemblePrompts({ owner: false, tweakSession: (s) => { s.callerPhone = "+442071234567"; } });
+    assert.ok(r.classicPrompt.includes("The caller's phone number is +442071234567. If they say"), r.classicPrompt.slice(0, 400));
+    assert.ok(!r.classicPrompt.includes("say it the local way"), r.classicPrompt.slice(0, 400));
   });
 });
 

@@ -131,6 +131,10 @@ class CallSession {
     this.calendarEnabled = false;
     this.transferRules = [];
     this.deepgramVoice = null;
+    /** @type {string | null} SCRUM-619: a browser session's own Deepgram host (the bubble's Sydney host) */
+    this.ttsHost = null;
+    /** @type {Readonly<import("./lib/browser-audio").BrowserAudioFormat> | null} SCRUM-619: the wideband format a browser session was told, once told */
+    this.browserAudio = null;
     this.holdPreset = "neutral";
     this.language = "en";
     this.callFailed = false;
