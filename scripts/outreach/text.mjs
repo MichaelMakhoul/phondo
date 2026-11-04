@@ -88,27 +88,36 @@ const VISITS = new Set(["by", "in", "over", "round", "around", "past"]); // "sto
 const WHO = "(me|us|my number|our number|this number|the number)";
 const LIST = "( (the |your |this |ur )?(mailing )?(list|contacts|database|system|records))";
 // A request to be taken off, at the end of a clause: "Remove me, I'm not interested",
-// "Sorry, can you please take us off your mailing list?", "Do me a favour and lose my number".
+// "Sorry, can you please take us off your mailing list?", "Do me a favour and lose my number",
+// "I'd like to be removed from your list".
 const REQUEST = new RegExp(
   `(^| )(${[
     `(remove|delete) ${WHO}( (off|from)${LIST}?)?`,
-    `take ${WHO} off${LIST}?`,
+    `(take|get) ${WHO} off${LIST}?`,
     `take ${WHO} from${LIST}`,
     `(remove|delete|take) (off|from)${LIST}`,
+    `(be|have ${WHO}) ((removed|deleted)( (off|from)${LIST}?)?|taken off${LIST}?)`,
     "unsubscribe (me|us)",
     "opt (me|us) out( of (this|these|it|them|(these |your |the )?(texts|txts|messages|msgs)))?",
     "(lose|delete|remove) (my|our|this|the) number",
   ].join("|")})$`
 );
-// Asked as a question, only "can you (please) ..." is a request, not "why would you remove me?".
-const POLITE = /^((can|could|will|would) (you|u)( (please|pls|plz|just))*)?$/;
+// "Can you please ...", "Could I be ...": asked like this, a request is still a request.
+const POLITE = /(^| )((can|could|will|would) (you|u)|(can|could|may) (i|we))( (please|pls|plz|just))*$/;
+const WH = new Set(["why", "how", "when", "what", "where", "who", "which"]);
+const CONDITIONS = new Set(["if", "when", "unless", "once", "until"]);
+const SUBJECTS = new Set(["i", "we", "they", "he", "she", "it"]); // "I lose the number" describes, it doesn't ask
+// A clause opening with one of these is part of the question: "Does the trial stop, or does it roll over?"
+const INTERROGATIVES = new Set([
+  ...WH, "does", "do", "did", "is", "are", "was", "were", "will", "would", "can", "could", "should", "may", "has", "have", "whats", "hows",
+]);
 const NEGATIONS = new Set(["non", "cant", "cannot", "dont", "wont", "never", "doesnt", "didnt", "wouldnt", "couldnt", "isnt", "not"]);
 const PHRASE_REPLIES = new Set(["no", "nope", "nah", "nah mate", "no mate", "no more", "blocked", "reported"]);
 const PHRASES = new RegExp(
   [
     "unsub\\w*",
     "opt ?((me|us) )?out",
-    "remove|delete|take (\\w+ ){1,2}off|lose (my|our|this|the) number",
+    "remov(e|ed)|delet(e|ed)|take (\\w+ ){1,2}off|taken off|get (me|us|my number|our number) off|lose (my|our|this|the) number|opted out",
     "(dont|do not|never) (call (or|and) )?(text|txt|sms|message|msg|contact)",
     "(dont|do not) want (\\w+ )?(texts|txts|messages|msgs)",
     "no more (texts|txts|messages|msgs)",
@@ -138,15 +147,33 @@ function trimCourtesies(words) {
   return trimmed;
 }
 
-/** Does this clause end in a request to be taken off, not negated ("don't take me off the list")? */
-function requestIn(plain, question) {
-  const match = REQUEST.exec(plain);
+/** Is `before` (the words ahead of a request) a polite ask: "can you please", "sorry, could I"? */
+function politeAsk(before) {
+  if (!before.length) return true;
+  const text = before.join(" ");
+  const match = POLITE.exec(text);
   if (!match) return false;
-  const before = plain.slice(0, match.index).trim();
-  return question ? POLITE.test(before) : !before.split(" ").some((word) => NEGATIONS.has(word));
+  return !text // not "why would you remove me?"
+    .slice(0, match.index)
+    .split(" ")
+    .some((word) => WH.has(word) || NEGATIONS.has(word) || CONDITIONS.has(word));
 }
 
-/** Does this one sentence plainly ask us to stop? It's judged a clause at a time ("Stop, who is this?"). */
+/**
+ * Does this clause end in a request to be taken off? Asked (`asking`), it has to be a
+ * polite ask. Told, it mustn't be negated ("don't take me off the list"), conditional
+ * ("if it's no good just remove me") or a description ("I lose the number").
+ */
+function requestIn(plain, asking) {
+  const match = REQUEST.exec(plain);
+  if (!match) return false;
+  const before = plain.slice(0, match.index).trim().split(" ").filter(Boolean);
+  if (politeAsk(before)) return true;
+  if (asking) return false;
+  return !before.some((word) => NEGATIONS.has(word) || CONDITIONS.has(word)) && !SUBJECTS.has(before.at(-1));
+}
+
+/** Does this one sentence plainly ask us to stop? It's judged a clause at a time ("Stop it, who is this?"). */
 function asksToStop(sentence) {
   const question = /\?\W*$/.test(sentence);
   const clauses = sentence
@@ -155,16 +182,18 @@ function asksToStop(sentence) {
     .filter((words) => words.length);
   return clauses.some((words, i) => {
     const plain = words.join(" ");
-    if (requestIn(plain, question)) return true;
+    // In a question, the clause it ends on and any clause opening with a question word ask
+    // something ("Does the trial stop, or does it roll over?", "Remove? What do you mean?");
+    // the rest of it tells ("Stop it, who is this?").
+    const asking = question && (i === clauses.length - 1 || INTERROGATIVES.has(words[0]));
+    if (requestIn(plain, asking)) return true;
+    // Asked, only a bare "Stop?" or "Can you please stop?" asks us to stop.
+    if (asking) return plain === "stop" || /\b(you|u)( (please|pls|just))? stop$/.test(plain);
+    // Not "can't stop", "non stop", "stop by on Tuesday" (but "stop in future" is a stop) or "stop me if I'm wrong".
+    const visit = (j) => VISITS.has(words[j + 1]) && !(words[j + 1] === "in" && words[j + 2] === "future");
+    const idiom = (j) => words[j + 1] === "me" && words[j + 2] === "if";
+    const stopAt = (j) => words[j] === "stop" && !NEGATIONS.has(words[j - 1]) && !visit(j) && !idiom(j);
     const bare = KEYWORD_FIRST_WORDS.has(plain) || KEYWORD_REPLIES.has(plain) || /^unsub\w*$/.test(plain);
-    if (question) {
-      // A question asks about something ("When does the trial stop, or does it roll over?",
-      // "Remove? What do you mean?"). But a bare keyword before it ("Stop, who is this?"),
-      // a bare "Stop?" and "Can you please stop?" ask us to stop.
-      return (bare && (i < clauses.length - 1 || plain === "stop")) || /\b(you|u)( (please|pls|just))? stop$/.test(plain);
-    }
-    // Not "can't stop", "non stop" or "stop by on Tuesday".
-    const stopAt = (j) => words[j] === "stop" && !NEGATIONS.has(words[j - 1]) && !VISITS.has(words[j + 1]);
     if (bare || words[0].startsWith("unsub") || (KEYWORD_FIRST_WORDS.has(words[0]) && (words[0] !== "stop" || stopAt(0)))) return true;
     return stopAt(words.length - 1) || (words.length <= 3 && words.some((_, j) => stopAt(j))); // "Who is this? STOP", "pls stop"
   });
