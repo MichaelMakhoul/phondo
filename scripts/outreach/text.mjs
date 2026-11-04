@@ -70,41 +70,72 @@ const TYPOGRAPHY = [
 ];
 
 // How people say stop. A KEYWORD reply is final: they're never texted again and go
-// on the do-not-call list. That's STOP, UNSUBSCRIBE, REMOVE and the like (with or
-// without a "please"), "stop texting me", "take us off your list", "remove me",
-// "stop" as the first or last word ("Who is this? STOP", "Can you please stop?"),
-// or a short reply with "stop" in it. A PHRASE blocks texts too, but --not-opt-out
-// can overrule it, on the record: "not interested", "wrong number", "get stuffed",
-// any other "remove", "delete" or "take ... off", and any other "stop", including
-// questions ("when does the trial stop?", "can you remove me from the trial if it's
-// no good?") and "phones won't stop", which for this pitch is a buying signal.
-// Both err towards stop: a false alarm costs one text, a miss breaks the Spam Act.
+// on the do-not-call list. It takes a sentence that plainly asks to stop: STOP,
+// UNSUBSCRIBE, REMOVE and the like (with or without a "please"), "stop texting me",
+// "remove me", "take us off your list", "can you opt me out?", or "stop" as the
+// first or last word ("Who is this? STOP", "Can you please stop?"), or a short
+// reply with "stop" in it. A PHRASE blocks texts too, but --not-opt-out can
+// overrule it, on the record: "not interested", "yeah nah", "get stuffed", any
+// other "remove", "delete" or "take ... off" ("don't take me off the list, I'm
+// keen"), and any other "stop": questions about stopping ("when does the trial
+// stop?") and "phones won't stop", which for this pitch is a buying signal. Both
+// err towards stop: a false alarm costs one text, a miss breaks the Spam Act.
 const KEYWORD_FIRST_WORDS = new Set(["stop", "stopall", "optout"]); // and anything starting "unsub"
 const KEYWORD_REPLIES = new Set(["cancel", "end", "quit", "revoke", "remove", "delete", "opt out"]);
 const COURTESIES = new Set(["please", "pls", "plz", "thanks", "thx", "ta", "mate", "now"]);
+const TEXTING = new Set(["texting", "txting", "messaging", "msging", "contacting", "sending"]);
 const WHO = "(me|us|my number|our number|this number|the number)";
-const phrases = (list) => new RegExp(list.map((phrase) => `\\b(${phrase})\\b`).join("|"));
-// Final even in a question: "can you take us off your list?" is still a request.
-const KEYWORD_PHRASES = phrases([
-  "(stop|quit) (texting|txting|messaging|msging|contacting|sending)",
-  `(remove|delete|take) (${WHO} )?(off|from) (the |your |this |ur )?list`,
-  "(lose|delete|remove) (my|our|this|the) number",
-]);
-// Final unless asked as a question: "remove me" is, "can you remove me from the trial?" isn't.
-const KEYWORD_REQUESTS = phrases([`(remove|delete|unsubscribe) (me|us)`, `take ${WHO} off`, "opt (me|us) out"]);
+const LIST = "( (the |your |this |ur )?list)?";
+// A whole sentence asking to be taken off, asked politely or not.
+const REQUEST = new RegExp(
+  `^((can|could|will|would) (you|u) )?(${[
+    `(remove|delete) ${WHO}( from${LIST})?`,
+    `take ${WHO} off${LIST}`,
+    `(remove|delete|take) (${WHO} )?(off|from)${LIST}`,
+    "(unsubscribe|opt) (me|us)( out)?",
+    "(lose|delete|remove) (my|our|this|the) number",
+  ].join("|")})$`
+);
 const NEGATIONS = new Set(["non", "cant", "cannot", "dont", "wont", "never", "doesnt", "didnt", "wouldnt", "couldnt", "isnt", "not"]);
 const PHRASE_REPLIES = new Set(["no", "nope", "nah", "nah mate", "no mate", "no more", "blocked", "reported"]);
-const PHRASES = phrases([
-  "unsub\\w*",
-  "opt ?out",
-  "remove|delete|take (\\w+ ){1,2}off",
-  "(dont|do not|never) (call (or|and) )?(text|txt|sms|message|msg|contact)",
-  "no more (texts|txts|messages|msgs)",
-  "not interested|not keen",
-  "no (thanks|thank you|thankyou|thx)|nah (thanks|thx|ta)",
-  "leave me alone|wrong number|spam(ming)?|scam(mer)?|(ive|i have) (blocked|reported)",
-  "(fuck|f|fk|fuk|fck|piss|rack|bugger|nick|sod|bog) off|get (lost|stuffed|fucked|rooted)|go away|jog on",
-]);
+const PHRASES = new RegExp(
+  [
+    "unsub\\w*",
+    "opt ?((me|us) )?out",
+    "remove|delete|take (\\w+ ){1,2}off",
+    "(dont|do not|never) (call (or|and) )?(text|txt|sms|message|msg|contact)",
+    "no more (texts|txts|messages|msgs)",
+    "not interested|not keen|not for (me|us)|yeah nah",
+    "no (thanks|thank you|thankyou|thx)|nah (thanks|thx|ta)",
+    "leave me alone|wrong number|spam(ming)?|scam(mer)?|(ive|i have) (blocked|reported)",
+    "(fuck|f|fk|fuk|fck|piss|rack|bugger|nick|sod|bog) off|get (lost|stuffed|fucked|rooted)|go away|jog on",
+  ]
+    .map((phrase) => `\\b(${phrase})\\b`)
+    .join("|")
+);
+
+/** Lower-case words only: "Don't STOP!" → "dont stop". */
+function plainWords(text) {
+  return text
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/[^a-z]+/g, " ")
+    .trim();
+}
+
+/** Does this one sentence plainly ask us to stop? */
+function asksToStop(sentence) {
+  const words = plainWords(sentence).split(" ").filter(Boolean);
+  while (COURTESIES.has(words[0])) words.shift(); // "Please remove me", "Remove me thanks"
+  while (COURTESIES.has(words.at(-1))) words.pop();
+  if (!words.length) return false;
+  const plain = words.join(" ");
+  if (KEYWORD_FIRST_WORDS.has(words[0]) || words[0].startsWith("unsub") || KEYWORD_REPLIES.has(plain) || REQUEST.test(plain)) return true;
+  // "When does the free trial stop?" asks about something; "Can you please stop?" asks us to.
+  if (/\?\W*$/.test(sentence) && !/\b(you|u)( (please|pls|just))? stop$/.test(plain)) return false;
+  const plainStop = (i) => words[i] === "stop" && !NEGATIONS.has(words[i - 1]); // not "can't stop" or "non stop"
+  return plainStop(words.length - 1) || (words.length <= 3 && words.some((_, i) => plainStop(i))); // "Who is this? STOP", "pls stop"
+}
 
 const USAGE = `Usage: node --env-file=.env.local --env-file=scripts/outreach/.env scripts/outreach/text.mjs [options]
   (no options)            preview the batch: who gets a text today, who's skipped and why, and the words
@@ -160,26 +191,13 @@ export function messageProblem(text) {
 /** Whether a reply asks us to stop: "keyword" (final), "phrase" (--not-opt-out can overrule it) or null. */
 export function optOut(body) {
   const text = String(body ?? "");
-  const plain = text
-    .toLowerCase()
-    .replace(/['’]/g, "")
-    .replace(/[^a-z]+/g, " ")
-    .trim();
+  const plain = plainWords(text);
   if (!plain) return null;
   const words = plain.split(" ");
-  const core = words.filter((word) => !COURTESIES.has(word)).join(" "); // "Remove please" → "remove"
-  const asked = /\?\W*$/.test(text);
-  if (KEYWORD_FIRST_WORDS.has(words[0]) || words[0].startsWith("unsub") || KEYWORD_REPLIES.has(core) || KEYWORD_PHRASES.test(plain)) {
-    return "keyword";
-  }
-  if (!asked && KEYWORD_REQUESTS.test(plain)) return "keyword";
-  const stops = words.flatMap((word, i) => (word === "stop" ? [i] : []));
-  const plainStop = (i) => !NEGATIONS.has(words[i - 1]); // not "can't stop" or "non stop"
-  // "When does the free trial stop?" asks about something; "Can you please stop?" asks us to.
-  const question = /\bstop\W*\?\W*$/i.test(text) && !/\b(you|u)( (please|pls|just))? stop\b/.test(plain);
-  if (!question && stops.includes(words.length - 1) && plainStop(words.length - 1)) return "keyword"; // "Who is this? STOP"
-  if (!question && words.length <= 3 && stops.some(plainStop)) return "keyword"; // "pls stop", "ok stop it"
-  if (stops.length || PHRASE_REPLIES.has(plain) || PHRASES.test(plain)) return "phrase";
+  // "I said stop texting me" anywhere, but not "don't stop texting".
+  const stopTexting = words.some((word, i) => (word === "stop" || word === "quit") && TEXTING.has(words[i + 1]) && !NEGATIONS.has(words[i - 1]));
+  if (stopTexting || text.split(/(?<=[.!?;\n])/).some(asksToStop)) return "keyword";
+  if (words.includes("stop") || PHRASE_REPLIES.has(plain) || PHRASES.test(plain)) return "phrase";
   return null;
 }
 
