@@ -131,14 +131,16 @@ const PHRASE_REPLIES = new Set(["no", "nope", "nah", "nah mate", "no mate", "no 
 const PHRASES = new RegExp(
   [
     "unsub\\w*",
-    "opt ?((me|us) )?out",
-    "remov(e|ed)|delet(e|ed)|take (\\w+ ){1,2}off|taken off|get (me|us|my number|our number) off|lose (my|our|this|the) number|opted out",
-    "(dont|do not|never) (call (or|and) )?(text|txt|sms|message|msg|contact)",
-    "(dont|do not) want (\\w+ )?(texts|txts|messages|msgs)",
-    "no more (texts|txts|messages|msgs)",
+    "opt(ing|ed)? ?((me|us) )?out",
+    "remov(e|ed)|delet(e|ed)|take (\\w+ ){1,2}off|taken off|get (me|us|my number|our number) off|lose (my|our|this|the) number",
+    // "Don't ever text me again", "Don't send me any more messages", but not "don't call, just text me".
+    "(dont|do not|never)((?! call\\b) \\w+){0,3} (text|txt|sms|message|msg|contact|send|bother)\\w*",
+    "(dont|do not|never) call (or|and) (text|txt|sms|message|msg|contact)",
+    "(dont|do not) want (\\w+ ){0,2}(texts|txts|messages|msgs)",
+    "no more (text|txt|message|msg|sms)\\w*",
     "not interested|not keen|not for (me|us)|yeah nah",
     "no (thanks|thank you|thankyou|thx|cheers)|nah (thanks|thx|ta|cheers)",
-    "leave me alone|wrong number|spam(ming)?|scam(mer)?|(ive|i have) (blocked|reported)",
+    "leave (me|us) alone|wrong number|spam(ming)?|scam(mer)?|(ive|i have) (blocked|reported)",
     "(fuck|f|fk|fuk|fck|piss|rack|bugger|nick|sod|bog) off|get (lost|stuffed|fucked|rooted)|go away|jog on",
   ]
     .map((phrase) => `\\b(${phrase})\\b`)
@@ -194,7 +196,11 @@ function requestIn(plain, asking) {
   const match = request ?? wanted;
   if (!match) return false;
   const before = plain.slice(0, match.index).trim().split(" ").filter(Boolean);
-  if (wanted) return before.length > 0 && (politeAsk(before) || ASKER.test(before.join(" "))) && !hedged(before);
+  if (wanted) {
+    // "Why would I want to be removed?" and "Do I need to be removed?" ask whether, not to be.
+    const wondering = asking && (before.some((word) => WH.has(word)) || ["do", "does", "did"].includes(before[0]));
+    return before.length > 0 && !wondering && (politeAsk(before) || ASKER.test(before.join(" "))) && !hedged(before);
+  }
   if (politeAsk(before)) return true;
   if (asking) return false;
   return !hedged(before) && !SUBJECTS.has(before.at(-1));

@@ -193,7 +193,10 @@ describe("optOut", () => {
     "So it'll stop, or does it roll over?", "The trial will stop, or will I get charged?", "It'll just stop, or does it auto renew?",
     "So the trial will stop, or not?", "The billing will stop, ay?", "I don't want to be removed", "So it'll stop, yes?",
     "It'll stop, isn't it?", "They'll stop, won't they?", "I want to try it first or be removed", "Be removed",
-    "The trees need to be removed",
+    "The trees need to be removed", "Why would I want to be removed?", "Do I need to be removed?", "Don't ever text me again",
+    "Do not ever contact me", "Don't send me texts", "Don't send me any more messages", "Do not send any more messages",
+    "I don't want any more texts", "Don't bother texting me", "No more texting please", "No more SMS", "Opting out",
+    "I'm opting out", "Leave us alone",
     "Remove? What do you mean?", "Ok. Stop me if I'm wrong but is it $149?", "Sounds good. Stop by the yard Tuesday?",
     // Not final, but they still need a look: "lose my number" can mean either.
     "Don't lose my number, try me next week", "Did you lose my number?",
