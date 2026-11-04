@@ -128,7 +128,13 @@ describe("optOut", () => {
     "Can you pls stop?", "Can you opt me out?", "Can you opt us out?", "Opt me out?", "Opt us out?", "Opt us out",
     "Opt me out. Who gave you my number?", "Remove me. Who is this?", "Who is this? Remove me", "Remove me?", "Take me off?",
     "Can you remove me?", "Please stop calling me", "I said stop texting me", "Lose our number", "Take the number off your list",
-    "Delete from your list",
+    "Delete from your list", "STOP?", "Please remove me from your contacts", "Remove us from your mailing list",
+    "Take me off your mailing list", "Remove my number from your system", "Remove me, I'm not interested", "Opt me out of this",
+    "Can you opt me out of these texts?", "Could you remove me?", "Can u remove me?", "Can you unsubscribe me?",
+    "Can you stop contacting me", "Can you stop messaging me", "Can you stop msging me", "Hi\nPlease remove me",
+    "Who is this! Remove me", "Who is this; remove me", "Lose this number", "Remove me from this list", "Cancel thanks mate",
+    "Thanks mate, remove me", "Just lose my number", "Ok lose my number", "Lose my number cheers", "Lose my number, who is this",
+    "Can you please remove me", "Can you please take us off your list", "Could you please unsubscribe me", "Can you just lose my number",
   ])("%j is a final STOP", (reply) => {
     expect(optOut(reply)).toBe("keyword");
   });
@@ -144,6 +150,11 @@ describe("optOut", () => {
     "When does the trial STOP?", "Yeah nah", "Yeah nah mate", "Not for me", "Don't delete my number",
     "Don't take me off the list, I'm keen", "Anything to take me off the phone", "Can you remove me from the trial if it's no good? :)",
     "Take my mobile off", "Scammer", "I have blocked you", "I've reported you", "Sod off", "Piss off", "fuk off", "Get rooted",
+    "No.", "No, thanks", "Not for us", "Don't stop texting me, I'm keen", "U stop it?", "I don't want these texts",
+    "Don't want your texts", "Do me a favour and lose my number", "Lose my number please and thanks", "Stop by the yard Tuesday?",
+    "Remove? What do you mean?", "Ok. Stop me if I'm wrong but is it $149?", "Sounds good. Stop by the yard Tuesday?",
+    // Not final, but they still need a look: "lose my number" can mean either.
+    "Don't lose my number, try me next week", "Did you lose my number?",
     // Any other "stop" blocks too, until you've read it: some are opt-outs, some are buying signals.
     "I said STOP already", "Can it stop calls going to voicemail?", "Can it stop calls?",
     "Can you stop calling the office and text me", "Non stop mate", "Phones wont stop", "Can't stop, driving", "Don't stop",
@@ -156,8 +167,7 @@ describe("optOut", () => {
   it.each([
     "How much?", "I had to cancel a job today", "Sounds good, call me after 4", "No worries, ring me tomorrow", "Who is this?",
     "End of the day works for me", "Don't call, just text me the price", "Never call my landline, text this number",
-    "Nah, how much is it?", "My phones are nonstop", "Thanks", "Please", "Don't lose my number, try me next week",
-    "Did you lose my number?", "", null,
+    "Nah, how much is it?", "My phones are nonstop", "Thanks", "Please", "", null,
   ])("%j isn't", (reply) => {
     expect(optOut(reply)).toBeNull();
   });
