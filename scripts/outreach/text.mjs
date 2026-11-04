@@ -49,6 +49,7 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const HISTORY_PAGES = 5; // of 1,000 texts each
 const SHOWN_HISTORY = 6;
 const LOG_HEADER = "sent_at,to,business,kind,message_sid,segments,source,note\n";
+const OPT_OUTS_HEADER = "recorded_at,number,reply_sid,replied_at,reply\n";
 const FAILED = new Set(["failed", "undelivered"]);
 
 // GSM 03.38: a basic character costs one septet and an extension-table one two.
@@ -68,24 +69,27 @@ const TYPOGRAPHY = [
   [/[   ]/g, " "],
 ];
 
-// How people say stop. A KEYWORD reply (STOP, UNSUBSCRIBE and the like, "stop
-// texting me", or a short reply with "stop" in it) is final: they're never texted
-// again and go on the do-not-call list. A PHRASE ("not interested", "wrong number")
-// blocks texts too, but --not-opt-out can overrule it, on the record, for a reply
-// like "can I unsubscribe any time?". Both err towards stop: a false alarm costs
-// one text, a miss breaks the Spam Act.
+// How people say stop. A KEYWORD reply is final: they're never texted again and go
+// on the do-not-call list. That's STOP, UNSUBSCRIBE and the like, "stop texting
+// me", "stop" as the first or last word ("Who is this? STOP"), or a short reply
+// with "stop" in it. A PHRASE blocks texts too, but --not-opt-out can overrule it,
+// on the record: "not interested", "wrong number", and any other "stop", including
+// "can't stop" and "phones won't stop", which for this pitch are buying signals.
+// Both err towards stop: a false alarm costs one text, a miss breaks the Spam Act.
 const KEYWORD_FIRST_WORDS = new Set(["stop", "stopall", "unsub", "unsubscribe", "optout"]);
-const KEYWORD_REPLIES = new Set(["cancel", "end", "quit", "revoke", "opt out"]);
+const KEYWORD_REPLIES = new Set(["cancel", "end", "quit", "revoke", "remove", "opt out"]);
 const KEYWORD_PHRASE = /\bstop (texting|txting|messaging|msging|contacting|sending)\b/;
+const NEGATIONS = new Set(["non", "cant", "cannot", "dont", "wont", "never", "doesnt", "didnt", "wouldnt", "couldnt", "isnt", "not"]);
 const PHRASE_REPLIES = new Set(["no", "nope", "nah", "nah mate", "no mate"]);
 const PHRASES = new RegExp(
   [
     "unsub(scribe)?",
-    "opt ?out",
-    "remove me|please remove|take me off|(lose|delete|remove) (my|this|the) number",
+    "opt ?out|opt me out",
+    "remove me|delete me|please remove|take me off|(lose|delete|remove) (my|this|the) number",
     "(dont|do not|never) (call (or|and) )?(text|txt|sms|message|msg|contact)",
-    "not interested",
-    "no (thanks|thank you|thankyou|thx)",
+    "no more (texts|txts|messages|msgs)",
+    "not interested|not keen",
+    "no (thanks|thank you|thankyou|thx)|nah (thanks|thx|ta)",
     "leave me alone|wrong number|spam(ming)?",
     "(fuck|f|piss|rack|bugger|nick) off|get lost|go away",
   ]
@@ -151,9 +155,12 @@ export function optOut(body) {
     .trim();
   if (!plain) return null;
   const words = plain.split(" ");
+  const stops = words.flatMap((word, i) => (word === "stop" ? [i] : []));
+  const plainStop = (i) => !NEGATIONS.has(words[i - 1]); // not "can't stop" or "non stop"
   if (KEYWORD_FIRST_WORDS.has(words[0]) || KEYWORD_REPLIES.has(plain) || KEYWORD_PHRASE.test(plain)) return "keyword";
-  if (words.length <= 3 && words.includes("stop")) return "keyword"; // "pls stop", "ok stop it"
-  if (PHRASE_REPLIES.has(plain) || PHRASES.test(plain)) return "phrase";
+  if (stops.includes(words.length - 1) && plainStop(words.length - 1)) return "keyword"; // "Who is this? STOP"
+  if (words.length <= 3 && stops.some(plainStop)) return "keyword"; // "pls stop", "ok stop it"
+  if (stops.length || PHRASE_REPLIES.has(plain) || PHRASES.test(plain)) return "phrase";
   return null;
 }
 
@@ -194,6 +201,7 @@ export function byContact(messages) {
     if (!other) continue; // not an Australian number, so never one we text
     if (!contacts.has(other)) contacts.set(other, { sent: [], received: [] });
     contacts.get(other)[m.inbound ? "received" : "sent"].push({
+      sid: m.sid ?? "",
       at: new Date(m.date_created),
       body: m.body ?? "",
       status: m.status ?? "",
@@ -236,28 +244,28 @@ const NO_HISTORY = { sent: [], received: [] };
 /**
  * What happens to each row: "send" now, "later" (over today's limit), or "skip"
  * with the reason. A batch text needs a clean slate with them. A single text
- * (`single`) only needs them not to have opted out (`overrule` lets it past a
- * PHRASE), and only a first text to someone uses up one of the day's sends.
+ * (`single`) only needs them not to have opted out, and only a first text to
+ * someone uses up one of the day's sends. `overrule` lets a single text past the
+ * PHRASE replies it lists, the ones that came after your last text; a phrase you
+ * texted them after was settled then.
  */
 export function planTexts(rows, { doNotCall, contacts, single, dailyMax, today, overrule = false }) {
   let slots = dailyMax - firstTextsOn(contacts, today);
   return rows.map((row) => {
     const history = contacts.get(row.to) ?? NO_HISTORY;
-    const stops = history.received.filter((m) => optOut(m.body));
-    const final = stops.find((m) => optOut(m.body) === "keyword");
-    const maybe = stops[0];
     const lastReply = history.received.at(-1);
     const lastSent = history.sent.at(-1);
+    const final = history.received.find((m) => optOut(m.body) === "keyword");
+    const open = history.received.filter((m) => optOut(m.body) === "phrase" && !(lastSent?.at > m.at));
     let action = "skip";
     let reason;
     if (final) reason = `asked to stop on ${sydneyDate(final.at)}: "${clip(final.body)}"`;
     else if (doNotCall.has(row.to)) reason = "on the do-not-call list";
-    else if (maybe && !(single && overrule)) {
-      reason = `may have asked to stop on ${sydneyDate(maybe.at)}: "${clip(maybe.body)}"`;
+    else if (open.length && !(single && overrule)) {
+      reason = `may have asked to stop: ${open.map((m) => `"${clip(m.body)}" (${sydneyDate(m.at)})`).join(", ")}`;
       if (single) reason += '. If they didn\'t, add --not-opt-out="what they meant"';
     } else if (!single && lastReply) {
-      reason = `replied on ${sydneyDate(lastReply.at)}: "${clip(lastReply.body)}". `;
-      reason += /\bstop\b/i.test(lastReply.body) ? 'It mentions "stop": read it before you answer with --to' : "Answer with --to";
+      reason = `replied on ${sydneyDate(lastReply.at)}: "${clip(lastReply.body)}". Answer with --to`;
     } else if (!single && lastSent) {
       reason = `already texted on ${sydneyDate(history.sent[0].at)} (last one ${lastSent.status}${lastSent.errorCode ? `, error ${lastSent.errorCode}` : ""})`;
     } else if (single && (history.sent.length || history.received.length)) {
@@ -350,24 +358,23 @@ async function textsOf(api, number) {
   return messages;
 }
 
-/** Takes the send lock at `path`, so two sends can't text the same people at once. Returns its release. */
+/**
+ * Takes the send lock at `path`, so two sends can't text the same people at once,
+ * and returns its release. A lock left by a send that was killed outright is never
+ * taken over: two sends could both decide it was stale. Ctrl-C releases it cleanly.
+ */
 function takeLock(path) {
   mkdirSync(dirname(path), { recursive: true });
   const mine = `${path}.${process.pid}`;
   writeFileSync(mine, String(process.pid));
   try {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        linkSync(mine, path); // atomic: the lock appears with our process ID already in it
-        return () => rmSync(path, { force: true });
-      } catch (err) {
-        if (err.code !== "EEXIST") throw err;
-        const pid = Number(readFileSync(path, "utf8"));
-        if (Number.isInteger(pid) && pid > 0 && processAlive(pid)) throw new Error(`another send is running (process ${pid})`);
-        rmSync(path, { force: true }); // left behind by a send that was killed
-      }
-    }
-    throw new Error(`couldn't take the send lock ${path}`);
+    linkSync(mine, path); // atomic: the lock appears with our process ID already in it
+    return () => rmSync(path, { force: true });
+  } catch (err) {
+    if (err.code !== "EEXIST") throw err;
+    const pid = Number(readFileSync(path, "utf8"));
+    if (Number.isInteger(pid) && pid > 0 && processAlive(pid)) throw new Error(`another send is running (process ${pid})`);
+    throw new Error(`a send that was killed left its lock behind. If no send is running, delete ${path} and try again`);
   } finally {
     rmSync(mine, { force: true });
   }
@@ -396,7 +403,18 @@ const defaultDeps = {
     const text = readFileSync(path, "utf8");
     appendFileSync(path, `${text && !text.endsWith("\n") ? "\n" : ""}${line}\n`);
   },
+  appendOptOut: (path, row) => {
+    if (!existsSync(path)) appendFileSync(path, OPT_OUTS_HEADER);
+    appendFileSync(path, `${row}\n`);
+  },
   lock: takeLock,
+  onInterrupt: (handler) => {
+    for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, handler);
+    return () => {
+      for (const signal of ["SIGINT", "SIGTERM"]) process.removeListener(signal, handler);
+    };
+  },
+  exit: (code) => process.exit(code),
   log: (...args) => console.log(...args),
   error: (...args) => console.error(...args),
 };
@@ -456,6 +474,7 @@ export async function main(argv, env, overrides = {}) {
   const batchPath = env.TEXT_BATCH || join(dataDir, "texts.json");
   const logPath = env.TEXT_LOG || join(dataDir, "texts.csv");
   const lockPath = `${logPath}.lock`;
+  const optOutsPath = join(dirname(logPath), "opt-outs.csv");
   let doNotCall;
   try {
     const text = deps.readFile(dncPath);
@@ -512,6 +531,7 @@ export async function main(argv, env, overrides = {}) {
   }
   const api = twilioApi(accountSid, authToken, deps.fetch);
   const note = flags.get("not-opt-out")?.trim() ?? "";
+  const rerun = single ? "Check the Twilio console before sending it again." : "Re-running is safe: it skips anyone already texted.";
 
   const planAndSend = async () => {
     let contacts;
@@ -524,19 +544,40 @@ export async function main(argv, env, overrides = {}) {
       return 1;
     }
 
-    // A STOP-style reply is final, so it goes on the do-not-call list, which dial.mjs reads too.
+    // A STOP-style reply is final, so it goes on the do-not-call list, which dial.mjs
+    // reads too. Each one is recorded in opt-outs.csv, once: a number you take off the
+    // list yourself stays off (texts stay blocked either way).
+    let recorded;
+    try {
+      const lines = (deps.readFile(optOutsPath) ?? "").split("\n").slice(1);
+      recorded = new Set(lines.map((line) => line.split(",")[2]).filter(Boolean));
+    } catch (err) {
+      error(`Can't read ${optOutsPath} (${err.message}). Nothing was sent.`);
+      return 1;
+    }
     for (const [number, { received }] of contacts) {
       const stop = received.find((m) => optOut(m.body) === "keyword");
-      if (!stop || doNotCall.has(number)) continue;
-      const line = `${pretty(number)}  # replied "${clip(stop.body, 40)}" to a text on ${sydneyDate(stop.at)} (added by text.mjs)`;
+      if (!stop) continue;
+      const id = stop.sid || `${number}@${stop.at.toISOString()}`;
+      if (recorded.has(id)) continue;
+      const words = clip(stop.body, 40);
+      if (!doNotCall.has(number)) {
+        const line = `${pretty(number)}  # replied "${words}" to a text on ${sydneyDate(stop.at)} (added by text.mjs)`;
+        try {
+          deps.appendDoNotCall(dncPath, line);
+        } catch (err) {
+          error(`Couldn't add ${pretty(number)} to the do-not-call list (${err.message}). Nothing was sent. Add this line to ${dncPath} by hand, then re-run:\n${line}`);
+          return 1;
+        }
+        doNotCall.add(number);
+        log(`Added ${pretty(number)} to the do-not-call list: they replied "${words}" on ${sydneyDate(stop.at)}.`);
+      }
       try {
-        deps.appendDoNotCall(dncPath, line);
+        deps.appendOptOut(optOutsPath, [deps.now().toISOString(), number, id, stop.at.toISOString(), sheetSafe(clip(stop.body))].join(","));
       } catch (err) {
-        error(`Couldn't add ${pretty(number)} to the do-not-call list (${err.message}). Nothing was sent. Add this line to ${dncPath} by hand, then re-run:\n${line}`);
+        error(`Couldn't record ${pretty(number)}'s opt-out in ${optOutsPath} (${err.message}). Nothing was sent.`);
         return 1;
       }
-      doNotCall.add(number);
-      log(`Added ${pretty(number)} to the do-not-call list: they replied "${clip(stop.body, 40)}" on ${sydneyDate(stop.at)}.`);
     }
 
     const today = sydneyDate(deps.now());
@@ -558,9 +599,6 @@ export async function main(argv, env, overrides = {}) {
             '--source="…" (your evidence of consent, Spam Act s 16).'
         );
         return 1;
-      }
-      if (row.history.received.some((m) => /\bstop\b/i.test(m.body) && !optOut(m.body))) {
-        error('Their texts mention "stop": read them, and check they haven\'t asked you to stop.');
       }
       if (note) log(`Overruling a possible opt-out: "${note}".`);
     } else {
@@ -615,7 +653,6 @@ export async function main(argv, env, overrides = {}) {
     }
 
     const kind = single ? "single" : "batch";
-    const rerun = single ? "Check the Twilio console before sending it again." : "Re-running is safe: it skips anyone already texted.";
     const sent = [];
     let refused = 0;
     let refusedInARow = 0;
@@ -716,14 +753,24 @@ export async function main(argv, env, overrides = {}) {
     error(`Not sending: ${err.message}.`);
     return 1;
   }
-  try {
-    return await planAndSend();
-  } finally {
+  const unlock = () => {
     try {
       release();
     } catch (err) {
       error(`Couldn't remove the send lock (${err.message}): delete ${lockPath} by hand before the next send.`);
     }
+  };
+  // Ctrl-C mid-send releases the lock, so it doesn't block the next send.
+  const stopListening = deps.onInterrupt(() => {
+    unlock();
+    error(`\nInterrupted. ${rerun}`);
+    deps.exit(130);
+  });
+  try {
+    return await planAndSend();
+  } finally {
+    stopListening();
+    unlock();
   }
 }
 

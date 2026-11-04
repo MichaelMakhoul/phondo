@@ -102,27 +102,32 @@ describe("messageProblem", () => {
 describe("optOut", () => {
   it.each([
     "STOP", "stop", "Stop.", " STOP!!! ", "Unsubscribe", "unsub", "Unsub please", "STOPALL", "optout", "opt-out",
-    "Cancel", "End", "Quit", "Revoke", "Stop it", "Stop pls", "Stop please", "STOP STOP STOP", "stop stop", "Stop now",
-    "Stop spamming me", "STOP SPAM", "STOP. Who is this?", "Stop, who is this?", "pls stop", "please stop", "ok stop it",
-    "stop txting me", "Can you stop texting me", "Please stop messaging me now", "Stop calling me",
+    "Cancel", "End", "Quit", "Revoke", "Remove", "REMOVE.", "Stop it", "Stop pls", "Stop please", "STOP STOP STOP",
+    "stop stop", "Stop now", "Stop spamming me", "STOP SPAM", "STOP. Who is this?", "Stop, who is this?", "pls stop",
+    "please stop", "ok stop it", "Stop calling me", "stop txting me", "Can you stop texting me", "Please stop messaging me now",
+    "Please stop contacting me", "Can you stop sending these", "pls stop msging me", "Can you stop txting me",
+    "Who is this? Stop", "Who gave you my number? STOP", "Thanks but please stop", "Can you please stop", "Mate I said stop",
   ])("%j is a final STOP", (reply) => {
     expect(optOut(reply)).toBe("keyword");
   });
 
   it.each([
-    "No", "nope", "Nah", "Nah mate", "no thanks", "No thankyou", "no thx", "Not interested mate", "Don't text me again",
-    "dont txt me", "do not contact me", "Never message me", "Remove me from your list", "please remove", "remove my number",
+    "No", "nope", "Nah", "Nah mate", "No mate", "no thanks", "No thank you", "No thankyou", "no thx", "Nah thanks",
+    "Not interested mate", "not keen", "Don't text me again", "Don't call or text me again", "dont txt me", "do not contact me",
+    "Never message me", "No more texts please", "Remove me from your list", "Delete me", "please remove", "remove my number",
     "lose my number", "Take me off your list", "leave me alone", "Sorry, wrong number", "Is this spam?", "Fuck off", "f off",
-    "rack off", "go away", "get lost", "Can I unsubscribe any time or is there a lock in?", "I'd like to opt out",
+    "rack off", "go away", "get lost", "Can I unsubscribe any time or is there a lock in?", "I'd like to opt out", "Opt me out",
+    // Any other "stop" blocks too, until you've read it: some are opt-outs, some are buying signals.
+    "I said STOP already", "Please stop calling me", "Can it stop calls going to voicemail?", "Can it stop calls?",
+    "Can you stop calling the office and text me", "Non stop mate", "Phones wont stop", "Can't stop, driving", "Don't stop",
   ])("%j may be a stop (a phrase you can overrule)", (reply) => {
     expect(optOut(reply)).toBe("phrase");
   });
 
   it.each([
-    "How much?", "Can it stop calls going to voicemail?", "Can it stop calls?", "I had to cancel a job today",
-    "Sounds good, call me after 4", "No worries, ring me tomorrow", "Who is this?", "End of the day works for me",
-    "Don't call, just text me the price", "Never call my landline, text this number",
-    "Can you stop calling the office and text me", "Nah, how much is it?", "", null,
+    "How much?", "I had to cancel a job today", "Sounds good, call me after 4", "No worries, ring me tomorrow", "Who is this?",
+    "End of the day works for me", "Don't call, just text me the price", "Never call my landline, text this number",
+    "Nah, how much is it?", "My phones are nonstop", "", null,
   ])("%j isn't", (reply) => {
     expect(optOut(reply)).toBeNull();
   });
@@ -239,11 +244,31 @@ describe("planTexts", () => {
     expect(plan([row(A), row(B), row(C), row(D), row(E), row(F)], { messages, dnc: [B] }).map((r) => [r.action, r.reason])).toEqual([
       ["skip", 'asked to stop on 2026-11-04: "STOP"'],
       ["skip", "on the do-not-call list"],
-      ["skip", 'may have asked to stop on 2026-11-04: "Not interested"'],
+      ["skip", 'may have asked to stop: "Not interested" (2026-11-04)'],
       ["skip", 'replied on 2026-11-04: "How much is it?". Answer with --to'],
-      ["skip", 'replied on 2026-11-04: "Can it stop calls going to voicemail?". It mentions "stop": read it before you answer with --to'],
+      ["skip", 'may have asked to stop: "Can it stop calls going to voicemail?" (2026-11-04)'],
       ["skip", "already texted on 2026-11-04 (last one undelivered, error 30007)"],
     ]);
+  });
+
+  it("never lets an overrule past a STOP, whatever came before it", () => {
+    const messages = [reply(A, "not interested", "Wed, 04 Nov 2026 01:00:00 +0000"), reply(A, "STOP", "Wed, 04 Nov 2026 02:00:00 +0000")];
+    expect(plan([row(A)], { single: true, messages, overrule: true })[0].action).toBe("skip");
+  });
+
+  it("only counts phrases since your last text, and names every one an overrule would cover", () => {
+    const messages = [
+      twilioMessage({ to: A, at: "Mon, 02 Nov 2026 01:00:00 +0000" }),
+      reply(A, "Can I unsubscribe any time?", "Mon, 02 Nov 2026 02:00:00 +0000"),
+      twilioMessage({ to: A, at: "Tue, 03 Nov 2026 01:00:00 +0000" }), // you answered it: settled
+      reply(A, "Not interested anymore", "Wed, 04 Nov 2026 01:00:00 +0000"),
+      reply(A, "no thanks", "Wed, 04 Nov 2026 02:00:00 +0000"),
+    ];
+    expect(plan([row(A)], { single: true, messages })[0].reason).toBe(
+      'may have asked to stop: "Not interested anymore" (2026-11-04), "no thanks" (2026-11-04). If they didn\'t, add --not-opt-out="what they meant"'
+    );
+    const settled = messages.slice(0, 3);
+    expect(plan([row(A)], { single: true, messages: settled })[0].action).toBe("send");
   });
 
   it("catches an opt-out even when later replies came after it", () => {
@@ -290,7 +315,7 @@ function harness({
   overrides = {},
 } = {}) {
   const dir = mkdtempSync(join(ENV_HOME, "run-"));
-  const files = { batch: join(dir, "texts.json"), dnc: join(dir, "do-not-call.txt"), log: join(dir, "texts.csv") };
+  const files = { batch: join(dir, "texts.json"), dnc: join(dir, "do-not-call.txt"), log: join(dir, "texts.csv"), optOuts: join(dir, "opt-outs.csv") };
   files.lock = `${files.log}.lock`;
   if (batch !== null) writeFileSync(files.batch, typeof batch === "string" ? batch : JSON.stringify(batch));
   if (dnc !== null) writeFileSync(files.dnc, dnc);
@@ -323,7 +348,16 @@ function harness({
     }
     throw new Error(`unexpected request ${method} ${url}`);
   });
-  const deps = { fetch, now: vi.fn(() => new Date(now)), sleep: vi.fn(async () => {}), log: vi.fn(), error: vi.fn(), ...overrides };
+  const deps = {
+    fetch,
+    now: vi.fn(() => new Date(now)),
+    sleep: vi.fn(async () => {}),
+    onInterrupt: vi.fn(() => () => {}), // never touch the test runner's own signal handling
+    exit: vi.fn(),
+    log: vi.fn(),
+    error: vi.fn(),
+    ...overrides,
+  };
   const fullEnv = {
     HOME: ENV_HOME,
     TWILIO_ACCOUNT_SID: "ACtest",
@@ -510,6 +544,7 @@ describe("main: batch", () => {
 
   it.each([
     ["an unreadable balance", { balance: "n/a" }],
+    ["a balance in exponent form", { balance: "1e3" }],
     ["no balance", { balance: null }],
     ["a balance in another currency", { currency: "AUD" }],
   ])("refuses to send with %s", async (_, opts) => {
@@ -565,6 +600,14 @@ describe("main: batch", () => {
     expect(h.output()).toMatch(/Skipped Biz 156, 0491 570 156: they've been texted from this number since the history was read/);
   });
 
+  it("skips anyone whose re-check comes back without a message list", async () => {
+    const h = harness();
+    h.intercept((url) => url.includes("From=") && url.includes(`To=${encodeURIComponent(A)}`), () => Response.json({}));
+    expect(await h.run("--send")).toBe(1);
+    expect(h.sentTo()).toEqual([B]);
+    expect(h.output()).toMatch(/Skipped Biz 006, 0491 570 006: Twilio's re-check came back without a message list/);
+  });
+
   it("stops if it can't re-check someone before texting them", async () => {
     const h = harness();
     h.intercept(
@@ -585,11 +628,14 @@ describe("main: batch", () => {
     expect(h.output()).toMatch(why);
   });
 
-  it("exits non-zero when it can't read a delivery status", async () => {
-    const h = harness({ delivery: 502 });
+  it.each([
+    ["it can't read a delivery status", 502, /couldn't read the delivery status \(HTTP 502/],
+    ["Twilio's reply has no status", "", /couldn't read the delivery status \(Twilio's reply had no status\)/],
+  ])("exits non-zero when %s", async (_, delivery, why) => {
+    const h = harness({ delivery });
     expect(await h.run("--send")).toBe(1);
     expect(h.sentTo()).toEqual([A, B]);
-    expect(h.output()).toMatch(/couldn't read the delivery status \(HTTP 502/);
+    expect(h.output()).toMatch(why);
   });
 
   it("still sends when the log can't be written, prints the row to add by hand, and exits non-zero", async () => {
@@ -602,10 +648,41 @@ describe("main: batch", () => {
   });
 
   it("keeps spreadsheet formulas out of the log", async () => {
-    const h = harness({ batch: [row(A, '=HYPERLINK("http://x")', OK_TEXT, "+tracked source")] });
+    const h = harness({
+      batch: [row(A, '=HYPERLINK("http://x")', OK_TEXT, "+tracked source"), row(B, "-1+2 Plumbing"), row(C, "@home Plumbing")],
+    });
     expect(await h.run("--send")).toBe(0);
-    expect(h.logRows()[0]).toContain(`,"'=HYPERLINK(""http://x"")",batch,`);
-    expect(h.logRows()[0]).toContain(",'+tracked source,");
+    const [first, second, third] = h.logRows();
+    expect(first).toContain(`,"'=HYPERLINK(""http://x"")",batch,`);
+    expect(first).toContain(",'+tracked source,");
+    expect(second).toContain(",'-1+2 Plumbing,batch,");
+    expect(third).toContain(",'@home Plumbing,batch,");
+  });
+
+  it("releases the lock even when something throws mid-send", async () => {
+    const h = harness({ overrides: { sleep: async () => { throw new Error("boom"); } } });
+    await expect(h.run("--send")).rejects.toThrow("boom");
+    expect(h.sentTo()).toEqual([A]);
+    expect(existsSync(h.files.lock)).toBe(false);
+  });
+
+  it("releases the lock and exits on Ctrl-C, saying a re-run is safe", async () => {
+    const handlers = [];
+    let lockHeldWhenInterrupted;
+    const h = harness({
+      overrides: {
+        onInterrupt: (handler) => (handlers.push(handler), () => {}),
+        sleep: async () => {
+          lockHeldWhenInterrupted ??= existsSync(h.files.lock);
+          handlers[0]?.();
+        },
+      },
+    });
+    await h.run("--send");
+    expect(lockHeldWhenInterrupted).toBe(true);
+    expect(h.deps.exit).toHaveBeenCalledWith(130);
+    expect(existsSync(h.files.lock)).toBe(false);
+    expect(h.output()).toMatch(/Interrupted\. Re-running is safe/);
   });
 
   it.each([
@@ -638,22 +715,48 @@ describe("main: batch", () => {
   });
 
   it("shows their words without terminal control codes", async () => {
-    const h = harness({ batch: [row(A)], messages: [reply(A, "hi\u001b[2J\u001b[1;1Hthere‮")] });
+    const h = harness({ batch: [row(A)], messages: [reply(A, "hi\u001b[2J\u001b[1;1Hthere\u009b2J‮")] });
     expect(await h.run()).toBe(0);
-    expect(h.output()).toMatch(/replied on 2026-11-04: "hi \[2J \[1;1Hthere"/);
-    expect(h.output()).not.toMatch(/[\u001b‮]/);
+    expect(h.output()).toMatch(/replied on 2026-11-04: "hi \[2J \[1;1Hthere 2J"/);
+    expect(h.output()).not.toMatch(/[\u001b\u009b‮]/);
   });
 });
 
 describe("main: opt-outs go on the do-not-call list", () => {
-  it("adds a STOP reply to the list, keeping the line before it intact, and skips them", async () => {
+  it("adds a STOP reply to the list, keeping the line before it intact, records it, and skips them", async () => {
     const h = harness({ batch: [row(A), row(B)], dnc: "0491 570 157  # said no on a call", messages: [reply(B, "Stop texting me pls")] });
     expect(await h.run()).toBe(0);
     expect(readFileSync(h.files.dnc, "utf8")).toBe(
       '0491 570 157  # said no on a call\n0491 570 156  # replied "Stop texting me pls" to a text on 2026-11-04 (added by text.mjs)\n'
     );
+    expect(readFileSync(h.files.optOuts, "utf8")).toMatch(
+      /^recorded_at,number,reply_sid,replied_at,reply\n2026-11-05T01:00:00\.000Z,\+61491570156,SM\w+,2026-11-04T01:00:00\.000Z,Stop texting me pls\n$/
+    );
     expect(h.output()).toMatch(/Added 0491 570 156 to the do-not-call list/);
     expect(h.output()).toMatch(/2\. Biz 156, 0491 570 156 .*SKIP: asked to stop/);
+  });
+
+  it("adds a STOP even when they wrote more afterwards", async () => {
+    const h = harness({ messages: [reply(B, "STOP", "Wed, 04 Nov 2026 01:00:00 +0000"), reply(B, "who is this?", "Wed, 04 Nov 2026 02:00:00 +0000")] });
+    expect(await h.run()).toBe(0);
+    expect(readFileSync(h.files.dnc, "utf8")).toMatch(/^0491 570 156 {2}# replied "STOP"/);
+  });
+
+  it("keeps the list readable whatever they wrote, so the next run (and dial.mjs) still starts", async () => {
+    const h = harness({ messages: [reply(B, "STOP\nthanks\r\n# 0491 570 999 x")] });
+    expect(await h.run()).toBe(0);
+    expect(await h.run()).toBe(0);
+    expect(readFileSync(h.files.dnc, "utf8").trim().split("\n")).toHaveLength(1);
+  });
+
+  it("leaves a number you took off the list off, while still never texting them", async () => {
+    const h = harness({ batch: [row(B)], messages: [reply(B, "STOP")] });
+    expect(await h.run()).toBe(0);
+    writeFileSync(h.files.dnc, ""); // you decided they can be rung after all
+    expect(await h.run()).toBe(0);
+    expect(readFileSync(h.files.dnc, "utf8")).toBe("");
+    expect(readFileSync(h.files.optOuts, "utf8").trim().split("\n")).toHaveLength(2); // the header and one opt-out
+    expect(h.output()).toMatch(/SKIP: asked to stop/);
   });
 
   it("doesn't add a phrase you might overrule, or anyone already listed", async () => {
@@ -668,6 +771,13 @@ describe("main: opt-outs go on the do-not-call list", () => {
     expect(h.sentTo()).toEqual([]);
     expect(h.output()).toMatch(/Couldn't add 0491 570 156 to the do-not-call list \(read-only\)\. Nothing was sent\..*\n0491 570 156  # replied "STOP"/);
   });
+
+  it("stops if it can't record the opt-out", async () => {
+    const h = harness({ messages: [reply(B, "STOP")], overrides: { appendOptOut: () => { throw new Error("disk full"); } } });
+    expect(await h.run("--send")).toBe(1);
+    expect(h.sentTo()).toEqual([]);
+    expect(h.output()).toMatch(/Couldn't record 0491 570 156's opt-out .*\(disk full\)\. Nothing was sent/);
+  });
 });
 
 describe("main: one send at a time", () => {
@@ -680,12 +790,20 @@ describe("main: one send at a time", () => {
     expect(readFileSync(h.files.lock, "utf8")).toBe(String(process.pid)); // not ours to remove
   });
 
-  it("clears a lock left by a send that was killed", async () => {
+  it("treats a lock held by a process it can't signal as running", async () => {
+    const h = harness();
+    writeFileSync(h.files.lock, "1"); // launchd/init: alive, but not ours (EPERM)
+    expect(await h.run("--send")).toBe(1);
+    expect(h.output()).toMatch(/another send is running \(process 1\)/);
+  });
+
+  it("won't take over a lock left by a send that was killed, and says how to clear it", async () => {
     const h = harness();
     writeFileSync(h.files.lock, "2147483646"); // no such process
-    expect(await h.run("--send")).toBe(0);
-    expect(h.sentTo()).toEqual([A, B]);
-    expect(existsSync(h.files.lock)).toBe(false);
+    expect(await h.run("--send")).toBe(1);
+    expect(h.deps.fetch).not.toHaveBeenCalled();
+    expect(h.output()).toContain(`a send that was killed left its lock behind. If no send is running, delete ${h.files.lock} and try again`);
+    expect(existsSync(h.files.lock)).toBe(true);
   });
 
   it("previews without the lock", async () => {
@@ -730,11 +848,11 @@ describe("main: one text (--to)", () => {
   });
 
   it("refuses a reply that may be a stop until you overrule it, and logs why", async () => {
-    const messages = [twilioMessage({ to: A }), reply(A, "Can I unsubscribe any time or is there a lock in?")];
+    const messages = [twilioMessage({ to: A }), reply(A, "Can I unsubscribe any time or is there a lock in?", "Wed, 04 Nov 2026 02:00:00 +0000")];
     const refused = harness({ messages });
     expect(await refused.run("--to=0491 570 006", `--text=${OK_TEXT}`, "--send")).toBe(1);
     expect(refused.sentTo()).toEqual([]);
-    expect(refused.output()).toMatch(/may have asked to stop .*--not-opt-out/);
+    expect(refused.output()).toMatch(/may have asked to stop: "Can I unsubscribe .*--not-opt-out/);
 
     const overruled = harness({ messages });
     expect(await overruled.run("--to=0491 570 006", `--text=${OK_TEXT}`, "--not-opt-out=asking about the contract", "--send")).toBe(0);
@@ -770,10 +888,21 @@ describe("main: one text (--to)", () => {
     expect(h.sentTo()).toEqual([]);
   });
 
-  it("flags a reply that mentions stop without asking to", async () => {
-    const h = harness({ messages: [reply(A, "Can it stop calls going to voicemail?")] });
-    expect(await h.run("--to=0491 570 006", `--text=${OK_TEXT}`)).toBe(0);
-    expect(h.output()).toMatch(/Their texts mention "stop"/);
+  it("holds back an answer to a reply that mentions stop until you've read it and said so", async () => {
+    const messages = [reply(A, "Can it stop calls going to voicemail?")];
+    const held = harness({ messages });
+    expect(await held.run("--to=0491 570 006", `--text=${OK_TEXT}`, "--send")).toBe(1);
+    expect(held.sentTo()).toEqual([]);
+    const answered = harness({ messages });
+    expect(await answered.run("--to=0491 570 006", `--text=${OK_TEXT}`, "--not-opt-out=asking what it does", "--send")).toBe(0);
+    expect(answered.sentTo()).toEqual([A]);
+  });
+
+  it("refuses 'stop' at the end of a longer reply as final", async () => {
+    const h = harness({ messages: [twilioMessage({ to: A }), reply(A, "Who gave you my number? STOP", "Wed, 04 Nov 2026 02:00:00 +0000")] });
+    expect(await h.run("--to=0491 570 006", `--text=${OK_TEXT}`, "--not-opt-out=no", "--send")).toBe(1);
+    expect(h.sentTo()).toEqual([]);
+    expect(readFileSync(h.files.dnc, "utf8")).toMatch(/^0491 570 006 /);
   });
 
   it("says a re-run would text them again when the send is uncertain", async () => {
