@@ -105,9 +105,11 @@ Load both env files, as above. `scripts/outreach/.env` is where `DIAL_DNC_FILE` 
   - `source` is your evidence of consent: where the business publishes the number, e.g. "Mobile published at https://example.com.au/; checked 2026-10-05". The Spam Act puts the burden of showing consent on the sender (s 16). It goes in the log with each text.
 - **Every text** has to say "Phondo" and "Reply STOP" (Spam Act s 17 and s 18) and fit in 4 SMS segments. Curly quotes and dashes are made plain, so a pasted text doesn't switch to the costlier encoding.
 - **Opt-outs:**
-  - A STOP-style reply is final. That's "STOP", "Unsubscribe", "stop texting me", "stop" as the first or last word ("Who is this? STOP"), or a short reply with "stop" in it. That number is never texted again, and it's added to the do-not-call list, so `dial.mjs` won't ring them either.
-  - Each automatic addition is recorded once in `~/.phondo-outreach/opt-outs.csv`. If you take a number off the do-not-call list yourself, it stays off; texts to them stay blocked either way.
-  - Plainer replies also block texts: "not interested", "no thanks", "wrong number", and any other mention of "stop" ("can it stop calls going to voicemail?", "phones won't stop"). Once you've read one and it isn't a stop, answer with `--not-opt-out="what they meant"`, which is logged. It covers only the replies it lists, the ones since your last text.
+  - A STOP-style reply is final. That's "STOP", "Unsubscribe", "Remove", "Cancel please", "stop texting me", "remove me from your list", "stop" as the first or last word ("Who is this? STOP"), or a short reply with "stop" in it. That number is never texted again, and it's added to the do-not-call list, so `dial.mjs` won't ring them either.
+  - Each automatic addition is recorded once in `~/.phondo-outreach/opt-outs.csv`, with the list it went on. If you take a number off that list yourself, it stays off (every run reminds you), and texts to them stay blocked. A new STOP from them puts it back.
+  - Plainer replies also block texts: "not interested", "no thanks", "wrong number", any other "remove" or "delete", and any other mention of "stop" ("can it stop calls going to voicemail?", "when does the trial stop?", "phones won't stop").
+    - The preview quotes each one since your last text, with its ID. Once you've read them and none is a stop, answer with `--not-opt-out="what they meant" --seen=SM…`, using the ID of their newest one, as the preview prints it. The reason is logged.
+    - If they've texted again since you looked, `--seen` won't match, and it refuses until you've read that one too.
   - Add anyone who says no some other way to the do-not-call list yourself.
 - **Who else is skipped:**
   - anyone on the do-not-call list, `~/.phondo-outreach/do-not-call.txt`, which `dial.mjs` uses too
