@@ -1,14 +1,15 @@
 import { describe, it, expect, vi, afterAll, beforeEach } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { byContact, isOptOut, main, messageProblem, normalizeText, parseBatch, planTexts, smsSegments, sydneyDate } from "../text.mjs";
+import { byContact, firstTextsOn, main, messageProblem, normalizeText, optOut, parseBatch, planTexts, smsSegments, sydneyDate } from "../text.mjs";
 
 // The texter sends real SMS, so its guards matter more than its happy path:
-// Spam Act s 17 (say who it's from) and s 18 (a working opt-out), never anyone
-// on the do-not-call list or who asked to stop, never a batch text twice, and
-// never the Twilio balance below the floor that keeps the phone lines up.
-// Numbers are ACMA-reserved fictitious mobiles (0491 570 xxx), and fetch is always stubbed.
+// Spam Act s 16 (record the consent), s 17 (say who it's from) and s 18 (a
+// working opt-out); never anyone on the do-not-call list or who asked to stop;
+// never a batch text twice; never two sends at once; and never the Twilio balance
+// below the floor that keeps the phone lines up. Numbers are ACMA-reserved
+// fictitious mobiles (0491 570 xxx), and fetch is always stubbed.
 
 // Neither a test nor a regression may write into the operator's real
 // ~/.phondo-outreach. main() reads HOME from the env it's given, which the harness
@@ -26,19 +27,23 @@ const A = "+61491570006";
 const B = "+61491570156";
 const C = "+61491570157";
 const D = "+61491570158";
+const E = "+61491570159";
+const F = "+61491570110";
 const OK_TEXT = "Hi there, Michael from Phondo. Ring our demo line. Reply STOP and I won't msg again.";
-const row = (to, business = `Biz ${to.slice(-3)}`, text = OK_TEXT) => ({ to, business, text });
+const SOURCE = "Mobile published at https://example.com.au/; checked 2026-10-05";
+const row = (to, business = `Biz ${to.slice(-3)}`, text = OK_TEXT, source = SOURCE) => ({ to, business, text, source });
 // Thursday 5 Nov 2026, noon in Sydney (AEDT, UTC+11).
 const NOON = "2026-11-05T01:00:00Z";
+const YESTERDAY = "Wed, 04 Nov 2026 01:00:00 +0000";
 
 describe("smsSegments", () => {
   it.each([
-    ["a".repeat(160), 1],
-    ["a".repeat(161), 2],
-    ["a".repeat(306), 2],
-    ["a".repeat(307), 3],
-  ])("GSM-7: %# is billed as %i segment(s)", (text, segments) => {
-    expect(smsSegments(text)).toEqual({ encoding: "GSM-7", segments });
+    [160, 1],
+    [161, 2],
+    [306, 2],
+    [307, 3],
+  ])("GSM-7: %i characters are billed as %i segment(s)", (length, segments) => {
+    expect(smsSegments("a".repeat(length))).toEqual({ encoding: "GSM-7", segments });
   });
 
   it("counts an extension-table character as two septets", () => {
@@ -54,6 +59,7 @@ describe("smsSegments", () => {
   it("switches to UCS-2 for any character outside GSM-7, at 70/67 per segment", () => {
     expect(smsSegments("ć".repeat(70))).toEqual({ encoding: "UCS-2", segments: 1 });
     expect(smsSegments("ć".repeat(71))).toEqual({ encoding: "UCS-2", segments: 2 });
+    expect(smsSegments("ć".repeat(134))).toEqual({ encoding: "UCS-2", segments: 2 }); // 2 x 67 exactly
     expect(smsSegments("won’t").encoding).toBe("UCS-2");
     // An emoji is two UTF-16 units and can't straddle a boundary either.
     expect(smsSegments(`${"ć".repeat(66)}😀${"ć".repeat(66)}`).segments).toBe(3);
@@ -93,52 +99,79 @@ describe("messageProblem", () => {
   });
 });
 
-describe("isOptOut", () => {
+describe("optOut", () => {
   it.each([
-    "STOP", "stop", "Stop.", " STOP!!! ", "Unsubscribe", "opt-out", "End", "Quit", "No", "no thanks",
-    "Please stop texting me", "Not interested mate", "Don't text me again", "do not contact me",
-    "Remove me from your list", "wrong number", "Never call me again", "Nah, no thank you",
-  ])("%j asks us to stop", (reply) => {
-    expect(isOptOut(reply)).toBe(true);
+    "STOP", "stop", "Stop.", " STOP!!! ", "Unsubscribe", "unsub", "Unsub please", "STOPALL", "optout", "opt-out",
+    "Cancel", "End", "Quit", "Revoke", "Stop it", "Stop pls", "Stop please", "STOP STOP STOP", "stop stop", "Stop now",
+    "Stop spamming me", "STOP SPAM", "STOP. Who is this?", "Stop, who is this?", "pls stop", "please stop", "ok stop it",
+    "stop txting me", "Can you stop texting me", "Please stop messaging me now", "Stop calling me",
+  ])("%j is a final STOP", (reply) => {
+    expect(optOut(reply)).toBe("keyword");
   });
 
   it.each([
-    "How much?", "Can it stop calls going to voicemail?", "I had to cancel a job today", "Sounds good, call me after 4",
-    "No worries, ring me tomorrow", "Who is this?", "", null,
-  ])("%j doesn't", (reply) => {
-    expect(isOptOut(reply)).toBe(false);
+    "No", "nope", "Nah", "Nah mate", "no thanks", "No thankyou", "no thx", "Not interested mate", "Don't text me again",
+    "dont txt me", "do not contact me", "Never message me", "Remove me from your list", "please remove", "remove my number",
+    "lose my number", "Take me off your list", "leave me alone", "Sorry, wrong number", "Is this spam?", "Fuck off", "f off",
+    "rack off", "go away", "get lost", "Can I unsubscribe any time or is there a lock in?", "I'd like to opt out",
+  ])("%j may be a stop (a phrase you can overrule)", (reply) => {
+    expect(optOut(reply)).toBe("phrase");
+  });
+
+  it.each([
+    "How much?", "Can it stop calls going to voicemail?", "Can it stop calls?", "I had to cancel a job today",
+    "Sounds good, call me after 4", "No worries, ring me tomorrow", "Who is this?", "End of the day works for me",
+    "Don't call, just text me the price", "Never call my landline, text this number",
+    "Can you stop calling the office and text me", "Nah, how much is it?", "", null,
+  ])("%j isn't", (reply) => {
+    expect(optOut(reply)).toBeNull();
   });
 });
 
 describe("parseBatch", () => {
   const json = (rows) => JSON.stringify(rows);
 
-  it("returns E.164 numbers and plain text", () => {
-    expect(parseBatch(json([{ to: "0491 570 006", business: " Acme ", text: " Phondo here – Reply STOP " }]))).toEqual([
-      { to: A, business: "Acme", text: "Phondo here - Reply STOP" },
+  it("returns E.164 numbers, plain text and the source", () => {
+    expect(parseBatch(json([{ to: "0491 570 006", business: " Acme ", text: " Phondo here – Reply STOP ", source: " its website " }]))).toEqual([
+      { to: A, business: "Acme", text: "Phondo here - Reply STOP", source: "its website" },
     ]);
   });
 
   it.each([
     ["not json", /valid JSON/],
     [json({ to: A }), /JSON array/],
-    [json([{ business: "Acme", text: OK_TEXT }]), /row 1: "" isn't an Australian mobile/],
-    [json([{ to: "(02) 5550 1234", business: "Acme", text: OK_TEXT }]), /landlines can't get texts/],
-    [json([row(A), { to: "+61 491 570 006", business: "Dup", text: OK_TEXT }]), /row 2: 0491 570 006 is in the batch twice/],
-    [json([{ to: A, text: OK_TEXT }]), /"business" is missing/],
-    [json([{ to: A, business: "Acme", text: 42 }]), /\(Acme\): "text" is missing/],
-    [json([{ to: A, business: "Acme", text: "Hi from Phondo" }]), /\(Acme\): .*STOP/],
+    [json([{ business: "Acme", text: OK_TEXT, source: SOURCE }]), /row 1: "" isn't an Australian mobile/],
+    [json([row("(02) 5550 1234")]), /landlines can't get texts/],
+    [json([row(A), row("+61 491 570 006", "Dup")]), /row 2: 0491 570 006 is in the batch twice/],
+    [json([{ to: A, text: OK_TEXT, source: SOURCE }]), /"business" is missing/],
+    [json([{ to: A, business: "Acme", text: 42, source: SOURCE }]), /\(Acme\): "text" is missing/],
+    [json([row(A, "Acme", "Hi from Phondo")]), /\(Acme\): .*STOP/],
+    [json([{ to: A, business: "Acme", text: OK_TEXT }]), /\(Acme\): "source" is missing.*consent/],
+    [json([row(A, "Acme", OK_TEXT, "  ")]), /\(Acme\): "source" is missing/],
     [json([null]), /row 1/],
   ])("refuses %s", (input, why) => {
     expect(() => parseBatch(input)).toThrow(why);
   });
 });
 
-// Twilio's Message resource, as its list API returns it.
-function twilioMessage({ from = FROM, to, body = "hi", at = "Wed, 04 Nov 2026 01:00:00 +0000", status = "delivered", inbound = false, error = null }) {
-  return { from, to, body, date_created: at, status, error_code: error, direction: inbound ? "inbound" : "outbound-api" };
+// Twilio's Message resource, as its list API returns it. `inbound` is what the
+// script's history reader adds, from which list the text came back in.
+function twilioMessage({ from = FROM, to, body = "hi", at = YESTERDAY, status = "delivered", error = null, direction }) {
+  const inbound = from !== FROM;
+  return {
+    sid: `SM${Math.random().toString(16).slice(2).padEnd(32, "0").slice(0, 32)}`,
+    from,
+    to,
+    body,
+    date_created: at,
+    status,
+    error_code: error,
+    direction: direction ?? (inbound ? "inbound" : "outbound-api"),
+    inbound,
+  };
 }
-const reply = (from, body, at) => twilioMessage({ from, to: FROM, body, at, inbound: true, status: "received" });
+const reply = (from, body, at = YESTERDAY) => twilioMessage({ from, to: FROM, body, at, status: "received" });
+const firstText = (to, at) => twilioMessage({ to, at, body: OK_TEXT });
 
 describe("byContact", () => {
   it("groups by the other person's number, oldest first", () => {
@@ -161,47 +194,80 @@ describe("sydneyDate", () => {
   });
 });
 
+describe("firstTextsOn", () => {
+  const today = "2026-11-05";
+  const at = "Thu, 05 Nov 2026 00:00:00 +0000"; // 11am today in Sydney
+
+  it("counts people first texted today with this script's texts", () => {
+    expect(firstTextsOn(byContact([firstText(A, at), firstText(B, at), twilioMessage({ to: B, at, body: "follow-up" })]), today)).toBe(2);
+  });
+
+  it("leaves out yesterday's, texts without a STOP line, and answers to people who texted first", () => {
+    const messages = [
+      firstText(A, YESTERDAY),
+      twilioMessage({ to: B, at, body: "Phondo test: this is your new texting number" }), // the setup test to your mobile
+      twilioMessage({ to: C, at, body: "Reply to your Phondo texts from 0491 570 006: STOP" }), // a forwarded reply
+      reply(D, "hi, saw your flyer", "Wed, 04 Nov 2026 23:00:00 +0000"),
+      twilioMessage({ to: D, at, body: OK_TEXT }),
+    ];
+    expect(firstTextsOn(byContact(messages), today)).toBe(0);
+  });
+});
+
 describe("planTexts", () => {
-  const plan = (rows, { messages = [], dnc = [], single = false, dailyMax = 5, today = "2026-11-05" } = {}) =>
-    planTexts(rows, { doNotCall: new Set(dnc), contacts: byContact(messages), single, dailyMax, today });
+  const plan = (rows, { messages = [], dnc = [], single = false, dailyMax = 5, today = "2026-11-05", overrule = false } = {}) =>
+    planTexts(rows, { doNotCall: new Set(dnc), contacts: byContact(messages), single, dailyMax, today, overrule });
+  const today = "Thu, 05 Nov 2026 00:00:00 +0000";
 
   it("sends in order up to the daily limit, and leaves the rest for later", () => {
-    const actions = plan([row(A), row(B), row(C)], { dailyMax: 2 }).map((r) => r.action);
-    expect(actions).toEqual(["send", "send", "later"]);
+    expect(plan([row(A), row(B), row(C)], { dailyMax: 2 }).map((r) => r.action)).toEqual(["send", "send", "later"]);
   });
 
-  it("counts batch texts already sent today against the limit, but not other texts", () => {
-    const messages = [
-      twilioMessage({ to: A, at: "Thu, 05 Nov 2026 00:00:00 +0000" }), // 11am today in Sydney
-      twilioMessage({ to: "+61491570999", at: "Thu, 05 Nov 2026 00:00:00 +0000" }), // not in the batch
-      twilioMessage({ to: B, at: "Wed, 04 Nov 2026 01:00:00 +0000" }), // yesterday
-    ];
-    const rows = plan([row(A), row(B), row(C), row(D)], { messages, dailyMax: 2 });
-    expect(rows.map((r) => r.action)).toEqual(["skip", "skip", "send", "later"]);
+  it("counts today's first texts to numbers outside this batch too", () => {
+    const messages = [firstText(E, today), firstText(F, today)];
+    expect(plan([row(A), row(B)], { messages, dailyMax: 3 }).map((r) => r.action)).toEqual(["send", "later"]);
   });
 
-  it("skips the do-not-call list, opt-outs, replies and anyone already texted, saying why", () => {
+  it("skips opt-outs, the do-not-call list, replies and anyone already texted, saying why", () => {
     const messages = [
-      reply(B, "STOP", "Wed, 04 Nov 2026 02:00:00 +0000"),
-      reply(C, "How much is it?", "Wed, 04 Nov 2026 02:00:00 +0000"),
-      twilioMessage({ to: D, status: "undelivered", error: 30007 }),
+      reply(A, "STOP"),
+      reply(C, "Not interested"),
+      reply(D, "How much is it?"),
+      reply(E, "Can it stop calls going to voicemail?"),
+      twilioMessage({ to: F, status: "undelivered", error: 30007 }),
     ];
-    const rows = plan([row(A), row(B), row(C), row(D)], { messages, dnc: [A] });
-    expect(rows.map((r) => [r.action, r.reason])).toEqual([
+    expect(plan([row(A), row(B), row(C), row(D), row(E), row(F)], { messages, dnc: [B] }).map((r) => [r.action, r.reason])).toEqual([
+      ["skip", 'asked to stop on 2026-11-04: "STOP"'],
       ["skip", "on the do-not-call list"],
-      ["skip", 'asked to stop on 2026-11-04: "STOP". Add them to the do-not-call list'],
+      ["skip", 'may have asked to stop on 2026-11-04: "Not interested"'],
       ["skip", 'replied on 2026-11-04: "How much is it?". Answer with --to'],
+      ["skip", 'replied on 2026-11-04: "Can it stop calls going to voicemail?". It mentions "stop": read it before you answer with --to'],
       ["skip", "already texted on 2026-11-04 (last one undelivered, error 30007)"],
     ]);
   });
 
-  it("lets a single text answer someone who replied, but never someone who opted out", () => {
-    const answered = plan([row(C)], { single: true, messages: [reply(C, "How much?"), twilioMessage({ to: C })] });
-    expect(answered[0].action).toBe("send");
-    const optedOut = plan([row(B)], { single: true, messages: [reply(B, "how much"), reply(B, "actually, unsubscribe")] });
-    expect(optedOut[0]).toMatchObject({ action: "skip", reason: expect.stringMatching(/asked to stop/) });
-    const listed = plan([row(A)], { single: true, dnc: [A] });
-    expect(listed[0]).toMatchObject({ action: "skip", reason: "on the do-not-call list" });
+  it("catches an opt-out even when later replies came after it", () => {
+    const messages = [reply(A, "Please stop texting me", "Wed, 04 Nov 2026 01:00:00 +0000"), reply(A, "who is this?", "Wed, 04 Nov 2026 02:00:00 +0000")];
+    expect(plan([row(A)], { single: true, messages })[0]).toMatchObject({ action: "skip", reason: expect.stringMatching(/^asked to stop/) });
+  });
+
+  it("lets a single text answer someone who replied, without using a first-text slot", () => {
+    const messages = [reply(C, "How much?"), twilioMessage({ to: C }), firstText(E, today)];
+    expect(plan([row(C)], { single: true, messages, dailyMax: 1 })[0].action).toBe("send");
+  });
+
+  it("only lets a single text past a phrase when you overrule it, and never past a STOP", () => {
+    const phrase = [reply(B, "Can I unsubscribe any time?")];
+    expect(plan([row(B)], { single: true, messages: phrase })[0]).toMatchObject({ action: "skip", reason: expect.stringMatching(/--not-opt-out/) });
+    expect(plan([row(B)], { single: true, messages: phrase, overrule: true })[0].action).toBe("send");
+    const keyword = [reply(B, "STOP")];
+    expect(plan([row(B)], { single: true, messages: keyword, overrule: true })[0].action).toBe("skip");
+    expect(plan([row(A)], { single: true, dnc: [A], overrule: true })[0]).toMatchObject({ action: "skip", reason: "on the do-not-call list" });
+  });
+
+  it("counts a single first text against the daily limit", () => {
+    expect(plan([row(A)], { single: true, messages: [firstText(E, today)], dailyMax: 1 })[0].action).toBe("later");
+    expect(plan([row(A)], { single: true, dailyMax: 1 })[0].action).toBe("send");
   });
 
   it("reports each text's size", () => {
@@ -218,12 +284,14 @@ function harness({
   balance = "50.00",
   currency = "USD",
   now = NOON,
-  send = () => "ok", // per POST: "ok", an HTTP status, "network" or "no-sid"
-  delivery = "delivered",
+  send = () => "ok", // per POST: "ok", an HTTP status, "network", "no-sid" or a SID to return
+  delivery = "delivered", // or an HTTP status for the status read
   env = {},
+  overrides = {},
 } = {}) {
   const dir = mkdtempSync(join(ENV_HOME, "run-"));
   const files = { batch: join(dir, "texts.json"), dnc: join(dir, "do-not-call.txt"), log: join(dir, "texts.csv") };
+  files.lock = `${files.log}.lock`;
   if (batch !== null) writeFileSync(files.batch, typeof batch === "string" ? batch : JSON.stringify(batch));
   if (dnc !== null) writeFileSync(files.dnc, dnc);
   const requests = [];
@@ -237,20 +305,25 @@ function harness({
       posts += 1;
       const outcome = send(posts, body);
       if (outcome === "network") throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } });
+      if (outcome === 502) return new Response("<html>Bad Gateway</html>", { status: 502 });
       if (typeof outcome === "number") return Response.json({ message: "Attempt to send to unsubscribed recipient", code: 21610 }, { status: outcome });
-      return Response.json({ sid: outcome === "no-sid" ? undefined : SID(posts), status: "queued" }, { status: 201 });
+      const sid = outcome === "ok" ? SID(posts) : outcome === "no-sid" ? undefined : outcome;
+      return Response.json({ sid, status: "queued" }, { status: 201 });
     }
     if (pathname.endsWith("/Balance.json")) return Response.json({ balance, currency });
     if (pathname.endsWith("/Messages.json")) {
       const from = searchParams.get("From");
       const to = searchParams.get("To");
-      return Response.json({ messages: messages.filter((m) => (from ? m.from === from : m.to === to)), next_page_uri: null });
+      return Response.json({ messages: messages.filter((m) => (!from || m.from === from) && (!to || m.to === to)), next_page_uri: null });
     }
     const sid = /\/Messages\/(\w+)\.json$/.exec(pathname)?.[1];
-    if (sid) return Response.json({ sid, status: delivery, error_code: delivery === "undelivered" ? 30007 : null, error_message: null });
+    if (sid) {
+      if (typeof delivery === "number") return new Response("<html>Bad Gateway</html>", { status: delivery });
+      return Response.json({ sid, status: delivery, error_code: delivery === "undelivered" ? 30007 : null, error_message: null });
+    }
     throw new Error(`unexpected request ${method} ${url}`);
   });
-  const deps = { fetch, now: vi.fn(() => new Date(now)), sleep: vi.fn(async () => {}), log: vi.fn(), error: vi.fn() };
+  const deps = { fetch, now: vi.fn(() => new Date(now)), sleep: vi.fn(async () => {}), log: vi.fn(), error: vi.fn(), ...overrides };
   const fullEnv = {
     HOME: ENV_HOME,
     TWILIO_ACCOUNT_SID: "ACtest",
@@ -260,35 +333,38 @@ function harness({
     TEXT_LOG: files.log,
     ...env,
   };
+  // Answers one kind of request differently, and leaves the rest to the stub above.
+  const intercept = (match, respond) => {
+    const inner = fetch.getMockImplementation();
+    fetch.mockImplementation(async (url, init) => (match(url, init) ? respond(url, init) : inner(url, init)));
+  };
   return {
     deps,
     requests,
     files,
+    intercept,
     run: (...args) => main(["node", "text.mjs", ...args], fullEnv, deps),
     sentTo: () => requests.filter((r) => r.method === "POST").map((r) => r.body.To),
-    logRows: () => {
-      try {
-        return readFileSync(files.log, "utf8").trim().split("\n").slice(1);
-      } catch {
-        return [];
-      }
-    },
+    logRows: () => (existsSync(files.log) ? readFileSync(files.log, "utf8").trim().split("\n").slice(1) : []),
     output: () => [...deps.log.mock.calls, ...deps.error.mock.calls].flat().join("\n"),
   };
 }
+const isHistory = (url) => url.includes("/Messages.json?") && !(url.includes("From=") && url.includes("To="));
 
 describe("main: batch", () => {
-  it("previews by default: shows every text and why, sends nothing", async () => {
+  it("previews by default: shows every text, its source and why, and sends nothing", async () => {
     const h = harness({ batch: [row(A, "Acme Plumbing"), row(B)], dnc: "0491 570 156 # asked to stop\n" });
     expect(await h.run()).toBe(0);
     expect(h.sentTo()).toEqual([]);
+    expect(h.output()).toMatch(/First texts today: 0 of 5/);
     expect(h.output()).toMatch(/1\. Acme Plumbing, 0491 570 006 · 1 segment · SEND NOW/);
     expect(h.output()).toMatch(/2\. .*SKIP: on the do-not-call list/);
     expect(h.output()).toContain(OK_TEXT);
+    expect(h.output()).toContain(`source: ${SOURCE}`);
     expect(h.output()).toMatch(/Preview only: nothing was sent\. Add --send to send the 1 marked SEND NOW/);
   });
 
-  it("sends in order with the batch text, from the outreach number, and logs each one", async () => {
+  it("sends in order with the batch text, from the outreach number, logs each one with its source, and releases the lock", async () => {
     const h = harness();
     expect(await h.run("--send")).toBe(0);
     const posts = h.requests.filter((r) => r.method === "POST");
@@ -298,16 +374,17 @@ describe("main: batch", () => {
     ]);
     expect(posts[0].url).toBe("https://api.twilio.com/2010-04-01/Accounts/ACtest/Messages.json");
     expect(h.logRows()).toEqual([
-      expect.stringMatching(new RegExp(`^2026-11-05T01:00:00.000Z,\\${A},Biz 006,batch,${SID(1)},1$`)),
-      expect.stringMatching(new RegExp(`,\\${B},Biz 156,batch,${SID(2)},1$`)),
+      `2026-11-05T01:00:00.000Z,${A},Biz 006,batch,${SID(1)},1,${SOURCE},`,
+      `2026-11-05T01:00:00.000Z,${B},Biz 156,batch,${SID(2)},1,${SOURCE},`,
     ]);
     expect(h.deps.sleep).toHaveBeenCalledWith(20_000); // a gap between texts
     expect(h.output()).toMatch(/Biz 006, 0491 570 006: delivered/);
     expect(h.output()).toMatch(/Sent 2 of 2/);
+    expect(readdirSync(join(h.files.lock, ".."))).not.toContain("texts.csv.lock");
   });
 
   it("never texts the same batch row twice: a re-run skips anyone already texted", async () => {
-    const h = harness({ messages: [twilioMessage({ to: A, at: "Thu, 05 Nov 2026 00:30:00 +0000" })] });
+    const h = harness({ messages: [firstText(A, "Thu, 05 Nov 2026 00:30:00 +0000")] });
     expect(await h.run("--send")).toBe(0);
     expect(h.sentTo()).toEqual([B]);
   });
@@ -316,13 +393,9 @@ describe("main: batch", () => {
     const h = harness();
     const pages = [
       { messages: [], next_page_uri: "/2010-04-01/Accounts/ACtest/Messages.json?From=%2B61485094768&Page=1" },
-      { messages: [twilioMessage({ to: A })], next_page_uri: null },
+      { messages: [firstText(A)], next_page_uri: null },
     ];
-    const inner = h.deps.fetch.getMockImplementation();
-    h.deps.fetch.mockImplementation(async (url, init) => {
-      if (url.includes("Messages.json?From=")) return Response.json(pages.shift());
-      return inner(url, init);
-    });
+    h.intercept((url) => isHistory(url) && url.includes("From="), () => Response.json(pages.shift()));
     expect(await h.run("--send")).toBe(0);
     expect(h.sentTo()).toEqual([B]); // A was only on the second page
     const urls = h.deps.fetch.mock.calls.map(([url]) => url);
@@ -330,20 +403,55 @@ describe("main: batch", () => {
     expect(urls.some((url) => url.includes("Messages.json?To=%2B61485094768"))).toBe(true);
   });
 
-  it("stops before sending if Twilio's history comes back malformed", async () => {
+  it("stops rather than read an endless history", async () => {
     const h = harness();
-    const inner = h.deps.fetch.getMockImplementation();
-    h.deps.fetch.mockImplementation(async (url, init) => (url.includes("Messages.json?") ? Response.json({}) : inner(url, init)));
+    h.intercept(isHistory, () => Response.json({ messages: [], next_page_uri: "/2010-04-01/Accounts/ACtest/Messages.json?From=x&Page=2" }));
     expect(await h.run("--send")).toBe(1);
     expect(h.sentTo()).toEqual([]);
+    expect(h.output()).toMatch(/more than 5000 texts/);
+  });
+
+  it.each([
+    ["no message list", { next_page_uri: null }, /without messages/],
+    ["a message list that isn't a list", { messages: "none" }, /without messages/],
+    ["a text with no date", { messages: [{ ...firstText(A), date_created: null }] }, /can't account for/],
+    ["a text that isn't from this number", { messages: [firstText(A, YESTERDAY), { ...firstText(B), from: "+61491570999" }] }, /can't account for/],
+  ])("sends nothing when Twilio's history has %s", async (_, page, why) => {
+    const h = harness();
+    h.intercept((url) => isHistory(url) && url.includes("From="), () => Response.json(page));
+    expect(await h.run("--send")).toBe(1);
+    expect(h.sentTo()).toEqual([]);
+    expect(h.output()).toMatch(why);
     expect(h.output()).toMatch(/Nothing was sent/);
   });
 
-  it("keeps to the daily limit and says how many are left", async () => {
+  it("knows a reply is inbound from the list it came back in, whatever its direction field says", async () => {
+    const h = harness({ batch: [row(A)], messages: [{ ...reply(A, "STOP"), direction: "outbound-reply" }] });
+    expect(await h.run()).toBe(0);
+    expect(h.output()).toMatch(/SKIP: asked to stop/);
+  });
+
+  it("sends 5 first texts a day by default, and says how many are left", async () => {
+    const h = harness({ batch: [row(A), row(B), row(C), row(D), row(E), row(F)] });
+    expect(await h.run("--send")).toBe(0);
+    expect(h.sentTo()).toEqual([A, B, C, D, E]);
+    expect(h.output()).toMatch(/1 more in the batch: run it again tomorrow/);
+  });
+
+  it("keeps to --max", async () => {
     const h = harness({ batch: [row(A), row(B), row(C)] });
     expect(await h.run("--send", "--max=2")).toBe(0);
     expect(h.sentTo()).toEqual([A, B]);
-    expect(h.output()).toMatch(/1 more in the batch: run it again tomorrow/);
+  });
+
+  it("counts first texts sent earlier the same Sydney day, even to numbers no longer in the batch", async () => {
+    // 9:30am Thursday in Sydney, but still Wednesday in UTC.
+    const messages = [firstText(E, "Wed, 04 Nov 2026 22:10:00 +0000"), firstText(F, "Wed, 04 Nov 2026 22:15:00 +0000")];
+    const h = harness({ now: "2026-11-04T22:30:00Z", batch: [row(A), row(B), row(C)], messages });
+    expect(await h.run("--send", "--max=2")).toBe(0);
+    expect(h.sentTo()).toEqual([]);
+    expect(h.output()).toMatch(/First texts today: 2 of 2/);
+    expect(h.output()).toMatch(/LATER: today's limit of 2 first texts is reached/);
   });
 
   it.each(["0", "21", "2.5", "lots"])("refuses --max=%s", async (max) => {
@@ -365,9 +473,9 @@ describe("main: batch", () => {
   });
 
   it("stops mid-batch when the hours close", async () => {
-    const h = harness({ batch: [row(A), row(B)] });
-    h.deps.now.mockReturnValueOnce(new Date(NOON)).mockReturnValueOnce(new Date(NOON)).mockReturnValueOnce(new Date(NOON));
-    h.deps.now.mockReturnValue(new Date("2026-11-05T09:00:00Z")); // 8pm
+    const h = harness();
+    let calls = 0;
+    h.deps.now.mockImplementation(() => new Date(++calls <= 3 ? NOON : "2026-11-05T09:00:00Z")); // then 8pm
     expect(await h.run("--send")).toBe(1);
     expect(h.sentTo()).toEqual([A]);
     expect(h.output()).toMatch(/Stopped: .*20:00 in Sydney/);
@@ -386,8 +494,23 @@ describe("main: batch", () => {
     expect(enough.sentTo()).toEqual([A, B]);
   });
 
+  it("allows a send that leaves exactly the floor", async () => {
+    const h = harness({ batch: [row(A)], balance: "5.0515" });
+    expect(await h.run("--send")).toBe(0);
+    expect(h.sentTo()).toEqual([A]);
+  });
+
+  it("prices every segment, not every text", async () => {
+    const long = `Phondo. Reply STOP. ${"a".repeat(300)}`; // 3 segments
+    const h = harness({ batch: [row(A, "A", long), row(B, "B", long)], balance: "5.305" }); // 6 x 0.0515 = 0.309
+    expect(await h.run("--send")).toBe(1);
+    expect(h.sentTo()).toEqual([]);
+    expect(h.output()).toMatch(/6 segments, ≈US\$0\.31/);
+  });
+
   it.each([
     ["an unreadable balance", { balance: "n/a" }],
+    ["no balance", { balance: null }],
     ["a balance in another currency", { currency: "AUD" }],
   ])("refuses to send with %s", async (_, opts) => {
     const h = harness(opts);
@@ -412,29 +535,77 @@ describe("main: batch", () => {
     expect(h.output()).toMatch(/refused two texts in a row, so stopping/);
   });
 
+  it("only stops for refusals that come one after another", async () => {
+    const h = harness({ batch: [row(A), row(B), row(C), row(D)], send: (n) => (n % 2 ? 400 : "ok") });
+    expect(await h.run("--send")).toBe(1);
+    expect(h.sentTo()).toEqual([A, B, C, D]);
+  });
+
   it.each([
     ["a network failure", "network", /ECONNRESET/],
     ["a gateway error", 502, /HTTP 502/],
     ["a reply without a message ID", "no-sid", /without a message ID/],
+    ["a reply with a malformed message ID", "SM-not-a-real-sid", /without a message ID/],
   ])("stops on %s, which may have sent the text, and says a re-run is safe", async (_, outcome, why) => {
-    const h = harness({ batch: [row(A), row(B)], send: () => outcome });
+    const h = harness({ send: () => outcome });
     expect(await h.run("--send")).toBe(1);
     expect(h.sentTo()).toEqual([A]);
     expect(h.output()).toMatch(why);
     expect(h.output()).toMatch(/may have gone.*Re-running is safe/);
   });
 
-  it("reports texts a carrier didn't deliver, and exits non-zero", async () => {
-    const h = harness({ delivery: "undelivered" });
+  it("skips anyone texted from this number after the history was read", async () => {
+    const h = harness();
+    h.intercept(
+      (url) => url.includes("From=") && url.includes(`To=${encodeURIComponent(B)}`),
+      () => Response.json({ messages: [firstText(B, "Thu, 05 Nov 2026 00:59:00 +0000")] })
+    );
     expect(await h.run("--send")).toBe(1);
-    expect(h.output()).toMatch(/undelivered \(error 30007\)/);
+    expect(h.sentTo()).toEqual([A]);
+    expect(h.output()).toMatch(/Skipped Biz 156, 0491 570 156: they've been texted from this number since the history was read/);
   });
 
-  it("still sends when the log can't be written, and prints the row to add by hand", async () => {
-    const h = harness({ env: { TEXT_LOG: join(ENV_HOME, "no-such-dir-file", "x") } });
-    writeFileSync(join(ENV_HOME, "no-such-dir-file"), "a file, so the log's directory can't be made");
-    expect(await h.run("--send")).toBe(0);
+  it("stops if it can't re-check someone before texting them", async () => {
+    const h = harness();
+    h.intercept(
+      (url) => url.includes("From=") && url.includes(`To=${encodeURIComponent(A)}`),
+      () => new Response("<html>Bad Gateway</html>", { status: 502 })
+    );
+    expect(await h.run("--send")).toBe(1);
+    expect(h.sentTo()).toEqual([]);
+    expect(h.output()).toMatch(/Couldn't re-check Biz 006/);
+  });
+
+  it.each([
+    ["undelivered", /undelivered \(error 30007\)/],
+    ["failed", /: failed\./],
+  ])("reports %s texts, and exits non-zero", async (delivery, why) => {
+    const h = harness({ delivery });
+    expect(await h.run("--send")).toBe(1);
+    expect(h.output()).toMatch(why);
+  });
+
+  it("exits non-zero when it can't read a delivery status", async () => {
+    const h = harness({ delivery: 502 });
+    expect(await h.run("--send")).toBe(1);
+    expect(h.sentTo()).toEqual([A, B]);
+    expect(h.output()).toMatch(/couldn't read the delivery status \(HTTP 502/);
+  });
+
+  it("still sends when the log can't be written, prints the row to add by hand, and exits non-zero", async () => {
+    const blocker = join(ENV_HOME, "a-file-not-a-dir");
+    writeFileSync(blocker, "so the log's directory can't be made");
+    const h = harness({ env: { TEXT_LOG: join(blocker, "texts.csv") }, overrides: { lock: () => () => {} } });
+    expect(await h.run("--send")).toBe(1);
+    expect(h.sentTo()).toEqual([A, B]);
     expect(h.output()).toMatch(/couldn't be written .*Add this row by hand:\n.*batch,SM/);
+  });
+
+  it("keeps spreadsheet formulas out of the log", async () => {
+    const h = harness({ batch: [row(A, '=HYPERLINK("http://x")', OK_TEXT, "+tracked source")] });
+    expect(await h.run("--send")).toBe(0);
+    expect(h.logRows()[0]).toContain(`,"'=HYPERLINK(""http://x"")",batch,`);
+    expect(h.logRows()[0]).toContain(",'+tracked source,");
   });
 
   it.each([
@@ -443,6 +614,7 @@ describe("main: batch", () => {
     ["the batch is missing", { batch: null }, /No batch at/],
     ["the batch is empty", { batch: [] }, /is empty/],
     ["a batch text has no opt-out", { batch: [row(A, "Acme", "Hi from Phondo")] }, /row 1 \(Acme\).*STOP/],
+    ["a batch row has no source", { batch: [{ to: A, business: "Acme", text: OK_TEXT }] }, /row 1 \(Acme\): "source" is missing/],
     ["the Twilio keys are missing", { env: { TWILIO_AUTH_TOKEN: "" } }, /TWILIO_ACCOUNT_SID/],
     ["TEXT_FROM isn't a mobile", { env: { TEXT_FROM: "(02) 5701 5064" } }, /TEXT_FROM/],
   ])("refuses when %s, before calling Twilio", async (_, opts, why) => {
@@ -464,6 +636,64 @@ describe("main: batch", () => {
     expect(await h.run()).toBe(1);
     expect(h.output()).toContain(join(ENV_HOME, ".phondo-outreach", "do-not-call.txt"));
   });
+
+  it("shows their words without terminal control codes", async () => {
+    const h = harness({ batch: [row(A)], messages: [reply(A, "hi\u001b[2J\u001b[1;1Hthere‮")] });
+    expect(await h.run()).toBe(0);
+    expect(h.output()).toMatch(/replied on 2026-11-04: "hi \[2J \[1;1Hthere"/);
+    expect(h.output()).not.toMatch(/[\u001b‮]/);
+  });
+});
+
+describe("main: opt-outs go on the do-not-call list", () => {
+  it("adds a STOP reply to the list, keeping the line before it intact, and skips them", async () => {
+    const h = harness({ batch: [row(A), row(B)], dnc: "0491 570 157  # said no on a call", messages: [reply(B, "Stop texting me pls")] });
+    expect(await h.run()).toBe(0);
+    expect(readFileSync(h.files.dnc, "utf8")).toBe(
+      '0491 570 157  # said no on a call\n0491 570 156  # replied "Stop texting me pls" to a text on 2026-11-04 (added by text.mjs)\n'
+    );
+    expect(h.output()).toMatch(/Added 0491 570 156 to the do-not-call list/);
+    expect(h.output()).toMatch(/2\. Biz 156, 0491 570 156 .*SKIP: asked to stop/);
+  });
+
+  it("doesn't add a phrase you might overrule, or anyone already listed", async () => {
+    const h = harness({ batch: [row(A)], dnc: "0491 570 006\n", messages: [reply(A, "STOP"), reply(B, "not interested")] });
+    expect(await h.run()).toBe(0);
+    expect(readFileSync(h.files.dnc, "utf8")).toBe("0491 570 006\n");
+  });
+
+  it("stops if it can't write the list, and prints the line to add", async () => {
+    const h = harness({ messages: [reply(B, "STOP")], overrides: { appendDoNotCall: () => { throw new Error("read-only"); } } });
+    expect(await h.run("--send")).toBe(1);
+    expect(h.sentTo()).toEqual([]);
+    expect(h.output()).toMatch(/Couldn't add 0491 570 156 to the do-not-call list \(read-only\)\. Nothing was sent\..*\n0491 570 156  # replied "STOP"/);
+  });
+});
+
+describe("main: one send at a time", () => {
+  it("won't send while another send holds the lock, and doesn't touch Twilio", async () => {
+    const h = harness();
+    writeFileSync(h.files.lock, String(process.pid)); // a process that's alive: this one
+    expect(await h.run("--send")).toBe(1);
+    expect(h.deps.fetch).not.toHaveBeenCalled();
+    expect(h.output()).toMatch(/Not sending: another send is running \(process \d+\)/);
+    expect(readFileSync(h.files.lock, "utf8")).toBe(String(process.pid)); // not ours to remove
+  });
+
+  it("clears a lock left by a send that was killed", async () => {
+    const h = harness();
+    writeFileSync(h.files.lock, "2147483646"); // no such process
+    expect(await h.run("--send")).toBe(0);
+    expect(h.sentTo()).toEqual([A, B]);
+    expect(existsSync(h.files.lock)).toBe(false);
+  });
+
+  it("previews without the lock", async () => {
+    const h = harness();
+    writeFileSync(h.files.lock, String(process.pid));
+    expect(await h.run()).toBe(0);
+    expect(h.output()).toMatch(/Preview only/);
+  });
 });
 
 describe("main: one text (--to)", () => {
@@ -483,14 +713,33 @@ describe("main: one text (--to)", () => {
       { From: FROM, To: A, Body: "From $149 a month. Michael, Phondo. Reply STOP to opt out." },
     ]);
     expect(h.deps.sleep).not.toHaveBeenCalledWith(20_000);
-    expect(h.logRows()).toEqual([expect.stringMatching(new RegExp(`,\\${A},,single,${SID(1)},1$`))]);
+    expect(h.logRows()).toEqual([`2026-11-05T01:00:00.000Z,${A},,single,${SID(1)},1,,`]);
   });
 
-  it("refuses someone who asked to stop", async () => {
-    const h = harness({ messages: [reply(A, "Stop texting me")] });
-    expect(await h.run("--to=0491 570 006", `--text=${OK_TEXT}`, "--send")).toBe(1);
+  it("sends the text made plain", async () => {
+    const h = harness({ messages: [reply(A, "How much?")] });
+    expect(await h.run("--to=0491 570 006", "--text=Phondo – it won’t bite. Reply STOP to opt out.", "--send")).toBe(0);
+    expect(h.requests.find((r) => r.method === "POST").body.Body).toBe("Phondo - it won't bite. Reply STOP to opt out.");
+  });
+
+  it("refuses someone who sent a STOP, even with --not-opt-out", async () => {
+    const h = harness({ messages: [reply(A, "How much?"), reply(A, "Stop texting me")] });
+    expect(await h.run("--to=0491 570 006", `--text=${OK_TEXT}`, "--not-opt-out=they meant the other thing", "--send")).toBe(1);
     expect(h.sentTo()).toEqual([]);
     expect(h.output()).toMatch(/Not texting 0491 570 006: asked to stop/);
+  });
+
+  it("refuses a reply that may be a stop until you overrule it, and logs why", async () => {
+    const messages = [twilioMessage({ to: A }), reply(A, "Can I unsubscribe any time or is there a lock in?")];
+    const refused = harness({ messages });
+    expect(await refused.run("--to=0491 570 006", `--text=${OK_TEXT}`, "--send")).toBe(1);
+    expect(refused.sentTo()).toEqual([]);
+    expect(refused.output()).toMatch(/may have asked to stop .*--not-opt-out/);
+
+    const overruled = harness({ messages });
+    expect(await overruled.run("--to=0491 570 006", `--text=${OK_TEXT}`, "--not-opt-out=asking about the contract", "--send")).toBe(0);
+    expect(overruled.sentTo()).toEqual([A]);
+    expect(overruled.logRows()[0]).toMatch(/,single,SM\w+,1,,asking about the contract$/);
   });
 
   it("refuses someone on the do-not-call list", async () => {
@@ -499,8 +748,36 @@ describe("main: one text (--to)", () => {
     expect(h.sentTo()).toEqual([]);
   });
 
+  it("needs a source for a first text, and counts it against the daily limit", async () => {
+    const noSource = harness();
+    expect(await noSource.run("--to=0491 570 006", `--text=${OK_TEXT}`, "--send")).toBe(1);
+    expect(noSource.sentTo()).toEqual([]);
+    expect(noSource.output()).toMatch(/--source=.*consent/);
+
+    const sourced = harness();
+    expect(await sourced.run("--to=0491 570 006", `--text=${OK_TEXT}`, "--source=on their van", "--send")).toBe(0);
+    expect(sourced.logRows()[0]).toMatch(/,single,SM\w+,1,on their van,$/);
+
+    const full = harness({ messages: [firstText(E, "Thu, 05 Nov 2026 00:00:00 +0000")] });
+    expect(await full.run("--to=0491 570 006", `--text=${OK_TEXT}`, "--source=on their van", "--max=1", "--send")).toBe(1);
+    expect(full.sentTo()).toEqual([]);
+    expect(full.output()).toMatch(/today's limit of 1 first texts is reached/);
+  });
+
+  it("won't send at 9pm", async () => {
+    const h = harness({ now: "2026-11-05T10:00:00Z", messages: [reply(A, "How much?")] });
+    expect(await h.run("--to=0491 570 006", `--text=${OK_TEXT}`, "--send")).toBe(1);
+    expect(h.sentTo()).toEqual([]);
+  });
+
+  it("flags a reply that mentions stop without asking to", async () => {
+    const h = harness({ messages: [reply(A, "Can it stop calls going to voicemail?")] });
+    expect(await h.run("--to=0491 570 006", `--text=${OK_TEXT}`)).toBe(0);
+    expect(h.output()).toMatch(/Their texts mention "stop"/);
+  });
+
   it("says a re-run would text them again when the send is uncertain", async () => {
-    const h = harness({ send: () => "network" });
+    const h = harness({ messages: [reply(A, "How much?")], send: () => "network" });
     expect(await h.run("--to=0491 570 006", `--text=${OK_TEXT}`, "--send")).toBe(1);
     expect(h.output()).toMatch(/Check the Twilio console before sending it again/);
   });
@@ -508,7 +785,8 @@ describe("main: one text (--to)", () => {
   it.each([
     [["--to=0491 570 006"], /go together/],
     [[`--text=${OK_TEXT}`], /go together/],
-    [["--to=0491 570 006", `--text=${OK_TEXT}`, "--max=3"], /--max is for the batch/],
+    [["--source=x"], /--source goes with --to/],
+    [["--not-opt-out=x"], /--not-opt-out goes with --to/],
     [["--to=(02) 5550 1234", `--text=${OK_TEXT}`], /landlines can't get texts/],
     [["--to=0491 570 006", "--text=Hi mate"], /Not sending that: .*Phondo/],
     [["--to=0491 570 006", "--text="], /--text needs a value/],

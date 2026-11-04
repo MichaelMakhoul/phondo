@@ -4,29 +4,33 @@
  * Their replies are forwarded to your mobile, and a call to that number rings
  * Phondo's line (the Twilio Studio flow from ~/.phondo-outreach/setup-texting-number.mjs).
  *
- *   node --env-file=.env.local scripts/outreach/text.mjs          # preview: who gets a text today, and the words
+ *   node --env-file=.env.local --env-file=scripts/outreach/.env \
+ *     scripts/outreach/text.mjs                                    # preview: who gets a text today, and the words
  *   ...  scripts/outreach/text.mjs --send                          # send today's batch texts
  *   ...  scripts/outreach/text.mjs --to="0491 570 006" --text="…"  # preview one text, e.g. answering a reply
  *   ...  scripts/outreach/text.mjs --to="0491 570 006" --text="…" --send
  *
  * The batch (~/.phondo-outreach/texts.json) is a JSON array of
- * { "to", "business", "text" }, sent in order, at most --max (default 5) first
- * texts a day.
+ * { "to", "business", "text", "source" }, sent in order. "source" is your
+ * evidence of consent: where the business publishes the number.
  *
  * Guards:
  *   - Spam Act 2003: every text names Phondo (s 17) and says to reply STOP to
- *     opt out (s 18). Nobody on the do-not-call list is texted, and nobody whose
- *     reply asks us to stop.
+ *     opt out (s 18), and every first text records where the number was published
+ *     (consent, s 16). Nobody on the do-not-call list is texted, and nobody whose
+ *     reply asks us to stop; a STOP-style reply also puts them on the list.
  *   - A batch text only goes to someone this number has never texted and who has
  *     never texted it, so a re-run never doubles up. Answer a reply with --to.
- *   - Only in the dialer's calling hours, Sydney time. The Spam Act sets no hours,
- *     but a text at 9pm reads as spam.
+ *   - At most --max (default 5) first texts a day, counted across everything this
+ *     number has sent, and only in the dialer's calling hours, Sydney time. The
+ *     Spam Act sets no hours, but a text at 9pm reads as spam.
  *   - It never spends the Twilio balance below US$5: an empty balance takes
  *     Phondo's phone lines down too.
+ *   - One send at a time: --send holds a lock from reading the history to the last text.
  * The batch, the do-not-call list (shared with dial.mjs) and the text log live in
  * ~/.phondo-outreach/ (override with TEXT_BATCH, DIAL_DNC_FILE and TEXT_LOG).
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { appendFileSync, existsSync, linkSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,7 +48,7 @@ const STATUS_WAIT_MS = 10_000;
 const REQUEST_TIMEOUT_MS = 20_000;
 const HISTORY_PAGES = 5; // of 1,000 texts each
 const SHOWN_HISTORY = 6;
-const LOG_HEADER = "sent_at,to,business,kind,message_sid,segments\n";
+const LOG_HEADER = "sent_at,to,business,kind,message_sid,segments,source,note\n";
 const FAILED = new Set(["failed", "undelivered"]);
 
 // GSM 03.38: a basic character costs one septet and an extension-table one two.
@@ -64,21 +68,39 @@ const TYPOGRAPHY = [
   [/[   ]/g, " "],
 ];
 
-// Twilio's opt-out keywords as a whole reply, plus plain-English ways of saying
-// it. Errs towards "stop"; the preview shows their words either way.
-const OPT_OUT_REPLIES = new Set([
-  "stop", "stopall", "stop all", "unsubscribe", "cancel", "end", "quit", "optout", "opt out", "revoke",
-  "no", "nope", "remove", "remove me", "stop please", "please stop",
-]);
-const OPT_OUT_PHRASES =
-  /\b(stop (texting|messaging|msging|contacting|sending|calling)|unsubscribe|opt ?out|remove me|take me off|(dont|do not|never) (text|message|msg|contact|call)|not interested|no thanks|no thank you|leave me alone|wrong number)\b/;
+// How people say stop. A KEYWORD reply (STOP, UNSUBSCRIBE and the like, "stop
+// texting me", or a short reply with "stop" in it) is final: they're never texted
+// again and go on the do-not-call list. A PHRASE ("not interested", "wrong number")
+// blocks texts too, but --not-opt-out can overrule it, on the record, for a reply
+// like "can I unsubscribe any time?". Both err towards stop: a false alarm costs
+// one text, a miss breaks the Spam Act.
+const KEYWORD_FIRST_WORDS = new Set(["stop", "stopall", "unsub", "unsubscribe", "optout"]);
+const KEYWORD_REPLIES = new Set(["cancel", "end", "quit", "revoke", "opt out"]);
+const KEYWORD_PHRASE = /\bstop (texting|txting|messaging|msging|contacting|sending)\b/;
+const PHRASE_REPLIES = new Set(["no", "nope", "nah", "nah mate", "no mate"]);
+const PHRASES = new RegExp(
+  [
+    "unsub(scribe)?",
+    "opt ?out",
+    "remove me|please remove|take me off|(lose|delete|remove) (my|this|the) number",
+    "(dont|do not|never) (call (or|and) )?(text|txt|sms|message|msg|contact)",
+    "not interested",
+    "no (thanks|thank you|thankyou|thx)",
+    "leave me alone|wrong number|spam(ming)?",
+    "(fuck|f|piss|rack|bugger|nick) off|get lost|go away",
+  ]
+    .map((phrase) => `\\b(${phrase})\\b`)
+    .join("|")
+);
 
-const USAGE = `Usage: node --env-file=.env.local scripts/outreach/text.mjs [options]
+const USAGE = `Usage: node --env-file=.env.local --env-file=scripts/outreach/.env scripts/outreach/text.mjs [options]
   (no options)            preview the batch: who gets a text today, who's skipped and why, and the words
   --send                  send the texts marked SEND NOW
   --max=N                 first texts a day (default ${DEFAULT_DAILY_MAX}, at most ${MAX_DAILY_MAX})
-  --to="04…" --text="…"   one text to one person, e.g. answering a reply (add --send to send it)`;
-const FLAGS = { send: "switch", help: "switch", max: "value", to: "value", text: "value" };
+  --to="04…" --text="…"   one text to one person, e.g. answering a reply (add --send to send it)
+  --source="…"            with --to, for someone this number has never texted: where they publish their number
+  --not-opt-out="…"       with --to, when their reply only looks like a stop ("can I unsubscribe any time?"): what they meant`;
+const FLAGS = { send: "switch", help: "switch", max: "value", to: "value", text: "value", source: "value", "not-opt-out": "value" };
 
 /** The SMS encoding a text needs and how many segments it's billed as. */
 export function smsSegments(text) {
@@ -120,14 +142,19 @@ export function messageProblem(text) {
   return null;
 }
 
-/** Does this reply ask us to stop texting? */
-export function isOptOut(body) {
+/** Whether a reply asks us to stop: "keyword" (final), "phrase" (--not-opt-out can overrule it) or null. */
+export function optOut(body) {
   const plain = String(body ?? "")
     .toLowerCase()
     .replace(/['’]/g, "")
     .replace(/[^a-z]+/g, " ")
     .trim();
-  return OPT_OUT_REPLIES.has(plain) || OPT_OUT_PHRASES.test(plain);
+  if (!plain) return null;
+  const words = plain.split(" ");
+  if (KEYWORD_FIRST_WORDS.has(words[0]) || KEYWORD_REPLIES.has(plain) || KEYWORD_PHRASE.test(plain)) return "keyword";
+  if (words.length <= 3 && words.includes("stop")) return "keyword"; // "pls stop", "ok stop it"
+  if (PHRASE_REPLIES.has(plain) || PHRASES.test(plain)) return "phrase";
+  return null;
 }
 
 /** The batch's rows, checked and made plain. Throws on the first row that can't be sent. */
@@ -138,7 +165,7 @@ export function parseBatch(json) {
   } catch (err) {
     throw new Error(`it isn't valid JSON (${err.message})`);
   }
-  if (!Array.isArray(rows)) throw new Error('it has to be a JSON array of { "to", "business", "text" }');
+  if (!Array.isArray(rows)) throw new Error('it has to be a JSON array of { "to", "business", "text", "source" }');
   const seen = new Set();
   return rows.map((row, i) => {
     const to = normalizeAuNumber(String(row?.to ?? ""));
@@ -151,20 +178,22 @@ export function parseBatch(json) {
     const text = normalizeText(row.text);
     const problem = messageProblem(text);
     if (problem) throw new Error(`row ${i + 1} (${business}): ${problem}`);
-    return { to, business, text };
+    if (typeof row.source !== "string" || !row.source.trim()) {
+      throw new Error(`row ${i + 1} (${business}): "source" is missing: say where the business publishes this number (your evidence of consent, Spam Act s 16)`);
+    }
+    return { to, business, text, source: row.source.trim() };
   });
 }
 
-/** Twilio's texts grouped by the other person's number: what we sent them and what they sent us, oldest first. */
+/** Texts grouped by the other person's number: what we sent them and what they sent us, oldest first. */
 export function byContact(messages) {
   const contacts = new Map();
   const oldestFirst = [...messages].sort((a, b) => Date.parse(a.date_created) - Date.parse(b.date_created));
   for (const m of oldestFirst) {
-    const inbound = m.direction === "inbound";
-    const other = normalizeAuNumber(String((inbound ? m.from : m.to) ?? ""));
+    const other = normalizeAuNumber(String((m.inbound ? m.from : m.to) ?? ""));
     if (!other) continue; // not an Australian number, so never one we text
     if (!contacts.has(other)) contacts.set(other, { sent: [], received: [] });
-    contacts.get(other)[inbound ? "received" : "sent"].push({
+    contacts.get(other)[m.inbound ? "received" : "sent"].push({
       at: new Date(m.date_created),
       body: m.body ?? "",
       status: m.status ?? "",
@@ -181,31 +210,58 @@ export function sydneyDate(date) {
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
+// The Studio flow from setup-texting-number.mjs forwards each reply to your mobile with this prefix.
+const FORWARDED = "Reply to your Phondo texts from";
+
+/**
+ * How many first texts went out on `today`: people texted for the first time that
+ * day who hadn't texted first. It counts everyone this number has texted, so
+ * editing the batch can't reset it. Your own mobile isn't counted: the setup test
+ * has no STOP line (every text from this script does), and forwarded replies carry
+ * the flow's prefix.
+ */
+export function firstTextsOn(contacts, today) {
+  let count = 0;
+  for (const { sent, received } of contacts.values()) {
+    const [first] = sent;
+    if (!first || sydneyDate(first.at) !== today || !/\bSTOP\b/.test(first.body)) continue;
+    if (received[0]?.at < first.at || sent.some((m) => m.body.startsWith(FORWARDED))) continue;
+    count++;
+  }
+  return count;
+}
+
 const NO_HISTORY = { sent: [], received: [] };
 
 /**
  * What happens to each row: "send" now, "later" (over today's limit), or "skip"
- * with the reason. A batch text needs a clean slate with them; a single text
- * (`single`) only needs them not to have opted out.
+ * with the reason. A batch text needs a clean slate with them. A single text
+ * (`single`) only needs them not to have opted out (`overrule` lets it past a
+ * PHRASE), and only a first text to someone uses up one of the day's sends.
  */
-export function planTexts(rows, { doNotCall, contacts, single, dailyMax, today }) {
-  const firstTextedOn = (to) => {
-    const first = (contacts.get(to) ?? NO_HISTORY).sent[0];
-    return first ? sydneyDate(first.at) : null;
-  };
-  let slots = single ? 1 : dailyMax - rows.filter((row) => firstTextedOn(row.to) === today).length;
+export function planTexts(rows, { doNotCall, contacts, single, dailyMax, today, overrule = false }) {
+  let slots = dailyMax - firstTextsOn(contacts, today);
   return rows.map((row) => {
     const history = contacts.get(row.to) ?? NO_HISTORY;
-    const optOut = history.received.find((m) => isOptOut(m.body));
+    const stops = history.received.filter((m) => optOut(m.body));
+    const final = stops.find((m) => optOut(m.body) === "keyword");
+    const maybe = stops[0];
     const lastReply = history.received.at(-1);
     const lastSent = history.sent.at(-1);
     let action = "skip";
     let reason;
-    if (doNotCall.has(row.to)) reason = "on the do-not-call list";
-    else if (optOut) reason = `asked to stop on ${sydneyDate(optOut.at)}: "${clip(optOut.body)}". Add them to the do-not-call list`;
-    else if (!single && lastReply) reason = `replied on ${sydneyDate(lastReply.at)}: "${clip(lastReply.body)}". Answer with --to`;
-    else if (!single && lastSent) {
+    if (final) reason = `asked to stop on ${sydneyDate(final.at)}: "${clip(final.body)}"`;
+    else if (doNotCall.has(row.to)) reason = "on the do-not-call list";
+    else if (maybe && !(single && overrule)) {
+      reason = `may have asked to stop on ${sydneyDate(maybe.at)}: "${clip(maybe.body)}"`;
+      if (single) reason += '. If they didn\'t, add --not-opt-out="what they meant"';
+    } else if (!single && lastReply) {
+      reason = `replied on ${sydneyDate(lastReply.at)}: "${clip(lastReply.body)}". `;
+      reason += /\bstop\b/i.test(lastReply.body) ? 'It mentions "stop": read it before you answer with --to' : "Answer with --to";
+    } else if (!single && lastSent) {
       reason = `already texted on ${sydneyDate(history.sent[0].at)} (last one ${lastSent.status}${lastSent.errorCode ? `, error ${lastSent.errorCode}` : ""})`;
+    } else if (single && (history.sent.length || history.received.length)) {
+      action = "send"; // a text in a conversation you're already having
     } else if (slots > 0) {
       action = "send";
       slots--;
@@ -217,9 +273,16 @@ export function planTexts(rows, { doNotCall, contacts, single, dailyMax, today }
   });
 }
 
+// Their words, on one line, without terminal control codes or text-direction overrides.
 function clip(body, max = 80) {
-  const flat = body.replace(/\s+/g, " ").trim();
+  // eslint-disable-next-line no-control-regex
+  const flat = body.replace(/[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g, " ").replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+// A spreadsheet runs a cell that starts with = + - or @ as a formula; a leading ' keeps it text.
+function sheetSafe(value) {
+  return csvField(/^[=+\-@\t\r]/.test(value) ? `'${value}` : value);
 }
 
 function who(row) {
@@ -262,7 +325,11 @@ function twilioApi(accountSid, authToken, fetchImpl) {
   };
 }
 
-/** Every text on the account from or to `number`. */
+/**
+ * Every text on the account from or to `number`. Which list a text came back in
+ * says whether it's inbound. A text that can't be placed in time, or isn't ours,
+ * stops the run: it could hide an opt-out or a text already sent.
+ */
 async function textsOf(api, number) {
   const messages = [];
   for (const side of ["From", "To"]) {
@@ -270,13 +337,49 @@ async function textsOf(api, number) {
     for (let page = 1; path; page++) {
       if (page > HISTORY_PAGES) throw new Error(`more than ${HISTORY_PAGES * 1000} texts ${side.toLowerCase()} ${pretty(number)}, which this script doesn't page through`);
       const body = await api.get(path);
-      // Without the list, a re-run could text someone twice, so a malformed reply stops here.
       if (!Array.isArray(body.messages)) throw new Error("Twilio's message list came back without messages");
-      messages.push(...body.messages);
+      for (const m of body.messages) {
+        if ((side === "From" ? m.from : m.to) !== number || !Number.isFinite(Date.parse(m.date_created))) {
+          throw new Error(`Twilio listed a text this script can't account for (${m.sid ?? "no ID"})`);
+        }
+        messages.push({ ...m, inbound: side === "To" });
+      }
       path = body.next_page_uri || null;
     }
   }
   return messages;
+}
+
+/** Takes the send lock at `path`, so two sends can't text the same people at once. Returns its release. */
+function takeLock(path) {
+  mkdirSync(dirname(path), { recursive: true });
+  const mine = `${path}.${process.pid}`;
+  writeFileSync(mine, String(process.pid));
+  try {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        linkSync(mine, path); // atomic: the lock appears with our process ID already in it
+        return () => rmSync(path, { force: true });
+      } catch (err) {
+        if (err.code !== "EEXIST") throw err;
+        const pid = Number(readFileSync(path, "utf8"));
+        if (Number.isInteger(pid) && pid > 0 && processAlive(pid)) throw new Error(`another send is running (process ${pid})`);
+        rmSync(path, { force: true }); // left behind by a send that was killed
+      }
+    }
+    throw new Error(`couldn't take the send lock ${path}`);
+  } finally {
+    rmSync(mine, { force: true });
+  }
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM"; // it exists, it just isn't ours
+  }
 }
 
 const defaultDeps = {
@@ -289,6 +392,11 @@ const defaultDeps = {
     if (!existsSync(path)) appendFileSync(path, LOG_HEADER);
     appendFileSync(path, `${row}\n`);
   },
+  appendDoNotCall: (path, line) => {
+    const text = readFileSync(path, "utf8");
+    appendFileSync(path, `${text && !text.endsWith("\n") ? "\n" : ""}${line}\n`);
+  },
+  lock: takeLock,
   log: (...args) => console.log(...args),
   error: (...args) => console.error(...args),
 };
@@ -326,9 +434,11 @@ export async function main(argv, env, overrides = {}) {
     error(`--to and --text go together.\n${USAGE}`);
     return 1;
   }
-  if (single && flags.has("max")) {
-    error("--max is for the batch; --to sends one text.");
-    return 1;
+  for (const name of ["source", "not-opt-out"]) {
+    if (flags.has(name) && !single) {
+      error(`--${name} goes with --to; the batch keeps its sources in the file.`);
+      return 1;
+    }
   }
   const dailyMax = flags.has("max") ? Number(flags.get("max")) : DEFAULT_DAILY_MAX;
   if (!Number.isInteger(dailyMax) || dailyMax < 1 || dailyMax > MAX_DAILY_MAX) {
@@ -345,13 +455,14 @@ export async function main(argv, env, overrides = {}) {
   const dncPath = env.DIAL_DNC_FILE || join(dataDir, "do-not-call.txt");
   const batchPath = env.TEXT_BATCH || join(dataDir, "texts.json");
   const logPath = env.TEXT_LOG || join(dataDir, "texts.csv");
+  const lockPath = `${logPath}.lock`;
   let doNotCall;
   try {
     const text = deps.readFile(dncPath);
     if (text == null) {
       error(
         `No do-not-call list at ${dncPath}.\n` +
-          "If you keep it somewhere else, set DIAL_DNC_FILE to it.\n" +
+          "If you keep it somewhere else, set DIAL_DNC_FILE to it in scripts/outreach/.env.\n" +
           `If nobody has asked you to stop yet, create it empty:\n  mkdir -p "${dirname(dncPath)}" && touch "${dncPath}"`
       );
       return 1;
@@ -375,12 +486,12 @@ export async function main(argv, env, overrides = {}) {
       error(`Not sending that: ${why}.`);
       return 1;
     }
-    rows = [{ to, business: "", text }];
+    rows = [{ to, business: "", text, source: flags.get("source")?.trim() ?? "" }];
   } else {
     try {
       const json = deps.readFile(batchPath);
       if (json == null) {
-        error(`No batch at ${batchPath}. Put the texts there as a JSON array of { "to", "business", "text" } (see scripts/outreach/README.md).`);
+        error(`No batch at ${batchPath}. Put the texts there as a JSON array of { "to", "business", "text", "source" } (see scripts/outreach/README.md).`);
         return 1;
       }
       rows = parseBatch(json);
@@ -400,148 +511,220 @@ export async function main(argv, env, overrides = {}) {
     return 1;
   }
   const api = twilioApi(accountSid, authToken, deps.fetch);
-  let contacts;
-  let balance;
-  try {
-    contacts = byContact(await textsOf(api, from));
-    balance = await api.get("/Balance.json");
-  } catch (err) {
-    error(`Couldn't read the texting history or balance from Twilio (${describe(err)}). Nothing was sent.`);
-    return 1;
-  }
+  const note = flags.get("not-opt-out")?.trim() ?? "";
 
-  const plan = planTexts(rows, { doNotCall, contacts, single, dailyMax, today: sydneyDate(deps.now()) });
-  const toSend = plan.filter((row) => row.action === "send");
-  const segments = toSend.reduce((sum, row) => sum + row.segments, 0);
-  const cost = segments * USD_PER_SEGMENT;
-
-  if (single) {
-    const [row] = plan;
-    const convo = [...row.history.sent.map((m) => ({ ...m, by: "you " })), ...row.history.received.map((m) => ({ ...m, by: "them" }))]
-      .sort((a, b) => a.at - b.at)
-      .slice(-SHOWN_HISTORY);
-    log(convo.length ? `Your latest texts with ${pretty(row.to)}:` : `No texts with ${pretty(row.to)} yet.`);
-    for (const m of convo) log(`  ${sydneyDate(m.at)} ${m.by}: ${clip(m.body, 120)}`);
-    if (row.action !== "send") {
-      error(`Not texting ${pretty(row.to)}: ${row.reason}.`);
+  const planAndSend = async () => {
+    let contacts;
+    let balance;
+    try {
+      contacts = byContact(await textsOf(api, from));
+      balance = await api.get("/Balance.json");
+    } catch (err) {
+      error(`Couldn't read the texting history or balance from Twilio (${describe(err)}). Nothing was sent.`);
       return 1;
     }
-  } else {
-    log(`Batch ${batchPath}: ${rows.length} texts. Up to ${dailyMax} first texts a day.`);
-    log(`Do-not-call list: ${doNotCall.size} number${doNotCall.size === 1 ? "" : "s"} checked (${dncPath}).`);
-  }
-  log("");
-  plan.forEach((row, i) => {
-    const label = row.action === "send" ? "SEND NOW" : `${row.action === "later" ? "LATER" : "SKIP"}: ${row.reason}`;
-    const size = `${row.segments} segment${row.segments === 1 ? "" : "s"}${row.encoding === "UCS-2" ? " (UCS-2: emoji or special characters)" : ""}`;
-    log(`${String(i + 1).padStart(2)}. ${single ? pretty(row.to) : who(row)} · ${size} · ${label}`);
-    for (const line of row.text.split("\n")) log(`    ${line}`);
-  });
-  log("");
-  if (!toSend.length) {
-    log("Nothing to send now.");
-    return 0;
-  }
 
-  const blockers = [];
-  const hours = () => callingWindow(deps.now(), { zones: [SYDNEY] });
-  const window = hours();
-  if (!window.allowed) blockers.push(`${window.reason}; texts go out in the dialer's calling hours, Sydney time`);
-  const funds = Number(balance.balance);
-  const readable = balance.currency === "USD" && Number.isFinite(funds);
-  if (!readable) {
-    blockers.push(`couldn't read the Twilio balance ("${balance.balance} ${balance.currency}")`);
-  } else if (funds - cost < MIN_BALANCE_USD) {
-    blockers.push(
-      `top up Twilio first: the balance is US$${funds.toFixed(2)}, and these texts would leave less than the US$${MIN_BALANCE_USD} that keeps Phondo's phone lines answering`
+    // A STOP-style reply is final, so it goes on the do-not-call list, which dial.mjs reads too.
+    for (const [number, { received }] of contacts) {
+      const stop = received.find((m) => optOut(m.body) === "keyword");
+      if (!stop || doNotCall.has(number)) continue;
+      const line = `${pretty(number)}  # replied "${clip(stop.body, 40)}" to a text on ${sydneyDate(stop.at)} (added by text.mjs)`;
+      try {
+        deps.appendDoNotCall(dncPath, line);
+      } catch (err) {
+        error(`Couldn't add ${pretty(number)} to the do-not-call list (${err.message}). Nothing was sent. Add this line to ${dncPath} by hand, then re-run:\n${line}`);
+        return 1;
+      }
+      doNotCall.add(number);
+      log(`Added ${pretty(number)} to the do-not-call list: they replied "${clip(stop.body, 40)}" on ${sydneyDate(stop.at)}.`);
+    }
+
+    const today = sydneyDate(deps.now());
+    const plan = planTexts(rows, { doNotCall, contacts, single, dailyMax, today, overrule: Boolean(note) });
+    if (single) {
+      const [row] = plan;
+      const convo = [...row.history.sent.map((m) => ({ ...m, by: "you " })), ...row.history.received.map((m) => ({ ...m, by: "them" }))]
+        .sort((a, b) => a.at - b.at)
+        .slice(-SHOWN_HISTORY);
+      log(convo.length ? `Your latest texts with ${pretty(row.to)}:` : `No texts with ${pretty(row.to)} yet.`);
+      for (const m of convo) log(`  ${sydneyDate(m.at)} ${m.by}: ${clip(m.body, 120)}`);
+      if (row.action !== "send") {
+        error(`Not texting ${pretty(row.to)}: ${row.reason}.`);
+        return 1;
+      }
+      if (!convo.length && !row.source) {
+        error(
+          `You've never texted ${pretty(row.to)} and they've never texted this number, so say where they publish their number: ` +
+            '--source="…" (your evidence of consent, Spam Act s 16).'
+        );
+        return 1;
+      }
+      if (row.history.received.some((m) => /\bstop\b/i.test(m.body) && !optOut(m.body))) {
+        error('Their texts mention "stop": read them, and check they haven\'t asked you to stop.');
+      }
+      if (note) log(`Overruling a possible opt-out: "${note}".`);
+    } else {
+      log(`Batch ${batchPath}: ${rows.length} texts.`);
+      log(`First texts today: ${firstTextsOn(contacts, today)} of ${dailyMax}.`);
+      log(`Do-not-call list: ${doNotCall.size} number${doNotCall.size === 1 ? "" : "s"} checked (${dncPath}).`);
+    }
+    log("");
+    plan.forEach((row, i) => {
+      const label = row.action === "send" ? "SEND NOW" : `${row.action === "later" ? "LATER" : "SKIP"}: ${row.reason}`;
+      const size = `${row.segments} segment${row.segments === 1 ? "" : "s"}${row.encoding === "UCS-2" ? " (UCS-2: emoji or special characters)" : ""}`;
+      log(`${String(i + 1).padStart(2)}. ${single ? pretty(row.to) : who(row)} · ${size} · ${label}`);
+      for (const line of row.text.split("\n")) log(`    ${line}`);
+      if (row.source) log(`    source: ${row.source}`);
+    });
+    log("");
+    const toSend = plan.filter((row) => row.action === "send");
+    if (!toSend.length) {
+      log("Nothing to send now.");
+      return 0;
+    }
+
+    const segments = toSend.reduce((sum, row) => sum + row.segments, 0);
+    const cost = segments * USD_PER_SEGMENT;
+    const blockers = [];
+    const hours = () => callingWindow(deps.now(), { zones: [SYDNEY] });
+    const window = hours();
+    if (!window.allowed) blockers.push(`${window.reason}; texts go out in the dialer's calling hours, Sydney time`);
+    const funds = /^-?\d+(\.\d+)?$/.test(String(balance.balance ?? "")) ? Number(balance.balance) : NaN;
+    const readable = balance.currency === "USD" && Number.isFinite(funds);
+    if (!readable) {
+      blockers.push(`couldn't read the Twilio balance ("${balance.balance} ${balance.currency}")`);
+    } else if (funds - cost < MIN_BALANCE_USD) {
+      blockers.push(
+        `top up Twilio first: the balance is US$${funds.toFixed(2)}, and these texts would leave less than the US$${MIN_BALANCE_USD} that keeps Phondo's phone lines answering`
+      );
+    }
+    const plural = toSend.length === 1 ? "" : "s";
+    log(
+      `From ${pretty(from)}: ${toSend.length} text${plural}, ${segments} segments, ≈US$${cost.toFixed(2)}. ` +
+        `Twilio balance: ${readable ? `US$${funds.toFixed(2)}` : "unknown"}.`
     );
-  }
-  const plural = toSend.length === 1 ? "" : "s";
-  log(
-    `From ${pretty(from)}: ${toSend.length} text${plural}, ${segments} segments, ≈US$${cost.toFixed(2)}. ` +
-      `Twilio balance: ${readable ? `US$${funds.toFixed(2)}` : "unknown"}.`
-  );
 
-  if (!flags.has("send")) {
-    for (const blocker of blockers) error(`Can't send yet: ${blocker}.`);
-    log(`Preview only: nothing was sent. Add --send to send the ${toSend.length} marked SEND NOW.`);
-    return 0;
-  }
-  if (blockers.length) {
-    for (const blocker of blockers) error(`Not sending: ${blocker}.`);
+    if (!flags.has("send")) {
+      for (const blocker of blockers) error(`Can't send yet: ${blocker}.`);
+      log(`Preview only: nothing was sent. Add --send to send the ${toSend.length} marked SEND NOW.`);
+      return 0;
+    }
+    if (blockers.length) {
+      for (const blocker of blockers) error(`Not sending: ${blocker}.`);
+      return 1;
+    }
+
+    const kind = single ? "single" : "batch";
+    const rerun = single ? "Check the Twilio console before sending it again." : "Re-running is safe: it skips anyone already texted.";
+    const sent = [];
+    let refused = 0;
+    let refusedInARow = 0;
+    let raced = 0;
+    let unlogged = 0;
+    let stopped = false;
+    for (const [i, row] of toSend.entries()) {
+      if (i > 0) await deps.sleep(GAP_MS);
+      const recheck = hours();
+      if (!recheck.allowed) {
+        error(`Stopped: ${recheck.reason}. The rest go next time.`);
+        stopped = true;
+        break;
+      }
+      if (!single) {
+        // Someone else (the Twilio console, another computer) may have texted them since the history was read.
+        let latest;
+        try {
+          latest = await api.get(`/Messages.json?From=${encodeURIComponent(from)}&To=${encodeURIComponent(row.to)}&PageSize=1`);
+        } catch (err) {
+          error(`Couldn't re-check ${who(row)} before texting them (${describe(err)}), so stopped. Re-running is safe: it skips anyone already texted.`);
+          stopped = true;
+          break;
+        }
+        if (!Array.isArray(latest.messages) || latest.messages.length) {
+          raced++;
+          error(`Skipped ${who(row)}: ${Array.isArray(latest.messages) ? "they've been texted from this number since the history was read" : "Twilio's re-check came back without a message list"}.`);
+          continue;
+        }
+      }
+      let message;
+      try {
+        message = await api.post("/Messages.json", { From: from, To: row.to, Body: row.text });
+      } catch (err) {
+        if (!(err instanceof TwilioRefused)) {
+          error(`Couldn't confirm the text to ${who(row)} (${describe(err)}): it may have gone. Stopped. ${rerun}`);
+          stopped = true;
+          break;
+        }
+        // A refusal costs nothing and sends nothing. One bad number shouldn't hold up
+        // the rest of the batch, but two in a row points at the account, not the number.
+        refused++;
+        error(`Twilio refused the text to ${who(row)} (${err.message}), so it didn't go.`);
+        if (++refusedInARow === 2) {
+          error("Twilio refused two texts in a row, so stopping.");
+          stopped = true;
+          break;
+        }
+        continue;
+      }
+      refusedInARow = 0;
+      if (!/^(SM|MM)[0-9a-f]{32}$/.test(message.sid ?? "")) {
+        error(`Twilio replied without a message ID for ${who(row)}: it may have gone. Stopped. ${rerun}`);
+        stopped = true;
+        break;
+      }
+      sent.push({ row, sid: message.sid });
+      log(`Sent ${sent.length}: ${who(row)} (${message.sid}).`);
+      const entry = [deps.now().toISOString(), row.to, sheetSafe(row.business), kind, message.sid, row.segments, sheetSafe(row.source), sheetSafe(note)].join(",");
+      try {
+        deps.appendLog(logPath, entry);
+      } catch (err) {
+        unlogged++;
+        error(`${logPath} couldn't be written (${err.message}). Add this row by hand:\n${entry}`);
+      }
+    }
+
+    // Delivery reports take a few seconds; a carrier's spam filter shows up here as "undelivered".
+    let failures = 0;
+    let unknown = 0;
+    if (sent.length) {
+      await deps.sleep(STATUS_WAIT_MS);
+      for (const { row, sid } of sent) {
+        try {
+          const message = await api.get(`/Messages/${sid}.json`);
+          if (!message.status) throw new Error("Twilio's reply had no status");
+          if (FAILED.has(message.status)) failures++;
+          const detail = message.error_code ? ` (error ${message.error_code}${message.error_message ? `: ${message.error_message}` : ""})` : "";
+          log(`${who(row)}: ${message.status}${detail}.`);
+        } catch (err) {
+          unknown++;
+          error(`${who(row)}: couldn't read the delivery status (${describe(err)}). Check it in the Twilio console.`);
+        }
+      }
+    }
+    log(`Sent ${sent.length} of ${toSend.length}.`);
+    const later = plan.filter((row) => row.action === "later").length;
+    if (later) log(`${later} more in the batch: run it again tomorrow.`);
+    log("Replies are forwarded to your mobile. A STOP reply goes on the do-not-call list by itself; add anyone who says no some other way yourself.");
+    return stopped || refused || raced || failures || unknown || unlogged ? 1 : 0;
+  };
+
+  if (!flags.has("send")) return planAndSend(); // a preview sends nothing, so it needs no lock
+  let release;
+  try {
+    release = deps.lock(lockPath);
+  } catch (err) {
+    error(`Not sending: ${err.message}.`);
     return 1;
   }
-
-  const kind = single ? "single" : "batch";
-  const rerun = single ? "Check the Twilio console before sending it again." : "Re-running is safe: it skips anyone already texted.";
-  const sent = [];
-  let refused = 0;
-  let refusedInARow = 0;
-  let stopped = false;
-  for (const [i, row] of toSend.entries()) {
-    if (i > 0) await deps.sleep(GAP_MS);
-    const recheck = hours();
-    if (!recheck.allowed) {
-      error(`Stopped: ${recheck.reason}. The rest go next time.`);
-      stopped = true;
-      break;
-    }
-    let message;
+  try {
+    return await planAndSend();
+  } finally {
     try {
-      message = await api.post("/Messages.json", { From: from, To: row.to, Body: row.text });
+      release();
     } catch (err) {
-      if (!(err instanceof TwilioRefused)) {
-        error(`Couldn't confirm the text to ${who(row)} (${describe(err)}): it may have gone. Stopped. ${rerun}`);
-        stopped = true;
-        break;
-      }
-      // A refusal costs nothing and sends nothing. One bad number shouldn't hold up
-      // the rest of the batch, but two in a row points at the account, not the number.
-      refused++;
-      error(`Twilio refused the text to ${who(row)} (${err.message}), so it didn't go.`);
-      if (++refusedInARow === 2) {
-        error("Twilio refused two texts in a row, so stopping.");
-        stopped = true;
-        break;
-      }
-      continue;
-    }
-    refusedInARow = 0;
-    if (!/^(SM|MM)[0-9a-f]{32}$/.test(message.sid ?? "")) {
-      error(`Twilio replied without a message ID for ${who(row)}: it may have gone. Stopped. ${rerun}`);
-      stopped = true;
-      break;
-    }
-    sent.push({ row, sid: message.sid });
-    log(`Sent ${sent.length}: ${who(row)} (${message.sid}).`);
-    const entry = [deps.now().toISOString(), row.to, csvField(row.business), kind, message.sid, row.segments].join(",");
-    try {
-      deps.appendLog(logPath, entry);
-    } catch (err) {
-      error(`${logPath} couldn't be written (${err.message}). Add this row by hand:\n${entry}`);
+      error(`Couldn't remove the send lock (${err.message}): delete ${lockPath} by hand before the next send.`);
     }
   }
-
-  // Delivery reports take a few seconds; a carrier's spam filter shows up here as "undelivered".
-  let failures = 0;
-  if (sent.length) {
-    await deps.sleep(STATUS_WAIT_MS);
-    for (const { row, sid } of sent) {
-      try {
-        const message = await api.get(`/Messages/${sid}.json`);
-        if (FAILED.has(message.status)) failures++;
-        const detail = message.error_code ? ` (error ${message.error_code}${message.error_message ? `: ${message.error_message}` : ""})` : "";
-        log(`${who(row)}: ${message.status}${detail}.`);
-      } catch (err) {
-        error(`${who(row)}: couldn't read the delivery status (${describe(err)}). Check it in the Twilio console.`);
-      }
-    }
-  }
-  log(`Sent ${sent.length} of ${toSend.length}.`);
-  const later = plan.filter((row) => row.action === "later").length;
-  if (later) log(`${later} more in the batch: run it again tomorrow.`);
-  log(`Replies are forwarded to your mobile. If anyone asks you to stop, add their number to ${dncPath}.`);
-  return stopped || refused || failures ? 1 : 0;
 }
 
 function invokedDirectly() {

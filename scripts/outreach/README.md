@@ -92,22 +92,29 @@ Texts go from **0485 094 768**, a Twilio mobile number on Phondo's account, so t
 
 ```bash
 # Preview today's batch
-node --env-file=.env.local scripts/outreach/text.mjs
+node --env-file=.env.local --env-file=scripts/outreach/.env scripts/outreach/text.mjs
 # Send it
-node --env-file=.env.local scripts/outreach/text.mjs --send
+node --env-file=.env.local --env-file=scripts/outreach/.env scripts/outreach/text.mjs --send
 # Answer one reply: preview, then add --send. Single quotes stop the shell eating "$149".
-node --env-file=.env.local scripts/outreach/text.mjs --to="0491 570 006" --text='From $149 a month after the free 30 days. Michael, Phondo. Reply STOP to opt out.'
+node --env-file=.env.local --env-file=scripts/outreach/.env scripts/outreach/text.mjs --to="0491 570 006" --text='From $149 a month after the free 30 days. Michael, Phondo. Reply STOP to opt out.'
 ```
 
-- **The batch** is `~/.phondo-outreach/texts.json`, a JSON array of `{ "to", "business", "text" }`, sent in order. Set `TEXT_BATCH` to use another file.
+Load both env files, as above. `scripts/outreach/.env` is where `DIAL_DNC_FILE` lives if your do-not-call list isn't in the default place, and the texter has to read the same list as the dialer.
+
+- **The batch** is `~/.phondo-outreach/texts.json`, a JSON array of `{ "to", "business", "text", "source" }`, sent in order. Set `TEXT_BATCH` to use another file.
+  - `source` is your evidence of consent: where the business publishes the number, e.g. "Mobile published at https://example.com.au/; checked 2026-10-05". The Spam Act puts the burden of showing consent on the sender (s 16). It goes in the log with each text.
 - **Every text** has to say "Phondo" and "Reply STOP" (Spam Act s 17 and s 18) and fit in 4 SMS segments. Curly quotes and dashes are made plain, so a pasted text doesn't switch to the costlier encoding.
-- **Who's skipped:**
+- **Opt-outs:**
+  - A STOP-style reply ("STOP", "Unsubscribe", "stop texting me", or a short reply with "stop" in it) is final. That number is never texted again, and it's added to the do-not-call list, so `dial.mjs` won't ring them either.
+  - Plainer replies ("not interested", "no thanks", "wrong number") also block texts. If one only looks like a stop ("can I unsubscribe any time?"), you can still answer with `--not-opt-out="what they meant"`, which is logged.
+  - Add anyone who says no some other way to the do-not-call list yourself.
+- **Who else is skipped:**
   - anyone on the do-not-call list, `~/.phondo-outreach/do-not-call.txt`, which `dial.mjs` uses too
-  - anyone whose reply asks to stop ("STOP", "not interested", "wrong number" and so on)
   - for the batch, anyone this number has already texted or who has texted it. A re-run never doubles up; answer a reply with `--to`.
+- **A first text with `--to`** (to someone this number has never texted) needs `--source="…"`, and counts towards the day's limit.
 - **Limits:**
-  - 5 first texts a day by default (`--max=N`, up to 20)
+  - 5 first texts a day by default (`--max=N`, up to 20), counted across everything this number has sent that day, so editing the batch doesn't reset it
   - only in the dialer's calling hours, Sydney time
   - never below US$5 of Twilio balance, so the phone lines keep answering
+  - one send at a time: `--send` holds `~/.phondo-outreach/texts.csv.lock` while it runs. A lock left by a send that was killed is cleared by the next one.
 - **Log:** sent texts are logged to `~/.phondo-outreach/texts.csv` (set `TEXT_LOG` to move it). Twilio's own history is what stops repeats, so a lost log can't cause a double text.
-- **Opt-outs:** when someone asks to stop, add their number to the do-not-call list as well, so `dial.mjs` won't ring them either.
