@@ -102,17 +102,25 @@ const REQUEST = new RegExp(
     "(lose|delete|remove) (my|our|this|the) number",
   ].join("|")})$`
 );
-// "I'd like to be removed": only someone asking for it. "The old hot water unit needs to be
-// removed" is a job, not an opt-out.
-const PASSIVE = new RegExp(`(^| )be ((removed|deleted)( (off|from)${LIST}?)?|taken off${LIST}?)$`);
-const ASKER = /(^| )(like|love|want|wish|prefer|ask|asked|possible) to$/;
+// Wanted rather than ordered: "I'd like to be removed", "I want to opt out", "I'd like my
+// number deleted". Only when someone asks for it: "the old hot water unit needs to be
+// removed" and "the trees need to be removed" are jobs, not opt-outs.
+const WANTED = new RegExp(
+  `(^| )(${[
+    `be ((removed|deleted)( (off|from)${LIST}?)?|taken off${LIST}?)`,
+    `${WHO} ((removed|deleted)( (off|from)${LIST}?)?|taken off${LIST}?)`,
+    "(opt out|unsubscribe)( of (this|these|it|them|(these |your |the )?(texts|txts|messages|msgs)))?",
+  ].join("|")})$`
+);
+const ASKER =
+  /(^|(^| )(i|we)( \w+)? )need( to)?$|(^| )((like|love|want|wish|prefer|ask|asked|asking|request|requested|requesting|demand|possible) to|like|love|want|wish|prefer|rather|wanna)$/;
 // "Can you please ...", "Could I be ...", "If you could ...": asked like this, a request is still a request.
 const POLITE =
   /(^| )((can|could|will|would) (you|u)|(can|could|may) (i|we)|if (you|u) (could|can|would)|when (you|u) (get a chance|can)|is it possible to)( (please|pls|plz|just))*$/;
 const WH = new Set(["why", "how", "when", "what", "where", "who", "which"]);
 const CONDITIONS = new Set(["if", "when", "unless", "once", "until"]);
-// "…, right?", "…, won't it?": a tag makes the whole sentence a question.
-const TAGS = /^(right|eh|hey|correct|yeah|yes|yep|ya|aye|true|no|innit|ok|okay|(wont|will|isnt|is|doesnt|does|dont|do|cant|can|wouldnt|would|aint) (it|they|you|we|i|he|she))$/;
+// "…, right?", "…, won't it?", "…, or does it roll over?": the whole sentence is a question.
+const TAGS = /^(right|eh|ay|hey|correct|yes|yep|ya|aye|true|no|innit|(wont|will|isnt|is|doesnt|does|dont|do|cant|can|wouldnt|would|aint) (it|they|you|we|i|he|she)|or( .*)?)$/;
 const SUBJECTS = new Set(["i", "we", "they", "he", "she", "it"]); // "I lose the number" describes, it doesn't ask
 // A clause opening with one of these is part of the question: "Does the trial stop, or does it roll over?"
 const INTERROGATIVES = new Set([
@@ -176,16 +184,18 @@ function hedged(before) {
 /**
  * Does this clause end in a request to be taken off? Asked (`asking`), it has to be a
  * polite ask. Told, it mustn't be negated ("don't take me off the list"), conditional
- * ("if it's no good just remove me") or a description ("I lose the number"). "Be
- * removed" counts only when someone asks for it ("I'd like to be removed").
+ * ("if it's no good just remove me") or a description ("I lose the number"). A wish
+ * ("be removed", "opt out", "my number deleted") counts only when someone asks for it
+ * ("I'd like to be removed", "Can I be removed?").
  */
 function requestIn(plain, asking) {
-  const passive = PASSIVE.exec(plain);
-  const match = passive ?? REQUEST.exec(plain);
+  const request = REQUEST.exec(plain); // first: "please have me removed" is an order, not a wish
+  const wanted = request ? null : WANTED.exec(plain);
+  const match = request ?? wanted;
   if (!match) return false;
   const before = plain.slice(0, match.index).trim().split(" ").filter(Boolean);
-  if (politeAsk(before)) return !passive || before.length > 0; // not a bare "Be removed"
-  if (passive) return ASKER.test(before.join(" ")) && !hedged(before);
+  if (wanted) return before.length > 0 && (politeAsk(before) || ASKER.test(before.join(" "))) && !hedged(before);
+  if (politeAsk(before)) return true;
   if (asking) return false;
   return !hedged(before) && !SUBJECTS.has(before.at(-1));
 }

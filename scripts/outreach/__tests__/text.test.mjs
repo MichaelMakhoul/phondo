@@ -151,6 +151,14 @@ describe("optOut", () => {
     "Appreciate it if you could take us off your list", "When you get a chance remove me", "Once again remove me",
     "May I be removed?", "Can we be removed?", "Could I be removed?", "Can I be removed off the list?",
     "Stop me from getting these", "Is it possible to be removed from your list?", "Remove me, ok?",
+    "I need to be removed from your list", "We need to be taken off your list", "I'm asking to be removed from your list",
+    "I am requesting to be removed", "I request to be removed from your list", "I demand to be removed", "I'd rather be removed",
+    "I want to opt out", "I'd like to opt out", "I'd like to unsubscribe", "I would like to opt out please",
+    "I'd like my number removed from your list", "I want my number deleted", "Need to be removed from your list",
+    "Wanna be removed", "I want to be removed", "I've asked to be removed", "I'd prefer to be removed",
+    "Would it be possible to be removed?", "I'd like to be deleted from your list", "If you keep texting me remove me",
+    "If u keep texting me remove me", "Once more remove me", "If you could please remove me?", "If you can remove me?",
+    "When you get a chance remove me?", "Is it possible to remove me from your list?",
   ])("%j is a final STOP", (reply) => {
     expect(optOut(reply)).toBe("keyword");
   });
@@ -160,7 +168,7 @@ describe("optOut", () => {
     "Not interested mate", "not keen", "Don't text me again", "Don't call or text me again", "dont txt me", "do not contact me",
     "Never message me", "No more texts please", "No more messages", "Nah ta", "leave me alone", "Sorry, wrong number",
     "Is this spam?", "Fuck off", "f off", "rack off", "go away", "get lost", "Can I unsubscribe any time or is there a lock in?",
-    "How do I unsubscribe later?", "I'd like to opt out", "Delete my details", "Can you remove the old hot water unit?",
+    "How do I unsubscribe later?", "Delete my details", "Can you remove the old hot water unit?",
     "No more", "Get stuffed", "Get fucked", "fk off", "jog on", "Scam", "Is this a scam?", "Blocked", "I've blocked you",
     "Reported", "Take it off", "Can you remove me from the trial if it's no good?", "Can it take me off the phone all day?",
     "When does the trial STOP?", "Yeah nah", "Yeah nah mate", "Not for me", "Don't delete my number",
@@ -182,6 +190,10 @@ describe("optOut", () => {
     "If it's no good could you remove me?", "Sometimes they delete my number", "Once the trial ends remove me",
     "So it'll stop, right?", "The trial will stop, won't it?", "And the charges stop, eh?", "After 30 days it'll just stop, hey?",
     "So billing will stop, correct?", "How do I unsubscribe?", "How do I get removed?",
+    "So it'll stop, or does it roll over?", "The trial will stop, or will I get charged?", "It'll just stop, or does it auto renew?",
+    "So the trial will stop, or not?", "The billing will stop, ay?", "I don't want to be removed", "So it'll stop, yes?",
+    "It'll stop, isn't it?", "They'll stop, won't they?", "I want to try it first or be removed", "Be removed",
+    "The trees need to be removed",
     "Remove? What do you mean?", "Ok. Stop me if I'm wrong but is it $149?", "Sounds good. Stop by the yard Tuesday?",
     // Not final, but they still need a look: "lose my number" can mean either.
     "Don't lose my number, try me next week", "Did you lose my number?",
