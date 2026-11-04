@@ -121,7 +121,10 @@ describe("optOut", () => {
     "Who is this? Stop", "Who gave you my number? STOP", "Thanks but please stop", "Can you please stop", "Mate I said stop",
     "Unsubscribed", "Delete", "Remove please", "Pls remove", "please remove", "Cancel please", "End now", "Quit texting me",
     "Remove from list", "Remove me from your list", "Delete me", "remove my number", "lose my number", "Take me off your list",
-    "Opt me out",
+    "Opt me out", "Cancel mate", "Quit thanks", "Remove plz", "End thx", "Cancel ta", "Take me off", "Remove me", "Remove us",
+    "Take me from your list", "Remove from ur list", "Take us off your list", "Please take us off the list", "Take us off",
+    "Take my number off your list", "Take our number off your list", "Take this number off", "Can you take us off your list?",
+    "Huh, stop? I said STOP", "Can you please stop?", "Could you stop?", "Will you stop?",
   ])("%j is a final STOP", (reply) => {
     expect(optOut(reply)).toBe("keyword");
   });
@@ -132,6 +135,9 @@ describe("optOut", () => {
     "Never message me", "No more texts please", "No more messages", "Nah ta", "leave me alone", "Sorry, wrong number",
     "Is this spam?", "Fuck off", "f off", "rack off", "go away", "get lost", "Can I unsubscribe any time or is there a lock in?",
     "How do I unsubscribe later?", "I'd like to opt out", "Delete my details", "Can you remove the old hot water unit?",
+    "No more", "Get stuffed", "Get fucked", "fk off", "jog on", "Scam", "Is this a scam?", "Blocked", "I've blocked you",
+    "Reported", "Take it off", "Can you remove me from the trial if it's no good?", "Can it take me off the phone all day?",
+    "When does the trial STOP?",
     // Any other "stop" blocks too, until you've read it: some are opt-outs, some are buying signals.
     "I said STOP already", "Please stop calling me", "Can it stop calls going to voicemail?", "Can it stop calls?",
     "Can you stop calling the office and text me", "Non stop mate", "Phones wont stop", "Can't stop, driving", "Don't stop",
@@ -812,10 +818,27 @@ describe("main: opt-outs go on the do-not-call list", () => {
   });
 
   it("stops if it can't read the opt-out record", async () => {
-    const h = harness({ messages: [reply(B, "STOP")] });
+    const h = harness();
     mkdirSync(h.files.optOuts); // a folder where the file should be
     expect(await h.run()).toBe(1);
     expect(h.output()).toMatch(/Can't read .*opt-outs\.csv .*Nothing was sent/);
+  });
+
+  it("reads back a do-not-call path with commas in it", async () => {
+    const list = join(mkdtempSync(join(ENV_HOME, "a,b-")), "do,not,call.txt");
+    writeFileSync(list, "");
+    const h = harness({ env: { DIAL_DNC_FILE: list }, messages: [reply(B, "STOP", YESTERDAY, REPLY(40))] });
+    expect(await h.run()).toBe(0);
+    writeFileSync(list, ""); // taken off by hand
+    expect(await h.run()).toBe(0);
+    expect(readFileSync(list, "utf8")).toBe("");
+  });
+
+  it("only warns about a missing opt-out when it really is missing", async () => {
+    const h = harness({ messages: [reply(B, "STOP")] });
+    expect(await h.run()).toBe(0);
+    expect(await h.run()).toBe(0);
+    expect(h.output()).not.toMatch(/taken off by hand/);
   });
 
   it("adds a STOP even when they wrote more afterwards", async () => {

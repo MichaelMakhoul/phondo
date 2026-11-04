@@ -109,7 +109,7 @@ Load both env files, as above. `scripts/outreach/.env` is where `DIAL_DNC_FILE` 
   - Each automatic addition is recorded once in `~/.phondo-outreach/opt-outs.csv`, with the list it went on. If you take a number off that list yourself, it stays off (every run reminds you), and texts to them stay blocked. A new STOP from them puts it back.
   - Plainer replies also block texts: "not interested", "no thanks", "wrong number", any other "remove" or "delete", and any other mention of "stop" ("can it stop calls going to voicemail?", "when does the trial stop?", "phones won't stop").
     - The preview quotes each one since your last text, with its ID. Once you've read them and none is a stop, answer with `--not-opt-out="what they meant" --seen=SM…`, using the ID of their newest one, as the preview prints it. The reason is logged.
-    - If they've texted again since you looked, `--seen` won't match, and it refuses until you've read that one too.
+    - If they've sent another stop-like reply since you looked, `--seen` won't match, and it refuses until you've read that one too. A plain new reply ("ok, how much?") doesn't change it, but the send still shows you the latest texts.
   - Add anyone who says no some other way to the do-not-call list yourself.
 - **Who else is skipped:**
   - anyone on the do-not-call list, `~/.phondo-outreach/do-not-call.txt`, which `dial.mjs` uses too
