@@ -191,7 +191,7 @@ export function parseDoNotCallList(text) {
   return numbers;
 }
 
-function pretty(e164) {
+export function pretty(e164) {
   const n = e164.slice(3);
   return n.startsWith("4") ? `0${n.slice(0, 3)} ${n.slice(3, 6)} ${n.slice(6)}` : `(0${n[0]}) ${n.slice(1, 5)} ${n.slice(5)}`;
 }
@@ -212,11 +212,11 @@ function machineAnswer(verdict) {
   return verdict.startsWith("machine") ? "voicemail or a call screener" : null;
 }
 
-function csvField(value) {
+export function csvField(value) {
   return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
-function describe(err) {
+export function describe(err) {
   return err?.cause?.code ?? err?.cause?.message ?? err?.message ?? String(err);
 }
 
