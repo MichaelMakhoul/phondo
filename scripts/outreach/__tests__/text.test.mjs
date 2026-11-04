@@ -146,7 +146,11 @@ describe("optOut", () => {
     "Unsubscribe, who is this?", "Ok just cancel", "Can you please just remove me?", "Can you pls remove me?",
     "Remove me off your list", "Optout of this", "Stop in future please", "I'd like to be removed from your list",
     "Can I be removed?", "Please have me removed", "Please have my number deleted", "Can I be taken off your list?",
-    "Get me off your list", "Can you please stop, who is this?",
+    "Get me off your list", "Can you please stop, who is this?", "If you could remove me from your list, thanks",
+    "If you could please remove me", "If u could delete my number", "Would appreciate it if you could remove me from your list",
+    "Appreciate it if you could take us off your list", "When you get a chance remove me", "Once again remove me",
+    "May I be removed?", "Can we be removed?", "Could I be removed?", "Can I be removed off the list?",
+    "Stop me from getting these", "Is it possible to be removed from your list?", "Remove me, ok?",
   ])("%j is a final STOP", (reply) => {
     expect(optOut(reply)).toBe("keyword");
   });
@@ -170,6 +174,14 @@ describe("optOut", () => {
     "Don't want your messages", "Why would you remove me?", "I've opted out", "Ah no cheers I'm right", "Ah nah cheers I'm right",
     "I don't want you to remove me", "Stop round Friday", "If it's no good just remove me",
     "Calls go to voicemail and I lose the number",
+    // A job, not an opt-out, but "removed" still needs a look.
+    "The old hot water unit needs to be removed", "That tree has to be removed", "The old roof needs to be removed",
+    "I asked to be removed already", "I thought I was deleted from this", "Thought I was taken off your list",
+    "Can someone get me off this?", "Can it stop, or is it locked in?", "Is it easy to stop, or is there a lock in?",
+    "What's STOP mean, is it free?", "Can you not remove me?", "Not sure could you remove me?",
+    "If it's no good could you remove me?", "Sometimes they delete my number", "Once the trial ends remove me",
+    "So it'll stop, right?", "The trial will stop, won't it?", "And the charges stop, eh?", "After 30 days it'll just stop, hey?",
+    "So billing will stop, correct?", "How do I unsubscribe?", "How do I get removed?",
     "Remove? What do you mean?", "Ok. Stop me if I'm wrong but is it $149?", "Sounds good. Stop by the yard Tuesday?",
     // Not final, but they still need a look: "lose my number" can mean either.
     "Don't lose my number, try me next week", "Did you lose my number?",

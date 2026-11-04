@@ -96,16 +96,23 @@ const REQUEST = new RegExp(
     `(take|get) ${WHO} off${LIST}?`,
     `take ${WHO} from${LIST}`,
     `(remove|delete|take) (off|from)${LIST}`,
-    `(be|have ${WHO}) ((removed|deleted)( (off|from)${LIST}?)?|taken off${LIST}?)`,
+    `have ${WHO} ((removed|deleted)( (off|from)${LIST}?)?|taken off${LIST}?)`,
     "unsubscribe (me|us)",
     "opt (me|us) out( of (this|these|it|them|(these |your |the )?(texts|txts|messages|msgs)))?",
     "(lose|delete|remove) (my|our|this|the) number",
   ].join("|")})$`
 );
-// "Can you please ...", "Could I be ...": asked like this, a request is still a request.
-const POLITE = /(^| )((can|could|will|would) (you|u)|(can|could|may) (i|we))( (please|pls|plz|just))*$/;
+// "I'd like to be removed": only someone asking for it. "The old hot water unit needs to be
+// removed" is a job, not an opt-out.
+const PASSIVE = new RegExp(`(^| )be ((removed|deleted)( (off|from)${LIST}?)?|taken off${LIST}?)$`);
+const ASKER = /(^| )(like|love|want|wish|prefer|ask|asked|possible) to$/;
+// "Can you please ...", "Could I be ...", "If you could ...": asked like this, a request is still a request.
+const POLITE =
+  /(^| )((can|could|will|would) (you|u)|(can|could|may) (i|we)|if (you|u) (could|can|would)|when (you|u) (get a chance|can)|is it possible to)( (please|pls|plz|just))*$/;
 const WH = new Set(["why", "how", "when", "what", "where", "who", "which"]);
 const CONDITIONS = new Set(["if", "when", "unless", "once", "until"]);
+// "…, right?", "…, won't it?": a tag makes the whole sentence a question.
+const TAGS = /^(right|eh|hey|correct|yeah|yes|yep|ya|aye|true|no|innit|ok|okay|(wont|will|isnt|is|doesnt|does|dont|do|cant|can|wouldnt|would|aint) (it|they|you|we|i|he|she))$/;
 const SUBJECTS = new Set(["i", "we", "they", "he", "she", "it"]); // "I lose the number" describes, it doesn't ask
 // A clause opening with one of these is part of the question: "Does the trial stop, or does it roll over?"
 const INTERROGATIVES = new Set([
@@ -153,24 +160,34 @@ function politeAsk(before) {
   const text = before.join(" ");
   const match = POLITE.exec(text);
   if (!match) return false;
-  return !text // not "why would you remove me?"
-    .slice(0, match.index)
-    .split(" ")
-    .some((word) => WH.has(word) || NEGATIONS.has(word) || CONDITIONS.has(word));
+  const lead = text.slice(0, match.index).split(" ").filter(Boolean);
+  return !lead.some((word) => WH.has(word)) && !hedged(lead); // not "why would you remove me?"
+}
+
+/** Does `before` negate what follows, or make it conditional ("if it's no good")? "If you could" and "once again" don't. */
+function hedged(before) {
+  return before.some(
+    (word, k) =>
+      NEGATIONS.has(word) ||
+      (CONDITIONS.has(word) && !["you", "u"].includes(before[k + 1]) && !(word === "once" && ["again", "more"].includes(before[k + 1])))
+  );
 }
 
 /**
  * Does this clause end in a request to be taken off? Asked (`asking`), it has to be a
  * polite ask. Told, it mustn't be negated ("don't take me off the list"), conditional
- * ("if it's no good just remove me") or a description ("I lose the number").
+ * ("if it's no good just remove me") or a description ("I lose the number"). "Be
+ * removed" counts only when someone asks for it ("I'd like to be removed").
  */
 function requestIn(plain, asking) {
-  const match = REQUEST.exec(plain);
+  const passive = PASSIVE.exec(plain);
+  const match = passive ?? REQUEST.exec(plain);
   if (!match) return false;
   const before = plain.slice(0, match.index).trim().split(" ").filter(Boolean);
-  if (politeAsk(before)) return true;
+  if (politeAsk(before)) return !passive || before.length > 0; // not a bare "Be removed"
+  if (passive) return ASKER.test(before.join(" ")) && !hedged(before);
   if (asking) return false;
-  return !before.some((word) => NEGATIONS.has(word) || CONDITIONS.has(word)) && !SUBJECTS.has(before.at(-1));
+  return !hedged(before) && !SUBJECTS.has(before.at(-1));
 }
 
 /** Does this one sentence plainly ask us to stop? It's judged a clause at a time ("Stop it, who is this?"). */
@@ -180,12 +197,14 @@ function asksToStop(sentence) {
     .split(/[,:]/)
     .map((clause) => trimCourtesies(plainWords(clause).split(" ").filter(Boolean)))
     .filter((words) => words.length);
+  const tagged = question && clauses.length > 1 && TAGS.test(clauses.at(-1).join(" "));
   return clauses.some((words, i) => {
     const plain = words.join(" ");
     // In a question, the clause it ends on and any clause opening with a question word ask
-    // something ("Does the trial stop, or does it roll over?", "Remove? What do you mean?");
-    // the rest of it tells ("Stop it, who is this?").
-    const asking = question && (i === clauses.length - 1 || INTERROGATIVES.has(words[0]));
+    // something ("Does the trial stop, or does it roll over?", "Remove? What do you mean?"),
+    // and so does all of it with a tag ("So it'll stop, right?"). The rest of it tells
+    // ("Stop it, who is this?").
+    const asking = question && (tagged || i === clauses.length - 1 || INTERROGATIVES.has(words[0]));
     if (requestIn(plain, asking)) return true;
     // Asked, only a bare "Stop?" or "Can you please stop?" asks us to stop.
     if (asking) return plain === "stop" || /\b(you|u)( (please|pls|just))? stop$/.test(plain);
