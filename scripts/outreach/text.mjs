@@ -82,22 +82,26 @@ const TYPOGRAPHY = [
 // err towards stop: a false alarm costs one text, a miss breaks the Spam Act.
 const KEYWORD_FIRST_WORDS = new Set(["stop", "stopall", "optout"]); // and anything starting "unsub"
 const KEYWORD_REPLIES = new Set(["cancel", "end", "quit", "revoke", "remove", "delete", "opt out"]);
-const COURTESIES = new Set(["please", "pls", "plz", "thanks", "thx", "ta", "cheers", "mate", "now", "just", "ok", "okay", "yeah"]);
+const COURTESIES = new Set(["please", "pls", "plz", "thanks", "thx", "ta", "cheers", "mate", "now", "just", "ok", "okay", "yeah", "asap", "immediately"]);
 const TEXTING = new Set(["texting", "txting", "messaging", "msging", "contacting", "sending"]);
+const VISITS = new Set(["by", "in", "over", "round", "around", "past"]); // "stop by Tuesday" is an invitation
 const WHO = "(me|us|my number|our number|this number|the number)";
-const FROM_WHAT = "( (the |your |this |ur )?(mailing )?(list|contacts|database|system|records))?";
-// A whole clause asking to be taken off, asked politely or not: "Remove me, I'm not
-// interested", "Can you please take us off your mailing list?", "Opt me out of this".
+const LIST = "( (the |your |this |ur )?(mailing )?(list|contacts|database|system|records))";
+// A request to be taken off, at the end of a clause: "Remove me, I'm not interested",
+// "Sorry, can you please take us off your mailing list?", "Do me a favour and lose my number".
 const REQUEST = new RegExp(
-  `^((can|could|will|would) (you|u) )?((please|pls|plz|just) )?(${[
-    `(remove|delete) ${WHO}( from${FROM_WHAT})?`,
-    `take ${WHO} off${FROM_WHAT}`,
-    `(remove|delete|take) (${WHO} )?(off|from)${FROM_WHAT}`,
+  `(^| )(${[
+    `(remove|delete) ${WHO}( (off|from)${LIST}?)?`,
+    `take ${WHO} off${LIST}?`,
+    `take ${WHO} from${LIST}`,
+    `(remove|delete|take) (off|from)${LIST}`,
     "unsubscribe (me|us)",
     "opt (me|us) out( of (this|these|it|them|(these |your |the )?(texts|txts|messages|msgs)))?",
     "(lose|delete|remove) (my|our|this|the) number",
   ].join("|")})$`
 );
+// Asked as a question, only "can you (please) ..." is a request, not "why would you remove me?".
+const POLITE = /^((can|could|will|would) (you|u)( (please|pls|plz|just))*)?$/;
 const NEGATIONS = new Set(["non", "cant", "cannot", "dont", "wont", "never", "doesnt", "didnt", "wouldnt", "couldnt", "isnt", "not"]);
 const PHRASE_REPLIES = new Set(["no", "nope", "nah", "nah mate", "no mate", "no more", "blocked", "reported"]);
 const PHRASES = new RegExp(
@@ -109,7 +113,7 @@ const PHRASES = new RegExp(
     "(dont|do not) want (\\w+ )?(texts|txts|messages|msgs)",
     "no more (texts|txts|messages|msgs)",
     "not interested|not keen|not for (me|us)|yeah nah",
-    "no (thanks|thank you|thankyou|thx)|nah (thanks|thx|ta)",
+    "no (thanks|thank you|thankyou|thx|cheers)|nah (thanks|thx|ta|cheers)",
     "leave me alone|wrong number|spam(ming)?|scam(mer)?|(ive|i have) (blocked|reported)",
     "(fuck|f|fk|fuk|fck|piss|rack|bugger|nick|sod|bog) off|get (lost|stuffed|fucked|rooted)|go away|jog on",
   ]
@@ -126,27 +130,43 @@ function plainWords(text) {
     .trim();
 }
 
+/** `words` without the courtesies at either end: "Please remove me thanks" → "remove me". */
+function trimCourtesies(words) {
+  const trimmed = [...words];
+  while (COURTESIES.has(trimmed[0])) trimmed.shift();
+  while (COURTESIES.has(trimmed.at(-1))) trimmed.pop();
+  return trimmed;
+}
+
+/** Does this clause end in a request to be taken off, not negated ("don't take me off the list")? */
+function requestIn(plain, question) {
+  const match = REQUEST.exec(plain);
+  if (!match) return false;
+  const before = plain.slice(0, match.index).trim();
+  return question ? POLITE.test(before) : !before.split(" ").some((word) => NEGATIONS.has(word));
+}
+
 /** Does this one sentence plainly ask us to stop? It's judged a clause at a time ("Stop, who is this?"). */
 function asksToStop(sentence) {
   const question = /\?\W*$/.test(sentence);
   const clauses = sentence
     .split(/[,:]/)
-    .map((clause) => {
-      const words = plainWords(clause).split(" ").filter(Boolean);
-      while (COURTESIES.has(words[0])) words.shift(); // "Please remove me", "Remove me thanks"
-      while (COURTESIES.has(words.at(-1))) words.pop();
-      return words;
-    })
+    .map((clause) => trimCourtesies(plainWords(clause).split(" ").filter(Boolean)))
     .filter((words) => words.length);
   return clauses.some((words, i) => {
     const plain = words.join(" ");
-    if (REQUEST.test(plain)) return true; // even asked: "Can you take us off your list?"
-    // The clause a question ends on asks about something ("When does the trial stop?",
-    // "Remove? What do you mean?"), unless it's a bare "Stop?" or "Can you please stop?".
-    if (question && i === clauses.length - 1 && plain !== "stop" && !/\b(you|u)( (please|pls|just))? stop$/.test(plain)) return false;
-    if (KEYWORD_FIRST_WORDS.has(words[0]) || words[0].startsWith("unsub") || KEYWORD_REPLIES.has(plain)) return true;
-    const plainStop = (j) => words[j] === "stop" && !NEGATIONS.has(words[j - 1]); // not "can't stop" or "non stop"
-    return plainStop(words.length - 1) || (words.length <= 3 && words.some((_, j) => plainStop(j))); // "Who is this? STOP", "pls stop"
+    if (requestIn(plain, question)) return true;
+    const bare = KEYWORD_FIRST_WORDS.has(plain) || KEYWORD_REPLIES.has(plain) || /^unsub\w*$/.test(plain);
+    if (question) {
+      // A question asks about something ("When does the trial stop, or does it roll over?",
+      // "Remove? What do you mean?"). But a bare keyword before it ("Stop, who is this?"),
+      // a bare "Stop?" and "Can you please stop?" ask us to stop.
+      return (bare && (i < clauses.length - 1 || plain === "stop")) || /\b(you|u)( (please|pls|just))? stop$/.test(plain);
+    }
+    // Not "can't stop", "non stop" or "stop by on Tuesday".
+    const stopAt = (j) => words[j] === "stop" && !NEGATIONS.has(words[j - 1]) && !VISITS.has(words[j + 1]);
+    if (bare || words[0].startsWith("unsub") || (KEYWORD_FIRST_WORDS.has(words[0]) && (words[0] !== "stop" || stopAt(0)))) return true;
+    return stopAt(words.length - 1) || (words.length <= 3 && words.some((_, j) => stopAt(j))); // "Who is this? STOP", "pls stop"
   });
 }
 
@@ -210,7 +230,7 @@ export function optOut(body) {
   // "I said stop texting me" anywhere, but not "don't stop texting".
   const stopTexting = words.some((word, i) => (word === "stop" || word === "quit") && TEXTING.has(words[i + 1]) && !NEGATIONS.has(words[i - 1]));
   if (stopTexting || text.split(/(?<=[.!?;\n])/).some(asksToStop)) return "keyword";
-  if (words.includes("stop") || PHRASE_REPLIES.has(plain) || PHRASES.test(plain)) return "phrase";
+  if (words.includes("stop") || PHRASE_REPLIES.has(trimCourtesies(words).join(" ")) || PHRASES.test(plain)) return "phrase";
   return null;
 }
 

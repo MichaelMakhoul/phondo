@@ -135,6 +135,11 @@ describe("optOut", () => {
     "Who is this! Remove me", "Who is this; remove me", "Lose this number", "Remove me from this list", "Cancel thanks mate",
     "Thanks mate, remove me", "Just lose my number", "Ok lose my number", "Lose my number cheers", "Lose my number, who is this",
     "Can you please remove me", "Can you please take us off your list", "Could you please unsubscribe me", "Can you just lose my number",
+    "Hey remove me", "Hi please remove me", "Yes remove me", "Sorry remove me", "Remove me asap", "Remove me immediately",
+    "Can you please just remove me", "Cancel, who is this?", "Please stop, who are you?", "Just cancel", "Yeah cancel",
+    "Okay remove me", "Seriously stop it", "Would you remove me?", "Can you pls remove me", "Can you unsubscribe us?",
+    "Remove me from your database", "Remove me from your records", "Opt me out of it", "Opt me out of your texts",
+    "Opt me out of these messages", "Re: remove me", "Ok mate lose my number", "Do me a favour and lose my number",
   ])("%j is a final STOP", (reply) => {
     expect(optOut(reply)).toBe("keyword");
   });
@@ -151,7 +156,11 @@ describe("optOut", () => {
     "Don't take me off the list, I'm keen", "Anything to take me off the phone", "Can you remove me from the trial if it's no good? :)",
     "Take my mobile off", "Scammer", "I have blocked you", "I've reported you", "Sod off", "Piss off", "fuk off", "Get rooted",
     "No.", "No, thanks", "Not for us", "Don't stop texting me, I'm keen", "U stop it?", "I don't want these texts",
-    "Don't want your texts", "Do me a favour and lose my number", "Lose my number please and thanks", "Stop by the yard Tuesday?",
+    "Don't want your texts", "Lose my number please and thanks", "Stop by the yard Tuesday?",
+    "Does the trial stop, or does it roll over?", "When does it stop, after 30 days?", "Does it just stop, or do I get charged?",
+    "Sounds good, stop by Tuesday", "No worries, stop in anytime", "Cheers, stop by the yard", "Hi, when does the trial stop?",
+    "Nah cheers", "No cheers", "Nope, cheers mate", "Nope mate", "Stop me if I'm wrong, but is it $149?", "I do not want texts",
+    "Don't want your messages", "Why would you remove me?",
     "Remove? What do you mean?", "Ok. Stop me if I'm wrong but is it $149?", "Sounds good. Stop by the yard Tuesday?",
     // Not final, but they still need a look: "lose my number" can mean either.
     "Don't lose my number, try me next week", "Did you lose my number?",
